@@ -1,0 +1,181 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Finn Accounting — Plesk production stack
+#
+# Plesk terminates HTTPS (Let's Encrypt) on the public domain and reverse-proxies
+# to 127.0.0.1:${APP_PORT:-18080} on this host. This stack does NOT bind 80/443
+# directly — Plesk's own Apache/nginx already owns those ports for all vhosts.
+#
+# Usage on the server:
+#   cp .env.production.example .env   # fill in secrets
+#   docker compose -f docker-compose.plesk.yml up -d --build
+# ══════════════════════════════════════════════════════════════════════════════
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: "5"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: acc_db
+    restart: unless-stopped
+    logging: *default-logging
+    shm_size: 256mb
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER: ${POSTGRES_USER:-accounting_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./db/02_seed_chart_of_accounts.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./db/03_views_and_functions.sql:/docker-entrypoint-initdb.d/03_views.sql:ro
+      - ./db/05_cashflow_tables.sql:/docker-entrypoint-initdb.d/05_cashflow.sql:ro
+      - ./db/06_multi_company.sql:/docker-entrypoint-initdb.d/06_multi_company.sql:ro
+      - ./scripts/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    command: >
+      postgres
+        -c shared_buffers=128MB
+        -c effective_cache_size=384MB
+        -c maintenance_work_mem=64MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=4MB
+        -c default_statistics_target=100
+        -c max_connections=100
+        -c log_min_duration_statement=500
+        -c log_checkpoints=on
+        -c hba_file=/etc/postgresql/pg_hba.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-accounting_app} -d ${POSTGRES_DB:-accounting_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - backend_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    image: finn-accounting-backend:production
+    container_name: acc_backend
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-accounting_app}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-accounting_db}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      ALGORITHM: ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      COMPANY_NAME: ${COMPANY_NAME:-บริษัท ของคุณ จำกัด}
+      COMPANY_TAX_ID: ${COMPANY_TAX_ID:-}
+      VAT_RATE: ${VAT_RATE:-7.0}
+      XDG_CACHE_HOME: /tmp/.cache
+    volumes:
+      - uploads:/app/uploads
+    expose:
+      - "8000"
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "2"
+      - --no-access-log
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - backend_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runtime
+    image: finn-accounting-frontend:production
+    container_name: acc_frontend
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Only reachable from localhost — Plesk's nginx reverse-proxies to this port.
+    ports:
+      - "127.0.0.1:${APP_PORT:-18080}:80"
+    volumes:
+      - ./nginx/plesk-conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+    environment:
+      DOMAIN: ${DOMAIN:-acc.kawinbrothers.com}
+    command: >
+      sh -c "
+        find /etc/nginx/conf.d -name '*.conf' -exec
+          sed -i 's/\$${DOMAIN}/'"$$DOMAIN"'/g' {} \\;
+        nginx -t && nginx -g 'daemon off;'
+      "
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend_net
+      - frontend_net
+
+  db_backup:
+    image: postgres:16-alpine
+    container_name: acc_db_backup
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-accounting_db}
+      PGUSER: ${POSTGRES_USER:-accounting_app}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-30}
+    volumes:
+      - backups:/backups
+      - ./scripts/backup.sh:/backup.sh:ro
+    command: >
+      sh -c "echo '0 2 * * * sh /backup.sh >> /var/log/backup.log 2>&1' | crontab - && crond -f -l 2"
+    networks:
+      - backend_net
+
+networks:
+  backend_net:
+    driver: bridge
+  frontend_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: finn_accounting_postgres_data
+  uploads:
+    name: finn_accounting_uploads
+  backups:
+    name: finn_accounting_backups
+  nginx_logs:
+    name: finn_accounting_nginx_logs
