@@ -123,14 +123,6 @@ services:
       - ./nginx/snippets:/etc/nginx/snippets:ro
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - nginx_logs:/var/log/nginx
-    environment:
-      DOMAIN: ${DOMAIN:-acc.kawinbrothers.com}
-    command: >
-      sh -c "
-        find /etc/nginx/conf.d -name '*.conf' -exec
-          sed -i 's/\$${DOMAIN}/'"$$DOMAIN"'/g' {} \\;
-        nginx -t && nginx -g 'daemon off;'
-      "
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/health"]
       interval: 30s
