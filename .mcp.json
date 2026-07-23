@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "oracle-v2": {
+      "command": "bunx",
+      "args": ["--bun", "arra-oracle@github:Soul-Brews-Studio/arra-oracle#main"],
+      "env": {
+        "ORACLE_PORT": "47780",
+        "ORACLE_DB": "~/.oracle/oracle-accounting.db"
+      }
+    }
+  }
+}

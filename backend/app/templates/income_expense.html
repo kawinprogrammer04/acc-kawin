@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <div class="report-title">รายงานรายได้ - ค่าใช้จ่าย (Income / Expense Summary)</div>
+  <div class="company-name">{{ company_name }}</div>
+  <div class="meta-row">
+    เลขประจำตัวผู้เสียภาษี: {{ company_tax_id }} &nbsp;|&nbsp;
+    {{ period_label }}
+  </div>
+</div>
+
+{# ── รายได้จากการดำเนินงาน ── #}
+<div class="section-heading">รายได้จากการดำเนินงาน</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:15%">รหัสบัญชี</th>
+      <th style="width:60%">ชื่อบัญชี</th>
+      <th style="width:25%">จำนวนเงิน (บาท)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in revenue_rows %}
+    <tr>
+      <td class="center">{{ r.account_code }}</td>
+      <td>{{ r.account_name }}</td>
+      <td class="num">{{ r.amount }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="center" style="color:#888">ไม่มีรายการ</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr class="subtotal">
+      <td colspan="2">รวมรายได้จากการดำเนินงาน</td>
+      <td class="num">{{ total_revenue }}</td>
+    </tr>
+  </tfoot>
+</table>
+
+{# ── ต้นทุนขาย ── #}
+<div class="section-heading" style="margin-top:10pt">ต้นทุนขาย</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:15%">รหัสบัญชี</th>
+      <th style="width:60%">ชื่อบัญชี</th>
+      <th style="width:25%">จำนวนเงิน (บาท)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in cogs_rows %}
+    <tr>
+      <td class="center">{{ r.account_code }}</td>
+      <td>{{ r.account_name }}</td>
+      <td class="num">{{ r.amount }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="center" style="color:#888">ไม่มีรายการ</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr class="subtotal">
+      <td colspan="2">รวมต้นทุนขาย</td>
+      <td class="num">{{ total_cogs }}</td>
+    </tr>
+    <tr class="subtotal">
+      <td colspan="2">กำไรขั้นต้น (Gross Profit) — {{ gross_margin_pct }}%</td>
+      <td class="num">{{ gross_profit }}</td>
+    </tr>
+  </tfoot>
+</table>
+
+{# ── ค่าใช้จ่ายดำเนินงาน ── #}
+<div class="section-heading" style="margin-top:10pt">ค่าใช้จ่ายในการดำเนินงาน</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:15%">รหัสบัญชี</th>
+      <th style="width:60%">ชื่อบัญชี</th>
+      <th style="width:25%">จำนวนเงิน (บาท)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in opex_rows %}
+    <tr>
+      <td class="center">{{ r.account_code }}</td>
+      <td>{{ r.account_name }}</td>
+      <td class="num">{{ r.amount }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="3" class="center" style="color:#888">ไม่มีรายการ</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr class="subtotal">
+      <td colspan="2">รวมค่าใช้จ่ายดำเนินงาน</td>
+      <td class="num">{{ total_opex }}</td>
+    </tr>
+    <tr class="subtotal">
+      <td colspan="2">กำไรจากการดำเนินงาน (Operating Profit)</td>
+      <td class="num">{{ operating_profit }}</td>
+    </tr>
+  </tfoot>
+</table>
+
+{# ── รายได้/ค่าใช้จ่ายอื่น ── #}
+{% if other_rows %}
+<div class="section-heading" style="margin-top:10pt">รายได้ / ค่าใช้จ่ายอื่น</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:15%">รหัสบัญชี</th>
+      <th style="width:60%">ชื่อบัญชี</th>
+      <th style="width:25%">จำนวนเงิน (บาท)</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in other_rows %}
+    <tr>
+      <td class="center">{{ r.account_code }}</td>
+      <td>{{ r.account_name }}</td>
+      <td class="num">{{ r.amount }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr class="subtotal">
+      <td colspan="2">รายได้อื่น</td>
+      <td class="num">{{ total_other_revenue }}</td>
+    </tr>
+    <tr class="subtotal">
+      <td colspan="2">ค่าใช้จ่ายอื่น</td>
+      <td class="num">{{ total_other_expense }}</td>
+    </tr>
+  </tfoot>
+</table>
+{% endif %}
+
+{# ── กำไรสุทธิ ── #}
+<div class="summary-box">
+  <div class="summary-row">
+    <span>รายได้รวม</span>
+    <span>{{ total_revenue }} บาท</span>
+  </div>
+  <div class="summary-row">
+    <span>ต้นทุนขาย</span>
+    <span>{{ total_cogs }} บาท</span>
+  </div>
+  <div class="summary-row">
+    <span>กำไรขั้นต้น ({{ gross_margin_pct }}%)</span>
+    <span>{{ gross_profit }} บาท</span>
+  </div>
+  <div class="summary-row">
+    <span>ค่าใช้จ่ายดำเนินงาน</span>
+    <span>{{ total_opex }} บาท</span>
+  </div>
+  <div class="summary-row highlight">
+    <span>{{ "กำไรสุทธิ" if net_profit_positive else "ขาดทุนสุทธิ" }}</span>
+    <span>{{ net_profit }} บาท</span>
+  </div>
+</div>
+
+{% endblock %}

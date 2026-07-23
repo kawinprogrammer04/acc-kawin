@@ -1,0 +1,268 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Thai SME Accounting System — Docker Compose (production-ready)
+#
+# Usage:
+#   cp .env.example .env          # fill in secrets
+#   make ssl-self-signed          # generate dev SSL cert (first time only)
+#   docker compose up -d          # start everything
+#   docker compose logs -f        # tail logs
+# ══════════════════════════════════════════════════════════════════════════════
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: acc_db
+    restart: unless-stopped
+    logging: *default-logging
+    shm_size: "256mb"            # Avoid pg OOM on sort / hash joins
+
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER:     ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      PGDATA:            /var/lib/postgresql/data/pgdata
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./db/02_seed_chart_of_accounts.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./db/03_views_and_functions.sql:/docker-entrypoint-initdb.d/03_views.sql:ro
+      - ./scripts/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+
+    # Tune Postgres for a small-medium instance (512 MB RAM server)
+    command: >
+      postgres
+        -c shared_buffers=128MB
+        -c effective_cache_size=384MB
+        -c maintenance_work_mem=64MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=4MB
+        -c default_statistics_target=100
+        -c max_connections=100
+        -c log_min_duration_statement=500
+        -c log_checkpoints=on
+        -c hba_file=/etc/postgresql/pg_hba.conf
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-accounting_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    networks:
+      - backend_net
+
+    # DB port exposed only on loopback — use `make db-shell` to access
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  # ── FastAPI Backend ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    image: acc_backend:latest
+    container_name: acc_backend
+    restart: unless-stopped
+    logging: *default-logging
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    environment:
+      DATABASE_URL:               postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?}@db:5432/${POSTGRES_DB:-accounting_db}
+      SECRET_KEY:                 ${SECRET_KEY:?SECRET_KEY must be set (min 32 chars)}
+      ALGORITHM:                  ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      COMPANY_NAME:               ${COMPANY_NAME:-บริษัท ของคุณ จำกัด}
+      COMPANY_TAX_ID:             ${COMPANY_TAX_ID:-}
+      VAT_RATE:                   ${VAT_RATE:-7.0}
+
+    # Backend NOT exposed externally — Nginx is the only entry point
+    expose:
+      - "8000"
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    networks:
+      - backend_net
+
+  # ── Credit Statement Matcher (embedded under /statement) ───────────────────
+  # Source lives in the sibling repo ../credit_statement_matcher. Built here so a
+  # single `docker compose up` brings the statement checker online behind the
+  # same Nginx + TLS as the accounting app, reachable at https://${DOMAIN}/statement/
+  statement:
+    build:
+      context: ../credit_statement_matcher
+      dockerfile: Dockerfile
+    image: credit_statement_matcher:latest
+    container_name: acc_statement
+    restart: unless-stopped
+    logging: *default-logging
+
+    environment:
+      # Served behind Nginx under a sub-path → prefix every generated link
+      ROOT_PATH: /statement
+      PORT: 8010
+
+    # Not exposed externally — only Nginx (frontend) reaches it on backend_net
+    expose:
+      - "8010"
+
+    volumes:
+      # Persist SQLite DB + uploaded statements on the host (sibling repo paths)
+      - ../credit_statement_matcher/credit_statements.db:/app/credit_statements.db
+      - ../credit_statement_matcher/uploads:/app/uploads
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8010/upload').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    networks:
+      - backend_net
+
+  # ── React Frontend + Nginx ─────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runtime
+    image: acc_frontend:latest
+    container_name: acc_frontend
+    restart: unless-stopped
+    logging: *default-logging
+
+    depends_on:
+      backend:
+        condition: service_healthy
+      statement:
+        condition: service_healthy
+
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+
+    volumes:
+      # Nginx virtual host config (envsubst replaces ${DOMAIN})
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+
+      # SSL certificates
+      # Dev: self-signed (generated by `make ssl-self-signed`)
+      # Prod: replace with real certs or Let's Encrypt volume
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+
+      # Let's Encrypt webroot (ACME challenge)
+      - certbot_webroot:/var/www/certbot:ro
+
+      # Persistent Nginx logs
+      - nginx_logs:/var/log/nginx
+
+    environment:
+      DOMAIN: ${DOMAIN:-accounting.internal}
+
+    # Replace ${DOMAIN} placeholder in nginx config before starting
+    command: >
+      sh -c "
+        find /etc/nginx/conf.d -name '*.conf' -exec
+          sed -i 's/\$${DOMAIN}/'"$$DOMAIN"'/g' {} \\;
+        nginx -t && nginx -g 'daemon off;'
+      "
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    networks:
+      - backend_net
+      - frontend_net
+
+  # ── DB Backup (daily pg_dump via cron) ────────────────────────────────────
+  db_backup:
+    image: postgres:16-alpine
+    container_name: acc_db_backup
+    restart: unless-stopped
+    logging: *default-logging
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+    environment:
+      PGHOST:     db
+      PGPORT:     5432
+      PGDATABASE: ${POSTGRES_DB:-accounting_db}
+      PGUSER:     ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-30}
+
+    volumes:
+      - backups:/backups
+      - ./scripts/backup.sh:/backup.sh:ro
+
+    # Run backup every day at 02:00 server time
+    command: >
+      sh -c "
+        echo '0 2 * * * sh /backup.sh >> /var/log/backup.log 2>&1' | crontab - &&
+        crond -f -l 2
+      "
+
+    networks:
+      - backend_net
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Networks
+# ══════════════════════════════════════════════════════════════════════════════
+networks:
+  backend_net:
+    driver: bridge
+    internal: false       # backend can reach the internet for package updates
+  frontend_net:
+    driver: bridge
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Volumes
+# ══════════════════════════════════════════════════════════════════════════════
+volumes:
+  # Bind-mount to host paths so data survives `docker compose down`.
+  # Directories are created by `make setup` before first run.
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}/postgres
+
+  backups:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${DATA_DIR:-./data}/backups
+
+  # Named volumes (managed by Docker, no host path needed)
+  certbot_webroot:
+  nginx_logs:

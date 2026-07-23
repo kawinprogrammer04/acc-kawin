@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <div class="report-title">แบบแสดงรายการภาษีมูลค่าเพิ่ม (ภพ.30)</div>
+  <div class="company-name">{{ company_name }}</div>
+  <div class="meta-row">
+    เลขประจำตัวผู้เสียภาษี: {{ company_tax_id }} &nbsp;|&nbsp;
+    ประจำเดือน: {{ period_month_name }} พ.ศ. {{ period_year_be }}
+  </div>
+</div>
+
+{# ── ภาษีขาย ── #}
+<div class="section-heading">ภาษีขาย (Output VAT)</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:4%">ลำดับ</th>
+      <th style="width:11%">วันที่</th>
+      <th style="width:15%">เลขที่ใบกำกับภาษี</th>
+      <th style="width:22%">ชื่อผู้ซื้อ / ลูกค้า</th>
+      <th style="width:14%">เลขประจำตัวผู้เสียภาษี</th>
+      <th style="width:6%">สาขา</th>
+      <th style="width:14%">มูลค่าสินค้า / บริการ</th>
+      <th style="width:14%">ภาษีมูลค่าเพิ่ม</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in output_rows %}
+    <tr>
+      <td class="center">{{ r.seq }}</td>
+      <td class="center">{{ r.tax_date }}</td>
+      <td>{{ r.tax_invoice_no }}</td>
+      <td>{{ r.party_name }}</td>
+      <td class="center">{{ r.party_tax_id }}</td>
+      <td class="center">{{ r.party_branch }}</td>
+      <td class="num">{{ r.taxable_amount }}</td>
+      <td class="num">{{ r.vat_amount }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="center" style="color:#888">ไม่มีรายการภาษีขายในงวดนี้</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr class="subtotal">
+      <td colspan="6" class="center">รวมภาษีขาย</td>
+      <td class="num">{{ output_taxable_total }}</td>
+      <td class="num">{{ output_vat_total }}</td>
+    </tr>
+  </tfoot>
+</table>
+
+{# ── ภาษีซื้อ ── #}
+<div class="section-heading" style="margin-top:14pt">ภาษีซื้อ (Input VAT)</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:4%">ลำดับ</th>
+      <th style="width:11%">วันที่</th>
+      <th style="width:15%">เลขที่ใบกำกับภาษี</th>
+      <th style="width:22%">ชื่อผู้ขาย / ผู้ให้บริการ</th>
+      <th style="width:14%">เลขประจำตัวผู้เสียภาษี</th>
+      <th style="width:6%">สาขา</th>
+      <th style="width:14%">มูลค่าสินค้า / บริการ</th>
+      <th style="width:14%">ภาษีมูลค่าเพิ่ม</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in input_rows %}
+    <tr>
+      <td class="center">{{ r.seq }}</td>
+      <td class="center">{{ r.tax_date }}</td>
+      <td>{{ r.tax_invoice_no }}</td>
+      <td>{{ r.party_name }}</td>
+      <td class="center">{{ r.party_tax_id }}</td>
+      <td class="center">{{ r.party_branch }}</td>
+      <td class="num">{{ r.taxable_amount }}</td>
+      <td class="num">{{ r.vat_amount }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="center" style="color:#888">ไม่มีรายการภาษีซื้อในงวดนี้</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr class="subtotal">
+      <td colspan="6" class="center">รวมภาษีซื้อ</td>
+      <td class="num">{{ input_taxable_total }}</td>
+      <td class="num">{{ input_vat_total }}</td>
+    </tr>
+  </tfoot>
+</table>
+
+{# ── สรุปยอด ── #}
+<div class="summary-box">
+  <div class="summary-row">
+    <span>รวมภาษีขาย</span>
+    <span>{{ output_vat_total }} บาท</span>
+  </div>
+  <div class="summary-row">
+    <span>รวมภาษีซื้อ</span>
+    <span>{{ input_vat_total }} บาท</span>
+  </div>
+  <div class="summary-row highlight">
+    <span>ภาษีที่ต้อง{{ net_vat_type }}</span>
+    <span>{{ net_vat }} บาท</span>
+  </div>
+</div>
+
+{% endblock %}

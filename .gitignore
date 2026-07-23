@@ -1,0 +1,31 @@
+# Secrets — never commit
+.env
+.env.production
+.env.local
+
+# SSL certs — regenerated per environment
+nginx/ssl/
+
+# Persistent data
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+backend/.venv/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# DB backups (local only)
+*_backup_*.sql

@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="page-header">
+  <div class="report-title">สรุปรายการหัก ณ ที่จ่าย (50 ทวิ)</div>
+  <div class="company-name">{{ company_name }}</div>
+  <div class="meta-row">
+    เลขประจำตัวผู้เสียภาษี: {{ company_tax_id }} &nbsp;|&nbsp;
+    ประจำเดือน: {{ period_month_name }} พ.ศ. {{ period_year_be }}
+  </div>
+</div>
+
+{# ── รายละเอียด ── #}
+<div class="section-heading">รายการหัก ณ ที่จ่าย (รายละเอียด)</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:4%">ลำดับ</th>
+      <th style="width:20%">ชื่อผู้รับเงิน</th>
+      <th style="width:14%">เลขประจำตัวฯ</th>
+      <th style="width:10%">วันที่จ่าย</th>
+      <th style="width:18%">ประเภทเงินได้</th>
+      <th style="width:8%">อัตรา</th>
+      <th style="width:13%">เงินได้</th>
+      <th style="width:13%">ภาษีที่หัก</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in detail_rows %}
+    <tr>
+      <td class="center">{{ r.seq }}</td>
+      <td>{{ r.payee_name }}</td>
+      <td class="center">{{ r.payee_tax_id }}</td>
+      <td class="center">{{ r.transaction_date }}</td>
+      <td>{{ r.income_type }}</td>
+      <td class="center">{{ r.wht_rate }}</td>
+      <td class="num">{{ r.income_amount }}</td>
+      <td class="num">{{ r.wht_amount }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="8" class="center" style="color:#888">ไม่มีรายการหัก ณ ที่จ่ายในงวดนี้</td></tr>
+    {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr class="subtotal">
+      <td colspan="6" class="center">รวมทั้งหมด</td>
+      <td class="num">{{ total_income }}</td>
+      <td class="num">{{ total_wht }}</td>
+    </tr>
+  </tfoot>
+</table>
+
+{# ── สรุปตามประเภท ── #}
+{% if group_rows %}
+<div class="section-heading" style="margin-top:14pt">สรุปตามประเภทเงินได้</div>
+<table>
+  <thead>
+    <tr>
+      <th style="width:40%">ประเภทเงินได้</th>
+      <th style="width:10%">อัตรา</th>
+      <th style="width:10%">รายการ</th>
+      <th style="width:20%">รวมเงินได้</th>
+      <th style="width:20%">รวมภาษีที่หัก</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for g in group_rows %}
+    <tr>
+      <td>{{ g.wht_type_label }}</td>
+      <td class="center">{{ g.wht_rate }}</td>
+      <td class="center">{{ g.row_count }}</td>
+      <td class="num">{{ g.income_total }}</td>
+      <td class="num">{{ g.wht_total }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{# ── สรุปยอด ── #}
+<div class="summary-box">
+  <div class="summary-row">
+    <span>รวมเงินได้ทั้งสิ้น</span>
+    <span>{{ total_income }} บาท</span>
+  </div>
+  <div class="summary-row highlight">
+    <span>รวมภาษีที่หัก ณ ที่จ่าย</span>
+    <span>{{ total_wht }} บาท</span>
+  </div>
+</div>
+
+{% endblock %}

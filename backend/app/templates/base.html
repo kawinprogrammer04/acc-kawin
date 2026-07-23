@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<style>
+  /* ── Fonts ── */
+  @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Sarabun', 'TlwgMono', 'Garuda', 'Norasi', sans-serif;
+    font-size: 10pt;
+    color: #1a1a1a;
+    line-height: 1.4;
+  }
+
+  /* ── Page header ── */
+  .page-header {
+    text-align: center;
+    margin-bottom: 8pt;
+    border-bottom: 2px solid #1e3a5f;
+    padding-bottom: 6pt;
+  }
+  .page-header .report-title {
+    font-size: 14pt;
+    font-weight: 700;
+    color: #1e3a5f;
+  }
+  .page-header .company-name {
+    font-size: 11pt;
+    font-weight: 600;
+    margin-top: 3pt;
+  }
+  .page-header .meta-row {
+    font-size: 9pt;
+    color: #555;
+    margin-top: 2pt;
+  }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 6pt;
+    font-size: 9pt;
+  }
+  th {
+    background: #1e3a5f;
+    color: #fff;
+    padding: 4pt 5pt;
+    text-align: center;
+    font-weight: 600;
+    border: 1px solid #1e3a5f;
+  }
+  td {
+    padding: 3pt 5pt;
+    border: 1px solid #ccc;
+    vertical-align: top;
+  }
+  tr:nth-child(even) td { background: #f5f8fc; }
+
+  /* ── Number cells ── */
+  .num { text-align: right; }
+  .center { text-align: center; }
+
+  /* ── Section heading ── */
+  .section-heading {
+    font-size: 10pt;
+    font-weight: 700;
+    background: #e8eef5;
+    padding: 3pt 5pt;
+    margin-top: 10pt;
+    border-left: 4px solid #1e3a5f;
+  }
+
+  /* ── Subtotal row ── */
+  .subtotal td {
+    background: #dde6f0 !important;
+    font-weight: 700;
+    border-top: 1.5px solid #1e3a5f;
+  }
+  .grand-total td {
+    background: #1e3a5f !important;
+    color: #fff !important;
+    font-weight: 700;
+    font-size: 10pt;
+    border: 1px solid #1e3a5f;
+  }
+
+  /* ── Footer ── */
+  .page-footer {
+    margin-top: 10pt;
+    font-size: 8pt;
+    color: #777;
+    text-align: right;
+  }
+
+  /* ── Summary box ── */
+  .summary-box {
+    border: 1.5px solid #1e3a5f;
+    border-radius: 3pt;
+    padding: 6pt 10pt;
+    margin-top: 8pt;
+    width: 55%;
+    margin-left: auto;
+  }
+  .summary-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 2pt 0;
+    font-size: 9.5pt;
+  }
+  .summary-row.highlight {
+    border-top: 1.5px solid #1e3a5f;
+    margin-top: 4pt;
+    padding-top: 4pt;
+    font-weight: 700;
+    font-size: 10.5pt;
+    color: #1e3a5f;
+  }
+</style>
+</head>
+<body>
+{% block content %}{% endblock %}
+<div class="page-footer">พิมพ์เมื่อ: {{ generated_at }}</div>
+</body>
+</html>
