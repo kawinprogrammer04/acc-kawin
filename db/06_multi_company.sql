@@ -41,13 +41,6 @@ VALUES
    '082-494-9524')
 ON CONFLICT (code) DO NOTHING;
 
--- Migrate existing company_settings into company id=1
-UPDATE companies SET
-    email   = COALESCE((SELECT value FROM company_settings WHERE key='email' LIMIT 1), email),
-    website = COALESCE((SELECT value FROM company_settings WHERE key='website' LIMIT 1), website),
-    vat_rate = COALESCE((SELECT value::numeric FROM company_settings WHERE key='vat_rate' LIMIT 1), vat_rate)
-WHERE id = 1;
-
 -- 3. Create user_companies junction
 CREATE TABLE IF NOT EXISTS user_companies (
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
