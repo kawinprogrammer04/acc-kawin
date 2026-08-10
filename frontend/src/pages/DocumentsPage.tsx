@@ -2,10 +2,10 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Loader2, FileText, Upload, Search, Download, Eye, Trash2, Image, File } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { api } from "@/api/client";
+import { api, getApiErrorMessage } from "@/api/client";
 
 interface Document {
-  id: number;
+  id: string;
   reference_type: string;
   reference_id?: string;
   file_name: string;
@@ -85,14 +85,25 @@ export function DocumentsPage() {
       setShowUpload(false);
       if (fileRef.current) fileRef.current.value = "";
       load();
-    } catch (e: any) {
-      alert(e.response?.data?.detail ?? "อัปโหลดไม่สำเร็จ");
+    } catch (e: unknown) {
+      alert(getApiErrorMessage(e, "อัปโหลดไม่สำเร็จ"));
     } finally { setUploading(false); }
   }
 
-  function openFile(doc: Document) {
-    const url = `/api/documents/${doc.id}/download`;
-    window.open(url, "_blank");
+  async function openFile(doc: Document) {
+    try {
+      const response = await api.get(`/documents/${doc.id}/download`, {
+        responseType: "blob",
+      });
+      const url = URL.createObjectURL(response.data);
+      const link = window.document.createElement("a");
+      link.href = url;
+      link.download = doc.file_name;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e: unknown) {
+      alert(getApiErrorMessage(e, "เปิดไฟล์ไม่สำเร็จ"));
+    }
   }
 
   return (

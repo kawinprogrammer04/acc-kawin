@@ -3,6 +3,7 @@ from uuid import uuid4
 from sqlalchemy import (
     Boolean, CheckConstraint, DateTime, ForeignKey, Integer,
     Numeric, SmallInteger, String, Text, func,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -14,9 +15,10 @@ class Invoice(Base):
     __tablename__ = "invoices"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id"), nullable=False)
     # ar | ap
     invoice_type: Mapped[str] = mapped_column(String(2), nullable=False)
-    invoice_number: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+    invoice_number: Mapped[str] = mapped_column(String(30), nullable=False)
     reference: Mapped[str | None] = mapped_column(String(100))
     invoice_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -52,6 +54,7 @@ class Invoice(Base):
 
     __table_args__ = (
         CheckConstraint("invoice_type IN ('ar', 'ap')", name="chk_invoice_type"),
+        UniqueConstraint("company_id", "invoice_number", name="uq_invoice_company_number"),
     )
 
     @property

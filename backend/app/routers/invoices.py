@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.core.dependencies import require_accountant, require_approver, require_viewer
+from app.core.dependencies import get_current_company, require_accountant, require_approver, require_viewer
+from app.models.company import Company
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.user import User
 from app.schemas.invoice import InvoiceCreate, InvoiceOut, VatCalculation
@@ -36,10 +37,12 @@ async def list_invoices(
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     stmt = (
         select(Invoice)
         .options(selectinload(Invoice.lines), selectinload(Invoice.party))
+        .where(Invoice.company_id == company.id)
         .order_by(Invoice.invoice_date.desc())
         .limit(limit)
         .offset(offset)
@@ -73,11 +76,12 @@ async def get_invoice(
     invoice_id: str,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     result = await db.execute(
         select(Invoice)
         .options(selectinload(Invoice.lines), selectinload(Invoice.party))
-        .where(Invoice.id == invoice_id)
+        .where(Invoice.id == invoice_id, Invoice.company_id == company.id)
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -90,16 +94,17 @@ async def create_invoice_endpoint(
     payload: InvoiceCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
     try:
-        invoice = await create_invoice(db, payload, current_user.id)
+        invoice = await create_invoice(db, payload, current_user.id, company.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     result = await db.execute(
         select(Invoice)
         .options(selectinload(Invoice.lines), selectinload(Invoice.party))
-        .where(Invoice.id == invoice.id)
+        .where(Invoice.id == invoice.id, Invoice.company_id == company.id)
     )
     return _to_out(result.scalar_one())
 
@@ -109,10 +114,11 @@ async def post_invoice(
     invoice_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_approver),
+    company: Company = Depends(get_current_company),
 ):
     """Post Invoice → สร้าง Journal Entry + VAT/WHT Records อัตโนมัติ"""
     try:
-        journal = await post_invoice_to_journal(db, invoice_id, current_user.id)
+        journal = await post_invoice_to_journal(db, invoice_id, current_user.id, company.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -128,11 +134,12 @@ async def void_invoice(
     invoice_id: str,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_approver),
+    company: Company = Depends(get_current_company),
 ):
     result = await db.execute(
         select(Invoice)
         .options(selectinload(Invoice.lines), selectinload(Invoice.party))
-        .where(Invoice.id == invoice_id)
+        .where(Invoice.id == invoice_id, Invoice.company_id == company.id)
     )
     invoice = result.scalar_one_or_none()
     if not invoice:

@@ -41,12 +41,30 @@ VALUES
    '082-494-9524')
 ON CONFLICT (code) DO NOTHING;
 
--- Migrate existing company_settings into company id=1
-UPDATE companies SET
-    email   = COALESCE((SELECT value FROM company_settings WHERE key='email' LIMIT 1), email),
-    website = COALESCE((SELECT value FROM company_settings WHERE key='website' LIMIT 1), website),
-    vat_rate = COALESCE((SELECT value::numeric FROM company_settings WHERE key='vat_rate' LIMIT 1), vat_rate)
-WHERE id = 1;
+-- Migrate legacy company_settings when upgrading an older database.
+-- Fresh installations do not have this legacy table.
+DO $$
+BEGIN
+    IF to_regclass('public.company_settings') IS NOT NULL THEN
+        EXECUTE $migration$
+            UPDATE companies SET
+                email = COALESCE(
+                    (SELECT value FROM company_settings WHERE key='email' LIMIT 1),
+                    email
+                ),
+                website = COALESCE(
+                    (SELECT value FROM company_settings WHERE key='website' LIMIT 1),
+                    website
+                ),
+                vat_rate = COALESCE(
+                    (SELECT value::numeric FROM company_settings WHERE key='vat_rate' LIMIT 1),
+                    vat_rate
+                )
+            WHERE id = 1
+        $migration$;
+    END IF;
+END
+$$;
 
 -- 3. Create user_companies junction
 CREATE TABLE IF NOT EXISTS user_companies (

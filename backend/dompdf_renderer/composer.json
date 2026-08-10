@@ -1,0 +1,19 @@
+{
+  "name": "kawin/tax-invoice-renderer",
+  "description": "Internal Dompdf renderer for Kawin tax invoices",
+  "type": "project",
+  "require": {
+    "php": "^8.3",
+    "dompdf/dompdf": "3.1.5"
+  },
+  "autoload": {
+    "psr-4": {
+      "Kawin\\TaxInvoice\\": "src/"
+    }
+  },
+  "config": {
+    "allow-plugins": false,
+    "optimize-autoloader": true,
+    "sort-packages": true
+  }
+}

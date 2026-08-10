@@ -2,17 +2,15 @@ from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.roles import get_role_levels
 from app.core.security import decode_token
 from app.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
-
-# Role hierarchy: admin > approver > accountant > viewer
-ROLE_LEVELS = {"admin": 4, "approver": 3, "accountant": 2, "viewer": 1}
 
 
 async def get_current_user(
@@ -36,31 +34,101 @@ async def get_current_user(
     return user
 
 
+async def _resolve_company_access(
+    x_company_id: Optional[int],
+    current_user: User,
+    db: AsyncSession,
+):
+    """Resolve a tenant and the user's role, then bind it to this transaction."""
+    from app.models.company import Company, UserCompany
+
+    if current_user.is_platform_admin:
+        stmt = select(Company).where(Company.is_active == True)  # noqa: E712
+        if x_company_id is not None:
+            stmt = stmt.where(Company.id == x_company_id)
+        else:
+            stmt = stmt.order_by(Company.id).limit(1)
+        company = (await db.execute(stmt)).scalar_one_or_none()
+        role = "admin"
+    else:
+        stmt = (
+            select(Company, UserCompany.role)
+            .join(UserCompany, Company.id == UserCompany.company_id)
+            .where(
+                UserCompany.user_id == current_user.id,
+                UserCompany.is_active == True,  # noqa: E712
+                Company.is_active == True,  # noqa: E712
+            )
+        )
+        if x_company_id is not None:
+            stmt = stmt.where(Company.id == x_company_id)
+        else:
+            stmt = stmt.order_by(Company.id).limit(1)
+        row = (await db.execute(stmt)).first()
+        company, role = row if row else (None, None)
+
+    if not company:
+        detail = "ไม่พบบริษัท" if x_company_id is not None else "ผู้ใช้งานไม่มีสิทธิ์เข้าถึงบริษัทใด"
+        raise HTTPException(status_code=403, detail=detail)
+
+    await db.execute(
+        text("SELECT set_config('app.current_company_id', :company_id, true)"),
+        {"company_id": str(company.id)},
+    )
+    return company, role
+
+
 def require_role(*roles: str):
-    """Factory that returns a dependency requiring one of the given roles."""
-    async def _check(current_user: User = Depends(get_current_user)) -> User:
-        if current_user.role not in roles and current_user.role != "admin":
+    """Require one of the selected company's membership roles."""
+    async def _check(
+        x_company_id: Optional[int] = Header(None, alias="X-Company-Id"),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        _, role = await _resolve_company_access(x_company_id, current_user, db)
+        if role not in roles and role != "admin":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"ต้องการสิทธิ์: {', '.join(roles)}",
+                detail=f"ต้องการสิทธิ์ในบริษัท: {', '.join(roles)}",
             )
         return current_user
     return _check
 
 
 def require_min_role(min_role: str):
-    """Require a role at or above the given minimum in the hierarchy."""
-    min_level = ROLE_LEVELS.get(min_role, 0)
+    """Require a membership role at or above the selected company's minimum.
 
-    async def _check(current_user: User = Depends(get_current_user)) -> User:
-        user_level = ROLE_LEVELS.get(current_user.role, 0)
+    Levels are read from the database (via a process-local cache) rather than
+    a fixed dict, so newly-added custom roles slot into the hierarchy without
+    a code change — see app/core/roles.py.
+    """
+    async def _check(
+        x_company_id: Optional[int] = Header(None, alias="X-Company-Id"),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        _, role = await _resolve_company_access(x_company_id, current_user, db)
+        levels = await get_role_levels(db)
+        user_level = levels.get(role, 0)
+        min_level = levels.get(min_role, 0)
         if user_level < min_level:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"ต้องการสิทธิ์ระดับ {min_role} ขึ้นไป",
+                detail=f"ต้องการสิทธิ์ระดับ {min_role} ขึ้นไปในบริษัทนี้",
             )
         return current_user
     return _check
+
+
+async def require_platform_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if not current_user.is_platform_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="ต้องการสิทธิ์ผู้ดูแลระบบแพลตฟอร์ม",
+        )
+    return current_user
 
 
 # Pre-built dependency shortcuts
@@ -75,49 +143,6 @@ async def get_current_company(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Validate the X-Company-Id header and return the company object.
-    Admin users bypass the user_companies check.
-    If header is missing, defaults to the first company the user has access to.
-    """
-    from app.models.company import Company, UserCompany
-
-    if x_company_id is None:
-        # Default: first accessible company
-        if current_user.role == "admin":
-            result = await db.execute(
-                select(Company).where(Company.is_active == True).order_by(Company.id).limit(1)
-            )
-        else:
-            result = await db.execute(
-                select(Company)
-                .join(UserCompany, Company.id == UserCompany.company_id)
-                .where(UserCompany.user_id == current_user.id, Company.is_active == True)
-                .order_by(Company.id)
-                .limit(1)
-            )
-        company = result.scalar_one_or_none()
-        if not company:
-            raise HTTPException(status_code=403, detail="ผู้ใช้งานไม่มีสิทธิ์เข้าถึงบริษัทใด")
-        return company
-
-    result = await db.execute(
-        select(Company).where(Company.id == x_company_id, Company.is_active == True)
-    )
-    company = result.scalar_one_or_none()
-    if not company:
-        raise HTTPException(status_code=404, detail="ไม่พบบริษัท")
-
-    # Admin bypasses access check
-    if current_user.role == "admin":
-        return company
-
-    # Non-admin: verify user_companies
-    access = await db.execute(
-        select(UserCompany).where(
-            UserCompany.user_id == current_user.id,
-            UserCompany.company_id == x_company_id,
-        )
-    )
-    if not access.scalar_one_or_none():
-        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงบริษัทนี้")
+    """Validate tenant access and bind company_id for PostgreSQL RLS."""
+    company, _ = await _resolve_company_access(x_company_id, current_user, db)
     return company

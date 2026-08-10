@@ -1,6 +1,6 @@
 from datetime import datetime
 from uuid import uuid4
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,7 +11,8 @@ class Payment(Base):
     __tablename__ = "payments"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
-    payment_number: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id"), nullable=False)
+    payment_number: Mapped[str] = mapped_column(String(30), nullable=False)
     payment_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     invoice_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("invoices.id"), nullable=False)
     party_id: Mapped[str] = mapped_column(UUID(as_uuid=False), ForeignKey("parties.id"), nullable=False)
@@ -35,4 +36,5 @@ class Payment(Base):
 
     __table_args__ = (
         CheckConstraint("amount > 0", name="chk_payment_positive"),
+        UniqueConstraint("company_id", "payment_number", name="uq_payment_company_number"),
     )

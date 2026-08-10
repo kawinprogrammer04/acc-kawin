@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { Plus, Search, CheckCircle, XCircle, Trash2, Loader2, ChevronDown, ChevronRight } from "lucide-react";
-import { journalsApi, accountsApi } from "@/api/client";
+import { journalsApi, accountsApi, getApiErrorMessage } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PageHeader } from "@/components/layout/PageHeader";
 import { FilterChips } from "@/components/layout/FilterChips";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { today as localToday } from "@/lib/format";
 import { useFilter, parseDesc } from "@/context/FilterContext";
 import type { Journal, Account, JournalLine } from "@/types";
 
@@ -95,7 +96,7 @@ function JournalForm({
   onSaved: () => void;
   accounts: Account[];
 }) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localToday();
   const [entryDate, setEntryDate] = useState(today);
   const [description, setDescription] = useState("");
   const [reference, setReference] = useState("");
@@ -143,8 +144,7 @@ function JournalForm({
       onSaved();
       onClose();
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? "เกิดข้อผิดพลาด");
+      setError(getApiErrorMessage(e));
     } finally {
       setSaving(false);
     }

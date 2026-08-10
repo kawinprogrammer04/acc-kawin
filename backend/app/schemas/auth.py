@@ -20,6 +20,8 @@ class UserCreate(BaseModel):
     password: str
     full_name: str | None = None
     role: str = "accountant"
+    company_id: int | None = None
+    position_ids: list[int] = []
 
 
 class UserUpdate(BaseModel):
@@ -35,6 +37,31 @@ class UserOut(BaseModel):
     email: str
     full_name: str | None
     role: str
+    is_platform_admin: bool = False
+    is_active: bool
+
+    model_config = {"from_attributes": True}
+
+
+class RoleCreate(BaseModel):
+    code: str
+    label: str
+    level: int
+    is_active: bool = True
+
+
+class RoleUpdate(BaseModel):
+    label: str | None = None
+    level: int | None = None
+    is_active: bool | None = None
+
+
+class RoleOut(BaseModel):
+    id: int
+    code: str
+    label: str
+    level: int
+    is_system: bool
     is_active: bool
 
     model_config = {"from_attributes": True}

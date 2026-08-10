@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% block title %}ข้อมูลอีกฝั่ง{% endblock %}
+{% block heading %}ข้อมูลอีกฝั่งสำหรับชน Statement{% endblock %}
+{% block content %}
+  {% if error %}
+    <div class="alert error"><strong>นำเข้าไม่สำเร็จ</strong><span>{{ error }}</span></div>
+  {% endif %}
+  {% if imported %}
+    <div class="alert success"><strong>นำเข้าสำเร็จ</strong><span>เพิ่มข้อมูลอีกฝั่งแล้ว กลับไปหน้า Review เพื่อ Auto match ได้เลย</span></div>
+  {% endif %}
+  {% if deleted %}
+    <div class="alert success"><strong>ลบสำเร็จ</strong><span>ลบข้อมูลอีกฝั่งจากไฟล์ที่เลือกแล้ว</span></div>
+  {% endif %}
+
+  <section class="metrics">
+    <article class="metric"><span>ข้อมูลอีกฝั่ง</span><strong>{{ stats.total or 0 }}</strong><small>รายการ</small></article>
+    <article class="metric cool"><span>ใช้จับคู่แล้ว</span><strong>{{ stats.matched or 0 }}</strong><small>รายการ</small></article>
+    <article class="metric"><span>ยังรอจับคู่</span><strong>{{ stats.unmatched or 0 }}</strong><small>รายการ</small></article>
+    <article class="metric dark"><span>ไม่มีเอกสารแนบ</span><strong>{{ stats.missing_attachments or 0 }}</strong><small>รายการ</small></article>
+  </section>
+
+  <section class="upload-grid section">
+    <form class="card upload-card" action="{{ root_path }}/references/upload" method="post" enctype="multipart/form-data">
+      <div class="upload-icon">↔</div>
+      <h2>นำเข้า Payment / รายการเบิก</h2>
+      <p>ใช้ไฟล์ CSV, XLSX หรือ PDF แบบตาราง ที่มีคอลัมน์ยอดเงิน เช่น Amount, Deposit หรือ Withdraw ส่วน Reference ไม่มีได้ ระบบจะสร้างให้</p>
+      <label class="file-picker">
+        <span>เลือก CSV, XLSX หรือ PDF</span>
+        <input type="file" name="file" accept=".csv,.xlsx,.pdf" required>
+      </label>
+      <button class="button primary" type="submit">นำเข้าข้อมูลอีกฝั่ง</button>
+      <small>คอลัมน์แนะนำ: Reference, Date, Time, Amount/Deposit/Withdraw, CustomerName, HasAttachment</small>
+    </form>
+
+    <form class="card form-card" action="{{ root_path }}/references/manual" method="post">
+      <p class="eyebrow">Manual reference</p>
+      <h2>เพิ่มทีละรายการ</h2>
+      <label>Reference / เลขเอกสาร<input name="reference" required placeholder="OD-xxxx / PAY-xxxx / REQ-xxxx"></label>
+      <label>ยอดเงิน<input name="amount" type="number" step="0.01" required></label>
+      <label>วันที่<input name="transaction_date" type="date"></label>
+      <label>เวลา<input name="transaction_time" placeholder="09:18"></label>
+      <label>ชื่อผู้โอน / ลูกค้า<input name="party_name"></label>
+      <label class="check-label"><input type="checkbox" name="has_attachment" value="1"><span>มีเอกสารแนบครบ</span></label>
+      <label>หมายเหตุ<input name="notes"></label>
+      <button class="button primary" type="submit">เพิ่มรายการ</button>
+    </form>
+  </section>
+
+  {% if sources %}
+    <section class="section">
+      <div class="section-heading">
+        <div><p class="eyebrow">Imported files</p><h2>ไฟล์ที่นำเข้ามาแล้ว</h2></div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>ไฟล์</th><th class="number">ทั้งหมด</th><th class="number">ใช้แล้ว</th><th class="number">รอจับคู่</th><th>จัดการ</th></tr>
+          </thead>
+          <tbody>
+          {% for source in sources %}
+            <tr>
+              <td><strong>{{ source.source_filename }}</strong><small>นำเข้าล่าสุด {{ source.imported_at or "—" }}</small></td>
+              <td class="number">{{ source.total or 0 }}</td>
+              <td class="number">{{ source.matched or 0 }}</td>
+              <td class="number">{{ source.unmatched or 0 }}</td>
+              <td>
+                {% if source.matched %}
+                  <span class="status warning">ลบไม่ได้: มีรายการใช้แล้ว</span>
+                {% else %}
+                  <form method="post" action="{{ root_path }}/references/source/delete" onsubmit="return confirm('ลบข้อมูลอีกฝั่งจากไฟล์ {{ source.source_filename }} ทั้งหมด?');">
+                    <input type="hidden" name="source_filename" value="{{ source.source_filename }}">
+                    <button class="button danger" type="submit">ลบไฟล์นี้</button>
+                  </form>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+
+  <div class="section-heading">
+    <div><p class="eyebrow">Reference queue</p><h2>{{ items|length }} รายการล่าสุด</h2></div>
+    <a class="button secondary" href="{{ root_path }}/review">กลับไป Review</a>
+  </div>
+
+  {% if items %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Reference (Ref ที่ใช้ Match)</th>
+            <th>วันที่</th>
+            <th>ยอดเงิน</th>
+            <th>Invoice / ชื่อ</th>
+            <th>ไฟล์</th>
+            <th>สถานะ</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for item in items %}
+          <tr class="clickable-row" data-dialog-target="ref-dialog-{{ item.id }}" tabindex="0">
+            <td>
+              <strong style="font-family:monospace">{{ item.reference }}</strong>
+              {% if item.notes %}<small>{{ item.notes }}</small>{% endif %}
+            </td>
+            <td class="nowrap">
+              {{ item.transaction_date or "—" }}
+              {% if item.transaction_time %}<br><small>{{ item.transaction_time[:5] }}</small>{% endif %}
+            </td>
+            <td class="number">{{ item.amount|money }}</td>
+            <td>{{ item.party_name or "—" }}</td>
+            <td><small>{{ item.source_filename or "manual" }}</small></td>
+            <td>
+              <span class="status {{ item.match_status }}">
+                {{ {"unmatched":"รอจับคู่","matched":"ใช้แล้ว","ignored":"ไม่นับ"}[item.match_status] }}
+              </span>
+            </td>
+            <td>
+              <button class="button secondary" style="font-size:12px;padding:4px 10px" type="button"
+                      onclick="event.stopPropagation();document.getElementById('ref-dialog-{{ item.id }}').showModal()">
+                แก้ไข
+              </button>
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {# ── Edit dialogs for each reference item ── #}
+    {% for item in items %}
+      <dialog class="sheet-dialog narrow-dialog" id="ref-dialog-{{ item.id }}">
+        <div class="dialog-head">
+          <div>
+            <p class="eyebrow">แก้ไข Ads Ref #{{ item.id }}</p>
+            <h2 style="font-family:monospace">{{ item.reference }}</h2>
+            <small>{{ item.source_filename or "manual" }} · {{ item.transaction_date or "—" }}</small>
+          </div>
+          <button class="icon-button js-close-dialog" type="button" aria-label="ปิด">×</button>
+        </div>
+
+        <form action="{{ root_path }}/references/{{ item.id }}/update" method="post">
+          <input type="hidden" name="next_path" value="/references">
+          <input type="hidden" name="amount" value="{{ item.amount }}">
+          <input type="hidden" name="transaction_date" value="{{ item.transaction_date or '' }}">
+          <input type="hidden" name="transaction_time" value="{{ item.transaction_time or '' }}">
+          <input type="hidden" name="party_name" value="{{ item.party_name or '' }}">
+          <input type="hidden" name="notes" value="{{ item.notes or '' }}">
+
+          <div class="readonly-info">
+            <div class="ro-row"><span>วันที่</span><strong>{{ item.transaction_date or "—" }}{% if item.transaction_time and item.transaction_time[:5] != '00:00' %} {{ item.transaction_time[:5] }}{% endif %}</strong></div>
+            <div class="ro-row"><span>ยอดเงิน</span><strong>฿{{ item.amount|money }}</strong></div>
+            {% if item.party_name %}<div class="ro-row"><span>Invoice</span>{{ item.party_name }}</div>{% endif %}
+            <div class="ro-row"><span>ไฟล์</span><small>{{ item.source_filename or "manual" }}</small></div>
+          </div>
+
+          <label style="margin-top:12px;display:block">
+            รหัสอ้างอิง
+            <small style="color:var(--green-dark);font-weight:700">แก้ OCR ผิดได้</small>
+            <input name="reference" value="{{ item.reference }}" required
+                   placeholder="เช่น LCGEWIJVSU2"
+                   style="font-family:monospace;font-size:15px;font-weight:700;margin-top:6px">
+          </label>
+
+          <div class="edit-actions">
+            <button class="button secondary" type="submit">บันทึก</button>
+          </div>
+        </form>
+      </dialog>
+    {% endfor %}
+
+  {% else %}
+    <div class="empty">ยังไม่มีข้อมูลอีกฝั่งสำหรับนำไปชนกับ Statement</div>
+  {% endif %}
+
+  <script>
+    document.querySelectorAll(".js-close-dialog").forEach((btn) => {
+      btn.addEventListener("click", () => btn.closest("dialog")?.close());
+    });
+    document.querySelectorAll("dialog").forEach((dialog) => {
+      dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
+    });
+    document.querySelectorAll(".clickable-row[data-dialog-target]").forEach((row) => {
+      row.addEventListener("click", () => {
+        document.getElementById(row.dataset.dialogTarget)?.showModal();
+      });
+    });
+  </script>
+{% endblock %}

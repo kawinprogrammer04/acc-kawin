@@ -1,0 +1,259 @@
+{% extends "base.html" %}
+{% block title %}อัปโหลด Statement{% endblock %}
+{% block heading %}นำเข้า Statement{% endblock %}
+{% block content %}
+  {% if error %}
+    <div class="alert error"><strong>นำเข้าไม่สำเร็จ</strong><span>{{ error }}</span></div>
+  {% endif %}
+
+  {# ── Workflow guide ─────────────────────────────────────────────────────── #}
+  <section class="workflow-steps">
+    <div class="workflow-step done">
+      <div class="ws-num">1</div>
+      <div class="ws-body">
+        <strong>อัปโหลด Statement บัตรเครดิต</strong>
+        <span>ไฟล์ CSV / XLSX / PDF จากธนาคาร</span>
+      </div>
+    </div>
+    <div class="ws-arrow">→</div>
+    <div class="workflow-step done">
+      <div class="ws-num">2</div>
+      <div class="ws-body">
+        <strong>อัปโหลดรูป Ads</strong>
+        <span>Screenshot จาก Ads</span>
+      </div>
+    </div>
+    <div class="ws-arrow">→</div>
+    <div class="workflow-step cta">
+      <div class="ws-num">3</div>
+      <div class="ws-body">
+        <strong>ดูผลการชนยอด</strong>
+        <span>กดปุ่มด้านล่างหลังอัปโหลดครบ</span>
+      </div>
+    </div>
+  </section>
+
+  <div style="text-align:center;margin-bottom:1.5rem">
+    <a class="button primary" href="{{ root_path }}/review" style="font-size:1.05rem;padding:.7rem 2rem">
+      ไปหน้าจับคู่ &amp; ดูผล →
+    </a>
+    <p class="muted" style="margin-top:.5rem;font-size:.85rem">อัปโหลดครบทั้งสองส่วนแล้ว กดปุ่มนี้เพื่อรัน Auto Match และดูผล</p>
+  </div>
+
+  <section class="upload-grid">
+    <form id="statement-upload-form" class="card upload-card" action="{{ root_path }}/upload" method="post" enctype="multipart/form-data">
+      <div class="upload-ready">
+        <div class="upload-icon">↑</div>
+        <h2>เลือกไฟล์ Statement</h2>
+        <p>ระบบอ่าน PDF text layer ก่อน และใช้ OCR ภาษาไทยกับอังกฤษอัตโนมัติเมื่อเป็นไฟล์สแกนหรือข้อความเสีย</p>
+        <label class="file-picker">
+          <span>เลือก CSV, XLSX หรือ PDF</span>
+          <input id="statement-file" type="file" name="file" accept=".csv,.xlsx,.pdf" required>
+        </label>
+        <button id="upload-submit" class="button primary" type="submit">อ่านไฟล์และแสดง Preview</button>
+        <small>ขนาดสูงสุด 25 MB · PDF สูงสุด 50 หน้า · OCR ทำงานเบื้องหลัง จึงไม่หลุดด้วย 504 ระหว่างรอ</small>
+      </div>
+
+      <div id="upload-processing" class="upload-processing" hidden aria-live="polite" aria-busy="true">
+        <div class="processing-spinner" aria-hidden="true"></div>
+        <p class="eyebrow">กำลังประมวลผล Statement</p>
+        <h2 id="processing-title">กำลังอัปโหลดไฟล์</h2>
+        <p id="processing-file" class="processing-file"></p>
+        <div class="processing-progress" aria-hidden="true"><span></span></div>
+        <ol class="processing-steps">
+          <li class="active">รับไฟล์และตรวจชนิดเอกสาร</li>
+          <li>อ่าน text layer และโครงสร้างคอลัมน์</li>
+          <li>ทำ OCR ไทย + อังกฤษเมื่อจำเป็น</li>
+          <li>เตรียมตาราง Preview และตรวจยอด</li>
+        </ol>
+        <p class="processing-note">
+          กำลังสร้างงาน OCR · ใช้เวลาแล้ว <strong id="processing-seconds">0</strong> วินาที
+        </p>
+        <small>เมื่อรับไฟล์แล้ว ระบบจะเปลี่ยนไปหน้าติดตามงานอัตโนมัติ</small>
+      </div>
+    </form>
+
+    <aside class="card guide-card">
+      <p class="eyebrow">รูปแบบที่แนะนำ</p>
+      <h2>หัวตารางขั้นต่ำ</h2>
+      <div class="column-example">
+        <span>Date / วันที่</span>
+        <span>Description / รายละเอียด</span>
+        <span>Amount / จำนวนเงิน</span>
+      </div>
+      <p>เพิ่มคอลัมน์ Card Number / เลขบัตรได้ ระบบจะเก็บเฉพาะเลขท้าย 4 หลัก</p>
+      <p class="muted">SCB, Amex และ Krungsri จากไฟล์ตัวอย่างจะใช้ parser เฉพาะ พร้อมแจ้งแถว OCR ที่ควรตรวจทาน</p>
+    </aside>
+  </section>
+
+  <section class="upload-grid" style="margin-top:1.5rem">
+    <form id="image-upload-form" class="card upload-card" action="{{ root_path }}/upload/images" method="post" enctype="multipart/form-data">
+      <div class="upload-ready" id="image-upload-ready">
+        <div class="upload-icon">🖼</div>
+        <h2>อัปโหลด Screenshot (Ads)</h2>
+        <p>เลือกรูปภาพ screenshot จาก Ads หลายไฟล์พร้อมกัน ระบบใช้ Claude AI อ่านข้อความในภาพแล้วดึงข้อมูลการชำระเงินอัตโนมัติ</p>
+        <label class="file-picker">
+          <span>เลือกรูปภาพ (JPG, PNG, WEBP)</span>
+          <input id="image-files" type="file" name="files" accept=".jpg,.jpeg,.png,.webp" multiple required>
+        </label>
+        <p id="image-file-count" class="muted" style="min-height:1.2em"></p>
+        <button id="image-submit" class="button primary" type="submit">อ่านรูปภาพด้วย AI</button>
+        <small>สูงสุด 100 ไฟล์ · ไฟล์ละไม่เกิน 15 MB · ต้องตั้งค่า ANTHROPIC_API_KEY</small>
+      </div>
+
+      <div id="image-processing" class="upload-processing" hidden aria-live="polite" aria-busy="true">
+        <div class="processing-spinner" aria-hidden="true"></div>
+        <p class="eyebrow">กำลัง OCR ด้วย Claude AI</p>
+        <h2 id="image-processing-title">กำลังส่งภาพให้ AI วิเคราะห์</h2>
+        <p id="image-processing-file" class="processing-file"></p>
+        <div class="processing-progress" aria-hidden="true"><span></span></div>
+        <p class="processing-note">
+          ใช้เวลาแล้ว <strong id="image-processing-seconds">0</strong> วินาที · ขึ้นอยู่กับจำนวนไฟล์
+        </p>
+      </div>
+    </form>
+
+    <aside class="card guide-card">
+      <p class="eyebrow">วิธีใช้</p>
+      <h2>อัปโหลด Screenshot แบบ Flat</h2>
+      <ol style="padding-left:1.2em;line-height:1.8">
+        <li>เปิดโฟลเดอร์บัตรที่ต้องการ</li>
+        <li>เลือกรูปภาพทั้งหมดในโฟลเดอร์ (Ctrl+A / Cmd+A)</li>
+        <li>คลิก "เลือกรูปภาพ" แล้ว drop หรือ select ทุกไฟล์</li>
+        <li>กด "อ่านรูปภาพด้วย AI" รอจนเสร็จ</li>
+        <li>ตรวจ Preview แล้วกด ยืนยัน</li>
+      </ol>
+      <p class="muted">ระบบดึง: วันที่, เวลา, ยอดเงิน, Invoice No., TxID, เลขบัตร</p>
+    </aside>
+  </section>
+
+  <section class="section">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">ประวัติการนำเข้า</p>
+        <h2>Statement ล่าสุด</h2>
+      </div>
+    </div>
+    {% if statements %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>ไฟล์</th><th>วันที่อัปโหลด</th><th class="number">ยอดเข้า</th><th class="number">จับคู่/ค้าง</th><th class="number">ซ้ำ</th><th></th></tr>
+          </thead>
+          <tbody>
+          {% for statement in statements %}
+            <tr>
+              <td><a href="{{ root_path }}/transactions?statement_id={{ statement.id }}">{{ statement.original_filename }}</a></td>
+              <td>{{ statement.uploaded_at }}</td>
+              <td class="number">{{ statement.total_deposit|money }}<small>{{ statement.deposit_count }} รายการ</small></td>
+              <td class="number">{{ statement.matched_count }} / {{ statement.unmatched_count }}</td>
+              <td class="number">{{ statement.duplicate_count }}</td>
+              <td class="actions">
+                <form action="{{ root_path }}/statements/{{ statement.id }}/delete" method="post" onsubmit="return confirm('ลบ Statement และรายการทั้งหมดในไฟล์นี้?')">
+                  <button class="button danger ghost" type="submit">ลบ</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">ยังไม่มี Statement ที่นำเข้า</div>
+    {% endif %}
+  </section>
+
+  <script>
+    const uploadForm = document.getElementById("statement-upload-form");
+    const uploadReady = uploadForm?.querySelector(".upload-ready");
+    const uploadProcessing = document.getElementById("upload-processing");
+    const uploadSubmit = document.getElementById("upload-submit");
+    const statementFile = document.getElementById("statement-file");
+    const processingFile = document.getElementById("processing-file");
+    const processingTitle = document.getElementById("processing-title");
+    const processingSeconds = document.getElementById("processing-seconds");
+    const processingSteps = Array.from(document.querySelectorAll(".processing-steps li"));
+    let uploadStarted = false;
+
+    function updateProcessingState(seconds) {
+      let activeStep = 0;
+      if (seconds >= 4) activeStep = 1;
+      if (seconds >= 12) activeStep = 2;
+      if (seconds >= 45) activeStep = 3;
+      const titles = [
+        "กำลังอัปโหลดและตรวจไฟล์",
+        "กำลังอ่านโครงสร้าง Statement",
+        "กำลังอ่านข้อความด้วย OCR",
+        "กำลังจัดรายการลงตาราง Preview"
+      ];
+      processingTitle.textContent = titles[activeStep];
+      processingSteps.forEach((step, index) => {
+        step.classList.toggle("active", index === activeStep);
+        step.classList.toggle("done", index < activeStep);
+      });
+    }
+
+    uploadForm?.addEventListener("submit", (event) => {
+      if (uploadStarted || !uploadForm.checkValidity()) return;
+      event.preventDefault();
+      uploadStarted = true;
+      uploadSubmit.disabled = true;
+      processingFile.textContent = statementFile.files[0]?.name || "Statement";
+      uploadReady.hidden = true;
+      uploadProcessing.hidden = false;
+      updateProcessingState(0);
+      const startedAt = Date.now();
+      window.setInterval(() => {
+        const seconds = Math.floor((Date.now() - startedAt) / 1000);
+        processingSeconds.textContent = seconds.toLocaleString("th-TH");
+        updateProcessingState(seconds);
+      }, 1000);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => uploadForm.submit());
+      });
+    });
+
+    // ── Image batch upload ──────────────────────────────────────────────────
+    const imageForm = document.getElementById("image-upload-form");
+    const imageReady = document.getElementById("image-upload-ready");
+    const imageProcessing = document.getElementById("image-processing");
+    const imageSubmit = document.getElementById("image-submit");
+    const imageFiles = document.getElementById("image-files");
+    const imageFileCount = document.getElementById("image-file-count");
+    const imageProcessingFile = document.getElementById("image-processing-file");
+    const imageProcessingTitle = document.getElementById("image-processing-title");
+    const imageProcessingSeconds = document.getElementById("image-processing-seconds");
+    let imageUploadStarted = false;
+
+    imageFiles?.addEventListener("change", () => {
+      const n = imageFiles.files?.length || 0;
+      imageFileCount.textContent = n ? `เลือกแล้ว ${n.toLocaleString("th-TH")} ไฟล์` : "";
+    });
+
+    imageForm?.addEventListener("submit", (event) => {
+      if (imageUploadStarted || !imageForm.checkValidity()) return;
+      event.preventDefault();
+      imageUploadStarted = true;
+      imageSubmit.disabled = true;
+      const n = imageFiles.files?.length || 0;
+      imageProcessingFile.textContent = `${n.toLocaleString("th-TH")} ไฟล์`;
+      imageReady.hidden = true;
+      imageProcessing.hidden = false;
+      const imageTitles = [
+        "กำลังอ่านรูปภาพและส่งให้ AI",
+        "Claude กำลัง OCR ทีละภาพแบบขนาน",
+        "กำลังจัดรายการและเตรียม Preview",
+      ];
+      const startedAt = Date.now();
+      window.setInterval(() => {
+        const seconds = Math.floor((Date.now() - startedAt) / 1000);
+        imageProcessingSeconds.textContent = seconds.toLocaleString("th-TH");
+        const idx = seconds < 10 ? 0 : seconds < 50 ? 1 : 2;
+        imageProcessingTitle.textContent = imageTitles[idx];
+      }, 1000);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => imageForm.submit());
+      });
+    });
+  </script>
+{% endblock %}

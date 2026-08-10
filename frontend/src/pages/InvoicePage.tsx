@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { Plus, Search, FileText, Loader2, Send, XCircle, Eye, Trash2 } from "lucide-react";
-import { invoicesApi, accountsApi } from "@/api/client";
+import { invoicesApi, accountsApi, getApiErrorMessage } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { formatCurrency, formatDate } from "@/lib/utils";
+import { today as localToday, localDateInput } from "@/lib/format";
 import type { Invoice, Account } from "@/types";
 
 // ── Status config ─────────────────────────────────────────────────────────────
@@ -131,10 +132,10 @@ function CreateInvoiceDialog({
   accounts: Account[];
   invoiceType: "ar" | "ap";
 }) {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localToday();
   const [form, setForm] = useState({
     invoice_number: "", reference: "", invoice_date: today,
-    due_date: new Date(Date.now() + 30 * 86400000).toISOString().split("T")[0],
+    due_date: localDateInput(new Date(Date.now() + 30 * 86400000)),
     party_id: "", period_id: "1", ar_ap_account_id: "",
     revenue_expense_account_id: "", apply_vat: true, notes: "",
   });
@@ -185,8 +186,7 @@ function CreateInvoiceDialog({
       });
       onSaved(); onClose();
     } catch (e: unknown) {
-      const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setError(msg ?? "เกิดข้อผิดพลาด");
+      setError(getApiErrorMessage(e));
     } finally {
       setSaving(false);
     }

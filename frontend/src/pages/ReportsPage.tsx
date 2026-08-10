@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { formatCurrency, formatNumber } from "@/lib/utils";
+import { today } from "@/lib/format";
 import type { IncomeStatement, BalanceSheet, TrialBalance, AgingReport, VatPP30 } from "@/types";
 
 const MONTHS = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
@@ -158,7 +159,7 @@ function IncomeStatementReport() {
 
 // ── Balance Sheet ─────────────────────────────────────────────────────────────
 function BalanceSheetReport() {
-  const [asOfDate, setAsOfDate] = useState(new Date().toISOString().split("T")[0]);
+  const [asOfDate, setAsOfDate] = useState(today());
   const [data, setData] = useState<BalanceSheet | null>(null);
   const [loading, setLoading] = useState(false);
 

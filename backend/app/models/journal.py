@@ -3,6 +3,7 @@ from uuid import uuid4
 from sqlalchemy import (
     Boolean, CheckConstraint, DateTime, ForeignKey, Integer,
     Numeric, SmallInteger, String, Text, func,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -14,7 +15,8 @@ class Journal(Base):
     __tablename__ = "journals"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
-    entry_number: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id"), nullable=False)
+    entry_number: Mapped[str] = mapped_column(String(20), nullable=False)
     entry_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     period_id: Mapped[int] = mapped_column(Integer, ForeignKey("accounting_periods.id"), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -38,6 +40,10 @@ class Journal(Base):
     )
     creator: Mapped["User | None"] = relationship("User", foreign_keys=[created_by])  # noqa: F821
     poster: Mapped["User | None"] = relationship("User", foreign_keys=[posted_by])  # noqa: F821
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "entry_number", name="uq_journal_company_number"),
+    )
 
 
 class JournalLine(Base):

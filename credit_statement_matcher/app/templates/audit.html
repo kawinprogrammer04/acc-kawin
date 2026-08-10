@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Audit Log{% endblock %}
+{% block heading %}Audit Log การตรวจ Statement{% endblock %}
+{% block content %}
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">Reconciliation trail</p>
+      <h2>{{ logs|length }} รายการล่าสุด</h2>
+    </div>
+  </div>
+
+  {% if logs %}
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>เวลา</th><th>ผู้ทำ</th><th>Action</th><th>Entity</th><th>รายละเอียด</th></tr>
+        </thead>
+        <tbody>
+        {% for log in logs %}
+          <tr>
+            <td class="nowrap">{{ log.created_at }}</td>
+            <td>{{ log.actor }}</td>
+            <td><strong>{{ log.action }}</strong></td>
+            <td>{{ log.entity_type }} #{{ log.entity_id }}</td>
+            <td>{{ log.detail or "" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty">ยังไม่มี audit log</div>
+  {% endif %}
+{% endblock %}

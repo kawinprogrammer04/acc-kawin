@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
-import { Plus, Loader2, Wallet, Building2, User, CreditCard } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Plus, Loader2, Wallet, Building2, User, CreditCard, RefreshCcw } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { walletAccountsApi } from "@/api/cashflow";
@@ -159,6 +160,12 @@ export function WalletAccountPage() {
   return (
     <div className="p-6 space-y-4">
       <PageHeader title="บัญชีเงิน / Wallet" subtitle="จัดการบัญชีธนาคาร เงินสด และ e-Wallet">
+        <Link
+          to="/bank-reconciliation"
+          className="flex items-center gap-2 rounded-md border border-input bg-background px-4 py-2 text-sm hover:bg-accent"
+        >
+          <RefreshCcw className="h-4 w-4" /> กระทบยอดธนาคาร
+        </Link>
         <button onClick={() => setShowForm(true)}
           className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90">
           <Plus className="h-4 w-4" /> เพิ่มบัญชี

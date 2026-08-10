@@ -5,8 +5,8 @@
 
 .DEFAULT_GOAL := help
 SHELL         := /bin/bash
-DC            := docker compose
-ENV_FILE      := .env
+ENV_FILE      ?= .env
+DC            = docker compose --env-file $(ENV_FILE)
 
 # Load .env so variables are available in make targets
 -include $(ENV_FILE)
@@ -15,7 +15,7 @@ export
 .PHONY: help setup ssl-self-signed up down restart build rebuild \
         logs logs-backend logs-frontend logs-db \
         db-shell db-backup db-restore \
-        ps health check clean nuke
+        ps health check migrate migration-current test-backend config clean nuke
 
 # ── Help ──────────────────────────────────────────────────────────────────────
 help:
@@ -43,11 +43,15 @@ help:
 	@echo "    make db-shell         Open psql prompt"
 	@echo "    make db-backup        Manual backup now"
 	@echo "    make db-restore F=<file>  Restore from dump file"
+	@echo "    make migrate          Apply all pending Alembic migrations"
+	@echo "    make migration-current Show current Alembic revision"
+	@echo "    make test-backend     Run backend unit tests in a one-off container"
 	@echo ""
 	@echo "  Ops"
 	@echo "    make ps               Show container status"
 	@echo "    make health           Check all healthchecks"
 	@echo "    make check            Validate nginx + backend configs"
+	@echo "    make config           Validate compose with ENV_FILE (default .env)"
 	@echo "    make clean            Remove stopped containers + dangling images"
 	@echo "    make nuke             ⚠  Remove ALL containers, images, and volumes"
 	@echo ""
@@ -105,6 +109,17 @@ db-restore:
 	@[ -n "$(F)" ] || { echo "Usage: make db-restore F=<path-to-dump>"; exit 1; }
 	@bash scripts/restore.sh "$(F)"
 
+migrate:
+	$(DC) exec backend alembic upgrade head
+
+migration-current:
+	$(DC) exec backend alembic current
+
+test-backend:
+	$(DC) run --rm --no-deps \
+		-v "$(CURDIR)/backend/tests:/app/tests:ro" \
+		backend python -m unittest discover -s tests -v
+
 # ── Ops ───────────────────────────────────────────────────────────────────────
 ps:
 	$(DC) ps
@@ -121,6 +136,9 @@ check:
 	@echo "--- Backend health endpoint ---"
 	@curl -sk https://localhost/api/health | python3 -m json.tool || \
 	 curl -s  http://localhost/api/health  | python3 -m json.tool
+
+config:
+	$(DC) config --quiet
 
 clean:
 	$(DC) down --remove-orphans

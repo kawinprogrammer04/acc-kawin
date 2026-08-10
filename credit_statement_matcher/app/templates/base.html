@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Credit Statement Matcher{% endblock %}</title>
+  <link rel="stylesheet" href="{{ root_path }}/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <p class="eyebrow">Credit statement workspace</p>
+      <h1>{% block heading %}ตรวจ Statement บัตรเครดิต{% endblock %}</h1>
+    </div>
+    <span class="privacy-pill">ข้อมูลเก็บในระบบของคุณ</span>
+  </header>
+
+  <nav class="tabs" aria-label="เมนู Statement">
+    <a class="{{ 'active' if active == 'upload' else '' }}" href="{{ root_path }}/upload">
+      <span class="tab-step">1</span> อัปโหลด
+    </a>
+    <a class="{{ 'active' if active == 'review' else '' }}" href="{{ root_path }}/review">
+      <span class="tab-step">2</span> จับคู่ &amp; ตรวจ
+    </a>
+    <a class="{{ 'active' if active == 'summary' else '' }}" href="{{ root_path }}/summary">
+      <span class="tab-step">3</span> รายงาน
+    </a>
+    <a class="{{ 'active' if active == 'transactions' else '' }}" href="{{ root_path }}/transactions">รายการทั้งหมด</a>
+    <a class="{{ 'active' if active == 'references' else '' }}" href="{{ root_path }}/references">Ads Refs</a>
+    <a class="{{ 'active' if active == 'manual-edit' else '' }}" href="{{ root_path }}/manual-edit">จับคู่เอง</a>
+  </nav>
+
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

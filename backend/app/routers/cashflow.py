@@ -6,18 +6,18 @@ Cash Flow Module — Combined router for all cash-flow features:
 """
 
 import os
+import re
 import uuid
-import shutil
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Literal
 
 from fastapi import (
     APIRouter, Depends, HTTPException, Query, UploadFile, File, Form, status
 )
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, condecimal
-from sqlalchemy import select, func, and_, or_, cast, text, case
+from pydantic import BaseModel, Field, condecimal, model_validator
+from sqlalchemy import String, select, func, and_, or_, cast, text, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -28,8 +28,10 @@ from app.models.cashflow import (
     EntryStatus, PayableStatus, ReceivableStatus, TransferType,
     WalletAccountType, MoneyOwnerType, HolderType, CashflowCategoryType, CashDirection
 )
-from app.models.company import Company
+from app.models.bank_reconciliation import BankReconciliation
+from app.models.company import Company, CompanyIntegration
 from app.models.user import User
+from app.services.ocr_service import extract_receipt_data, OcrServiceError
 
 # ─── Upload directory ─────────────────────────────────────────────────────────
 UPLOAD_DIR = "/app/uploads"
@@ -70,14 +72,57 @@ async def create_cash_transaction(db: AsyncSession, ref_type: str, ref_id: str,
     db.add(tx)
 
     if account_id:
-        stmt = text("SELECT update_wallet_balance(:aid, :amt, :dir::cash_direction)")
+        stmt = text("SELECT update_wallet_balance(:aid, :amt, CAST(:dir AS cash_direction))")
         res = await db.execute(stmt, {"aid": account_id, "amt": float(amount), "dir": direction.value})
         new_bal = res.scalar()
         tx.balance_after = new_bal
 
     if holder_id:
-        stmt = text("SELECT update_holder_balance(:hid, :amt, :dir::cash_direction)")
+        stmt = text("SELECT update_holder_balance(:hid, :amt, CAST(:dir AS cash_direction))")
         await db.execute(stmt, {"hid": holder_id, "amt": float(amount), "dir": direction.value})
+
+
+async def get_company_record(
+    db: AsyncSession, model, record_id, company_id: int, not_found_message: str
+):
+    """Load one row while enforcing tenant isolation for every action endpoint."""
+    result = await db.execute(
+        select(model).where(model.id == record_id, model.company_id == company_id)
+    )
+    obj = result.scalar_one_or_none()
+    if not obj:
+        raise HTTPException(404, not_found_message)
+    return obj
+
+
+async def ensure_reference_not_reconciled(
+    db: AsyncSession,
+    company_id: int,
+    reference_types: tuple[str, ...],
+    reference_id: str,
+):
+    """Prevent accounting mutations while a related cash movement is reconciled."""
+    reconciled = (
+        await db.execute(
+            select(BankReconciliation.id)
+            .join(
+                CashTransaction,
+                CashTransaction.id == BankReconciliation.cash_transaction_id,
+            )
+            .where(
+                BankReconciliation.company_id == company_id,
+                BankReconciliation.is_active.is_(True),
+                CashTransaction.reference_type.in_(reference_types),
+                cast(CashTransaction.reference_id, String) == str(reference_id),
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if reconciled:
+        raise HTTPException(
+            409,
+            "รายการนี้กระทบยอดธนาคารแล้ว กรุณายกเลิกการกระทบยอดก่อนแก้ไขหรือยกเลิก",
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -95,6 +140,19 @@ class WalletAccountCreate(BaseModel):
     currency: str = "THB"
     opening_balance: Decimal = Decimal("0")
     notes: Optional[str] = None
+
+
+class WalletAccountUpdate(BaseModel):
+    name: Optional[str] = None
+    account_type: Optional[WalletAccountType] = None
+    owner_type: Optional[MoneyOwnerType] = None
+    bank_name: Optional[str] = None
+    account_number: Optional[str] = None
+    account_holder: Optional[str] = None
+    currency: Optional[str] = None
+    opening_balance: Optional[Decimal] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 class WalletAccountOut(BaseModel):
@@ -129,6 +187,18 @@ class HolderCreate(BaseModel):
     notes: Optional[str] = None
 
 
+class HolderUpdate(BaseModel):
+    name: Optional[str] = None
+    holder_type: Optional[HolderType] = None
+    owner_type: Optional[MoneyOwnerType] = None
+    wallet_account_id: Optional[int] = None
+    purpose: Optional[str] = None
+    opening_balance: Optional[Decimal] = None
+    responsible_user_id: Optional[int] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 class HolderOut(BaseModel):
     id: int
     name: str
@@ -157,6 +227,16 @@ class CategoryCreate(BaseModel):
     sort_order: int = 0
 
 
+class CategoryUpdate(BaseModel):
+    type: Optional[CashflowCategoryType] = None
+    name: Optional[str] = None
+    parent_id: Optional[int] = None
+    color: Optional[str] = None
+    icon: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
 class CategoryOut(BaseModel):
     id: int
     type: str
@@ -179,10 +259,10 @@ class IncomeCreate(BaseModel):
     category_id: Optional[int] = None
     customer_name: Optional[str] = None
     description: str
-    amount: Decimal
+    amount: Decimal = Field(gt=0)
     vat_amount: Decimal = Decimal("0")
     withholding_tax: Decimal = Decimal("0")
-    net_amount: Decimal
+    net_amount: Decimal = Field(gt=0)
     payment_channel: Optional[str] = None
     wallet_account_id: Optional[int] = None
     holder_id: Optional[int] = None
@@ -191,6 +271,26 @@ class IncomeCreate(BaseModel):
     owner_type: MoneyOwnerType = MoneyOwnerType.company
     notes: Optional[str] = None
     receivable_id: Optional[str] = None
+
+
+class IncomeUpdate(BaseModel):
+    income_date: Optional[date] = None
+    document_no: Optional[str] = None
+    income_type: Optional[str] = None
+    category_id: Optional[int] = None
+    customer_name: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[Decimal] = Field(default=None, gt=0)
+    vat_amount: Optional[Decimal] = Field(default=None, ge=0)
+    withholding_tax: Optional[Decimal] = Field(default=None, ge=0)
+    net_amount: Optional[Decimal] = Field(default=None, gt=0)
+    payment_channel: Optional[str] = None
+    wallet_account_id: Optional[int] = None
+    holder_id: Optional[int] = None
+    status: Optional[EntryStatus] = None
+    received_date: Optional[date] = None
+    owner_type: Optional[MoneyOwnerType] = None
+    notes: Optional[str] = None
 
 
 class IncomeOut(BaseModel):
@@ -226,10 +326,10 @@ class ExpenseCreate(BaseModel):
     category_id: Optional[int] = None
     vendor_name: Optional[str] = None
     description: str
-    amount: Decimal
+    amount: Decimal = Field(gt=0)
     vat_amount: Decimal = Decimal("0")
     withholding_tax: Decimal = Decimal("0")
-    net_amount: Decimal
+    net_amount: Decimal = Field(gt=0)
     payment_channel: Optional[str] = None
     wallet_account_id: Optional[int] = None
     holder_id: Optional[int] = None
@@ -239,6 +339,27 @@ class ExpenseCreate(BaseModel):
     owner_type: MoneyOwnerType = MoneyOwnerType.company
     notes: Optional[str] = None
     payable_id: Optional[str] = None
+
+
+class ExpenseUpdate(BaseModel):
+    expense_date: Optional[date] = None
+    document_no: Optional[str] = None
+    expense_type: Optional[str] = None
+    category_id: Optional[int] = None
+    vendor_name: Optional[str] = None
+    description: Optional[str] = None
+    amount: Optional[Decimal] = Field(default=None, gt=0)
+    vat_amount: Optional[Decimal] = Field(default=None, ge=0)
+    withholding_tax: Optional[Decimal] = Field(default=None, ge=0)
+    net_amount: Optional[Decimal] = Field(default=None, gt=0)
+    payment_channel: Optional[str] = None
+    wallet_account_id: Optional[int] = None
+    holder_id: Optional[int] = None
+    is_company_expense: Optional[bool] = None
+    status: Optional[EntryStatus] = None
+    paid_date: Optional[date] = None
+    owner_type: Optional[MoneyOwnerType] = None
+    notes: Optional[str] = None
 
 
 class ExpenseOut(BaseModel):
@@ -274,7 +395,21 @@ class PayableCreate(BaseModel):
     description: Optional[str] = None
     issue_date: date
     due_date: Optional[date] = None
-    total_amount: Decimal
+    total_amount: Decimal = Field(gt=0)
+    expected_account_id: Optional[int] = None
+    expected_holder_id: Optional[int] = None
+    category_id: Optional[int] = None
+    reference_doc: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PayableUpdate(BaseModel):
+    creditor_name: Optional[str] = None
+    creditor_type: Optional[str] = None
+    description: Optional[str] = None
+    issue_date: Optional[date] = None
+    due_date: Optional[date] = None
+    total_amount: Optional[Decimal] = Field(default=None, gt=0)
     expected_account_id: Optional[int] = None
     expected_holder_id: Optional[int] = None
     category_id: Optional[int] = None
@@ -283,7 +418,7 @@ class PayableCreate(BaseModel):
 
 
 class PayablePayment(BaseModel):
-    amount: Decimal
+    amount: Decimal = Field(gt=0)
     account_id: Optional[int] = None
     holder_id: Optional[int] = None
     paid_date: date
@@ -317,7 +452,21 @@ class ReceivableCreate(BaseModel):
     description: Optional[str] = None
     issue_date: date
     due_date: Optional[date] = None
-    total_amount: Decimal
+    total_amount: Decimal = Field(gt=0)
+    expected_account_id: Optional[int] = None
+    expected_holder_id: Optional[int] = None
+    category_id: Optional[int] = None
+    reference_doc: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ReceivableUpdate(BaseModel):
+    debtor_name: Optional[str] = None
+    debtor_type: Optional[str] = None
+    description: Optional[str] = None
+    issue_date: Optional[date] = None
+    due_date: Optional[date] = None
+    total_amount: Optional[Decimal] = Field(default=None, gt=0)
     expected_account_id: Optional[int] = None
     expected_holder_id: Optional[int] = None
     category_id: Optional[int] = None
@@ -326,7 +475,7 @@ class ReceivableCreate(BaseModel):
 
 
 class ReceivablePayment(BaseModel):
-    amount: Decimal
+    amount: Decimal = Field(gt=0)
     account_id: Optional[int] = None
     holder_id: Optional[int] = None
     received_date: date
@@ -361,10 +510,24 @@ class TransferCreate(BaseModel):
     from_holder_id: Optional[int] = None
     to_account_id: Optional[int] = None
     to_holder_id: Optional[int] = None
-    amount: Decimal
-    fee: Decimal = Decimal("0")
+    amount: Decimal = Field(gt=0)
+    fee: Decimal = Field(default=Decimal("0"), ge=0)
     reason: Optional[str] = None
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_endpoints(self):
+        sources = [self.from_account_id, self.from_holder_id]
+        destinations = [self.to_account_id, self.to_holder_id]
+        if sum(value is not None for value in sources) != 1:
+            raise ValueError("ต้องเลือกแหล่งเงินต้นทางเพียงหนึ่งรายการ")
+        if sum(value is not None for value in destinations) != 1:
+            raise ValueError("ต้องเลือกปลายทางเพียงหนึ่งรายการ")
+        if self.from_account_id and self.from_account_id == self.to_account_id:
+            raise ValueError("บัญชีต้นทางและปลายทางต้องไม่ใช่บัญชีเดียวกัน")
+        if self.from_holder_id and self.from_holder_id == self.to_holder_id:
+            raise ValueError("Holder ต้นทางและปลายทางต้องไม่ใช่รายการเดียวกัน")
+        return self
 
 
 class TransferOut(BaseModel):
@@ -430,26 +593,22 @@ async def get_wallet_account(
     account_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(WalletAccount, account_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบบัญชีนี้")
-    return obj
+    return await get_company_record(db, WalletAccount, account_id, company.id, "ไม่พบบัญชีนี้")
 
 
 @router.patch("/wallet-accounts/{account_id}", response_model=WalletAccountOut)
 async def update_wallet_account(
     account_id: int,
-    payload: dict,
+    payload: WalletAccountUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(WalletAccount, account_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบบัญชีนี้")
-    for k, v in payload.items():
-        if hasattr(obj, k) and k not in ("id", "created_at", "created_by"):
-            setattr(obj, k, v)
+    obj = await get_company_record(db, WalletAccount, account_id, company.id, "ไม่พบบัญชีนี้")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -460,10 +619,9 @@ async def delete_wallet_account(
     account_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(WalletAccount, account_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบบัญชีนี้")
+    obj = await get_company_record(db, WalletAccount, account_id, company.id, "ไม่พบบัญชีนี้")
     obj.is_active = False
     await db.commit()
 
@@ -498,6 +656,10 @@ async def create_holder(
     current_user: User = Depends(require_accountant),
     company: Company = Depends(get_current_company),
 ):
+    if payload.wallet_account_id:
+        await get_company_record(
+            db, WalletAccount, payload.wallet_account_id, company.id, "ไม่พบบัญชีที่เลือก"
+        )
     obj = Holder(**payload.model_dump(), created_by=current_user.id, company_id=company.id)
     obj.current_balance = payload.opening_balance
     db.add(obj)
@@ -511,26 +673,22 @@ async def get_holder(
     holder_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Holder, holder_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบ Holder นี้")
-    return obj
+    return await get_company_record(db, Holder, holder_id, company.id, "ไม่พบ Holder นี้")
 
 
 @router.patch("/holders/{holder_id}", response_model=HolderOut)
 async def update_holder(
     holder_id: int,
-    payload: dict,
+    payload: HolderUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Holder, holder_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบ Holder นี้")
-    for k, v in payload.items():
-        if hasattr(obj, k) and k not in ("id", "created_at", "created_by"):
-            setattr(obj, k, v)
+    obj = await get_company_record(db, Holder, holder_id, company.id, "ไม่พบ Holder นี้")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -541,10 +699,9 @@ async def delete_holder(
     holder_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Holder, holder_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบ Holder นี้")
+    obj = await get_company_record(db, Holder, holder_id, company.id, "ไม่พบ Holder นี้")
     obj.is_active = False
     await db.commit()
 
@@ -575,6 +732,10 @@ async def create_category(
     current_user: User = Depends(require_accountant),
     company: Company = Depends(get_current_company),
 ):
+    if payload.parent_id:
+        await get_company_record(
+            db, CashflowCategory, payload.parent_id, company.id, "ไม่พบหมวดหมู่แม่"
+        )
     obj = CashflowCategory(**payload.model_dump(), company_id=company.id)
     db.add(obj)
     await db.commit()
@@ -585,16 +746,14 @@ async def create_category(
 @router.patch("/cashflow-categories/{cat_id}", response_model=CategoryOut)
 async def update_category(
     cat_id: int,
-    payload: dict,
+    payload: CategoryUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(CashflowCategory, cat_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบหมวดหมู่นี้")
-    for k, v in payload.items():
-        if hasattr(obj, k) and k not in ("id", "created_at"):
-            setattr(obj, k, v)
+    obj = await get_company_record(db, CashflowCategory, cat_id, company.id, "ไม่พบหมวดหมู่นี้")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -605,10 +764,9 @@ async def delete_category(
     cat_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(CashflowCategory, cat_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบหมวดหมู่นี้")
+    obj = await get_company_record(db, CashflowCategory, cat_id, company.id, "ไม่พบหมวดหมู่นี้")
     obj.is_active = False
     await db.commit()
 
@@ -664,6 +822,14 @@ async def create_income(
     current_user: User = Depends(require_accountant),
     company: Company = Depends(get_current_company),
 ):
+    if payload.wallet_account_id:
+        await get_company_record(
+            db, WalletAccount, payload.wallet_account_id, company.id, "ไม่พบบัญชีที่เลือก"
+        )
+    if payload.holder_id:
+        await get_company_record(
+            db, Holder, payload.holder_id, company.id, "ไม่พบ Holder ที่เลือก"
+        )
     obj = IncomeEntry(**payload.model_dump(), created_by=current_user.id, company_id=company.id)
     db.add(obj)
     await db.flush()
@@ -687,39 +853,70 @@ async def get_income(
     income_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(IncomeEntry, income_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการรายรับนี้")
-    return obj
+    return await get_company_record(db, IncomeEntry, income_id, company.id, "ไม่พบรายการรายรับนี้")
 
 
 @router.patch("/income/{income_id}", response_model=IncomeOut)
 async def update_income(
     income_id: str,
-    payload: dict,
+    payload: IncomeUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(IncomeEntry, income_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการรายรับนี้")
+    obj = await get_company_record(db, IncomeEntry, income_id, company.id, "ไม่พบรายการรายรับนี้")
+    await ensure_reference_not_reconciled(db, company.id, ("income",), income_id)
 
+    updates = payload.model_dump(exclude_unset=True)
     old_status = obj.status
-    for k, v in payload.items():
-        if hasattr(obj, k) and k not in ("id", "created_at", "created_by"):
-            setattr(obj, k, v)
+    old_settlement = {
+        "net_amount": obj.net_amount,
+        "wallet_account_id": obj.wallet_account_id,
+        "holder_id": obj.holder_id,
+        "income_date": obj.income_date,
+        "received_date": obj.received_date,
+    }
+    if old_status == EntryStatus.cancelled and updates.get("status", old_status) != EntryStatus.cancelled:
+        raise HTTPException(400, "ไม่สามารถเปิดรายการที่ยกเลิกแล้วกลับมาใหม่")
+    for key, value in updates.items():
+        setattr(obj, key, value)
 
-    # ถ้าเพิ่งเปลี่ยนสถานะเป็น completed → สร้าง transaction
-    if old_status != EntryStatus.completed and obj.status == EntryStatus.completed:
+    settlement_changed = any(
+        key in updates and updates[key] != old_settlement[key]
+        for key in old_settlement
+    )
+    if old_status == EntryStatus.completed and (
+        obj.status != EntryStatus.completed or settlement_changed
+    ):
+        await create_cash_transaction(
+            db, "income_adjustment", str(obj.id), CashDirection.OUT,
+            old_settlement["net_amount"], old_settlement["wallet_account_id"],
+            old_settlement["holder_id"], date.today(),
+            f"ย้อนรายการรายรับเดิม: {obj.description}", current_user.id,
+            company_id=company.id,
+        )
+
+    if obj.status == EntryStatus.completed and (
+        old_status != EntryStatus.completed or settlement_changed
+    ):
+        if obj.wallet_account_id:
+            await get_company_record(
+                db, WalletAccount, obj.wallet_account_id, company.id, "ไม่พบบัญชีที่เลือก"
+            )
+        if obj.holder_id:
+            await get_company_record(
+                db, Holder, obj.holder_id, company.id, "ไม่พบ Holder ที่เลือก"
+            )
         await create_cash_transaction(
             db, "income", str(obj.id), CashDirection.IN, obj.net_amount,
             obj.wallet_account_id, obj.holder_id,
             obj.received_date or obj.income_date,
-            f"รายรับ: {obj.description}", current_user.id
+            f"รายรับ: {obj.description}", current_user.id, company_id=company.id
         )
 
-    await log_activity(db, current_user.id, "update", "income", income_id, f"แก้ไขรายรับ {obj.description}")
+    await log_activity(db, current_user.id, "update", "income", income_id, f"แก้ไขรายรับ {obj.description}", company_id=company.id)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -730,12 +927,20 @@ async def delete_income(
     income_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(IncomeEntry, income_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการรายรับนี้")
+    obj = await get_company_record(db, IncomeEntry, income_id, company.id, "ไม่พบรายการรายรับนี้")
+    await ensure_reference_not_reconciled(db, company.id, ("income",), income_id)
+    if obj.status == EntryStatus.cancelled:
+        raise HTTPException(400, "รายการนี้ถูกยกเลิกแล้ว")
+    if obj.status == EntryStatus.completed:
+        await create_cash_transaction(
+            db, "income_cancel", income_id, CashDirection.OUT, obj.net_amount,
+            obj.wallet_account_id, obj.holder_id, date.today(),
+            f"ยกเลิกรายรับ: {obj.description}", current_user.id, company_id=company.id
+        )
     obj.status = EntryStatus.cancelled
-    await log_activity(db, current_user.id, "delete", "income", income_id, f"ยกเลิกรายรับ {obj.description}")
+    await log_activity(db, current_user.id, "delete", "income", income_id, f"ยกเลิกรายรับ {obj.description}", company_id=company.id)
     await db.commit()
 
 
@@ -795,9 +1000,17 @@ async def create_expense(
 ):
     # Validate balance if status = completed
     if payload.status == EntryStatus.completed and payload.wallet_account_id:
-        acc = await db.get(WalletAccount, payload.wallet_account_id)
-        if acc and acc.current_balance < payload.net_amount:
+        acc = await get_company_record(
+            db, WalletAccount, payload.wallet_account_id, company.id, "ไม่พบบัญชีที่เลือก"
+        )
+        if acc.current_balance < payload.net_amount:
             raise HTTPException(400, f"ยอดเงินในบัญชีไม่เพียงพอ (คงเหลือ {acc.current_balance:,.2f} บาท)")
+    if payload.holder_id:
+        holder = await get_company_record(
+            db, Holder, payload.holder_id, company.id, "ไม่พบ Holder ที่เลือก"
+        )
+        if payload.status == EntryStatus.completed and holder.current_balance < payload.net_amount:
+            raise HTTPException(400, f"ยอด Holder ไม่เพียงพอ (คงเหลือ {holder.current_balance:,.2f} บาท)")
 
     obj = ExpenseEntry(**payload.model_dump(), created_by=current_user.id, company_id=company.id)
     db.add(obj)
@@ -821,42 +1034,74 @@ async def get_expense(
     expense_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(ExpenseEntry, expense_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการรายจ่ายนี้")
-    return obj
+    return await get_company_record(db, ExpenseEntry, expense_id, company.id, "ไม่พบรายการรายจ่ายนี้")
 
 
 @router.patch("/expenses/{expense_id}", response_model=ExpenseOut)
 async def update_expense(
     expense_id: str,
-    payload: dict,
+    payload: ExpenseUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(ExpenseEntry, expense_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการรายจ่ายนี้")
+    obj = await get_company_record(db, ExpenseEntry, expense_id, company.id, "ไม่พบรายการรายจ่ายนี้")
+    await ensure_reference_not_reconciled(db, company.id, ("expense",), expense_id)
 
+    updates = payload.model_dump(exclude_unset=True)
     old_status = obj.status
-    for k, v in payload.items():
-        if hasattr(obj, k) and k not in ("id", "created_at", "created_by"):
-            setattr(obj, k, v)
+    old_settlement = {
+        "net_amount": obj.net_amount,
+        "wallet_account_id": obj.wallet_account_id,
+        "holder_id": obj.holder_id,
+        "expense_date": obj.expense_date,
+        "paid_date": obj.paid_date,
+    }
+    if old_status == EntryStatus.cancelled and updates.get("status", old_status) != EntryStatus.cancelled:
+        raise HTTPException(400, "ไม่สามารถเปิดรายการที่ยกเลิกแล้วกลับมาใหม่")
+    for key, value in updates.items():
+        setattr(obj, key, value)
 
-    if old_status != EntryStatus.completed and obj.status == EntryStatus.completed:
+    settlement_changed = any(
+        key in updates and updates[key] != old_settlement[key]
+        for key in old_settlement
+    )
+    if old_status == EntryStatus.completed and (
+        obj.status != EntryStatus.completed or settlement_changed
+    ):
+        await create_cash_transaction(
+            db, "expense_adjustment", str(obj.id), CashDirection.IN,
+            old_settlement["net_amount"], old_settlement["wallet_account_id"],
+            old_settlement["holder_id"], date.today(),
+            f"ย้อนรายการรายจ่ายเดิม: {obj.description}", current_user.id,
+            company_id=company.id,
+        )
+
+    if obj.status == EntryStatus.completed and (
+        old_status != EntryStatus.completed or settlement_changed
+    ):
         if obj.wallet_account_id:
-            acc = await db.get(WalletAccount, obj.wallet_account_id)
-            if acc and acc.current_balance < obj.net_amount:
+            acc = await get_company_record(
+                db, WalletAccount, obj.wallet_account_id, company.id, "ไม่พบบัญชีที่เลือก"
+            )
+            if acc.current_balance < obj.net_amount:
                 raise HTTPException(400, f"ยอดเงินในบัญชีไม่เพียงพอ")
+        if obj.holder_id:
+            holder = await get_company_record(
+                db, Holder, obj.holder_id, company.id, "ไม่พบ Holder ที่เลือก"
+            )
+            if holder.current_balance < obj.net_amount:
+                raise HTTPException(400, "ยอด Holder ไม่เพียงพอ")
         await create_cash_transaction(
             db, "expense", str(obj.id), CashDirection.OUT, obj.net_amount,
             obj.wallet_account_id, obj.holder_id,
             obj.paid_date or obj.expense_date,
-            f"รายจ่าย: {obj.description}", current_user.id
+            f"รายจ่าย: {obj.description}", current_user.id, company_id=company.id
         )
 
-    await log_activity(db, current_user.id, "update", "expense", expense_id, f"แก้ไขรายจ่าย {obj.description}")
+    await log_activity(db, current_user.id, "update", "expense", expense_id, f"แก้ไขรายจ่าย {obj.description}", company_id=company.id)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -867,11 +1112,20 @@ async def delete_expense(
     expense_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(ExpenseEntry, expense_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการรายจ่ายนี้")
+    obj = await get_company_record(db, ExpenseEntry, expense_id, company.id, "ไม่พบรายการรายจ่ายนี้")
+    await ensure_reference_not_reconciled(db, company.id, ("expense",), expense_id)
+    if obj.status == EntryStatus.cancelled:
+        raise HTTPException(400, "รายการนี้ถูกยกเลิกแล้ว")
+    if obj.status == EntryStatus.completed:
+        await create_cash_transaction(
+            db, "expense_cancel", expense_id, CashDirection.IN, obj.net_amount,
+            obj.wallet_account_id, obj.holder_id, date.today(),
+            f"ยกเลิกรายจ่าย: {obj.description}", current_user.id, company_id=company.id
+        )
     obj.status = EntryStatus.cancelled
+    await log_activity(db, current_user.id, "delete", "expense", expense_id, f"ยกเลิกรายจ่าย {obj.description}", company_id=company.id)
     await db.commit()
 
 
@@ -913,6 +1167,14 @@ async def create_payable(
     current_user: User = Depends(require_accountant),
     company: Company = Depends(get_current_company),
 ):
+    if payload.expected_account_id:
+        await get_company_record(
+            db, WalletAccount, payload.expected_account_id, company.id, "ไม่พบบัญชีที่เลือก"
+        )
+    if payload.expected_holder_id:
+        await get_company_record(
+            db, Holder, payload.expected_holder_id, company.id, "ไม่พบ Holder ที่เลือก"
+        )
     obj = Payable(**payload.model_dump(), created_by=current_user.id, company_id=company.id)
     db.add(obj)
     await db.commit()
@@ -925,26 +1187,28 @@ async def get_payable(
     payable_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Payable, payable_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการเจ้าหนี้นี้")
-    return obj
+    return await get_company_record(db, Payable, payable_id, company.id, "ไม่พบรายการเจ้าหนี้นี้")
 
 
 @router.patch("/payables/{payable_id}", response_model=PayableOut)
 async def update_payable(
     payable_id: str,
-    payload: dict,
+    payload: PayableUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Payable, payable_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการเจ้าหนี้นี้")
-    for k, v in payload.items():
-        if hasattr(obj, k) and k not in ("id", "created_at", "created_by", "remaining_amount"):
-            setattr(obj, k, v)
+    obj = await get_company_record(db, Payable, payable_id, company.id, "ไม่พบรายการเจ้าหนี้นี้")
+    await ensure_reference_not_reconciled(
+        db, company.id, ("payable_payment",), payable_id
+    )
+    updates = payload.model_dump(exclude_unset=True)
+    if updates.get("total_amount") is not None and updates["total_amount"] < obj.paid_amount:
+        raise HTTPException(400, "ยอดรวมต้องไม่น้อยกว่ายอดที่จ่ายแล้ว")
+    for key, value in updates.items():
+        setattr(obj, key, value)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -956,10 +1220,9 @@ async def pay_payable(
     payload: PayablePayment,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Payable, payable_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการเจ้าหนี้นี้")
+    obj = await get_company_record(db, Payable, payable_id, company.id, "ไม่พบรายการเจ้าหนี้นี้")
     if obj.status in (PayableStatus.paid, PayableStatus.cancelled):
         raise HTTPException(400, "รายการนี้ไม่สามารถจ่ายได้แล้ว")
 
@@ -968,9 +1231,17 @@ async def pay_payable(
         raise HTTPException(400, f"จำนวนเงินเกินยอดคงค้าง ({remaining:,.2f} บาท)")
 
     if payload.account_id:
-        acc = await db.get(WalletAccount, payload.account_id)
-        if acc and acc.current_balance < payload.amount:
+        acc = await get_company_record(
+            db, WalletAccount, payload.account_id, company.id, "ไม่พบบัญชีที่เลือก"
+        )
+        if acc.current_balance < payload.amount:
             raise HTTPException(400, f"ยอดเงินในบัญชีไม่เพียงพอ")
+    if payload.holder_id:
+        holder = await get_company_record(
+            db, Holder, payload.holder_id, company.id, "ไม่พบ Holder ที่เลือก"
+        )
+        if holder.current_balance < payload.amount:
+            raise HTTPException(400, "ยอด Holder ไม่เพียงพอ")
 
     obj.paid_amount = obj.paid_amount + payload.amount
 
@@ -985,6 +1256,7 @@ async def pay_payable(
         paid_date=payload.paid_date,
         payable_id=payable_id,
         created_by=current_user.id,
+        company_id=company.id,
     )
     db.add(expense)
     await db.flush()
@@ -996,7 +1268,8 @@ async def pay_payable(
     )
 
     await log_activity(db, current_user.id, "pay", "payable", payable_id,
-                       f"จ่ายเจ้าหนี้ {obj.creditor_name} จำนวน {payload.amount:,.2f} บาท")
+                       f"จ่ายเจ้าหนี้ {obj.creditor_name} จำนวน {payload.amount:,.2f} บาท",
+                       company_id=company.id)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -1007,10 +1280,11 @@ async def delete_payable(
     payable_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Payable, payable_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการเจ้าหนี้นี้")
+    obj = await get_company_record(db, Payable, payable_id, company.id, "ไม่พบรายการเจ้าหนี้นี้")
+    if obj.paid_amount > 0:
+        raise HTTPException(400, "ไม่สามารถยกเลิกรายการที่มีการชำระแล้ว")
     obj.status = PayableStatus.cancelled
     await db.commit()
 
@@ -1050,6 +1324,14 @@ async def create_receivable(
     current_user: User = Depends(require_accountant),
     company: Company = Depends(get_current_company),
 ):
+    if payload.expected_account_id:
+        await get_company_record(
+            db, WalletAccount, payload.expected_account_id, company.id, "ไม่พบบัญชีที่เลือก"
+        )
+    if payload.expected_holder_id:
+        await get_company_record(
+            db, Holder, payload.expected_holder_id, company.id, "ไม่พบ Holder ที่เลือก"
+        )
     obj = Receivable(**payload.model_dump(), created_by=current_user.id, company_id=company.id)
     db.add(obj)
     await db.commit()
@@ -1062,26 +1344,28 @@ async def get_receivable(
     receivable_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Receivable, receivable_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการลูกหนี้นี้")
-    return obj
+    return await get_company_record(db, Receivable, receivable_id, company.id, "ไม่พบรายการลูกหนี้นี้")
 
 
 @router.patch("/receivables/{receivable_id}", response_model=ReceivableOut)
 async def update_receivable(
     receivable_id: str,
-    payload: dict,
+    payload: ReceivableUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Receivable, receivable_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการลูกหนี้นี้")
-    for k, v in payload.items():
-        if hasattr(obj, k) and k not in ("id", "created_at", "created_by", "remaining_amount"):
-            setattr(obj, k, v)
+    obj = await get_company_record(db, Receivable, receivable_id, company.id, "ไม่พบรายการลูกหนี้นี้")
+    await ensure_reference_not_reconciled(
+        db, company.id, ("receivable_payment",), receivable_id
+    )
+    updates = payload.model_dump(exclude_unset=True)
+    if updates.get("total_amount") is not None and updates["total_amount"] < obj.received_amount:
+        raise HTTPException(400, "ยอดรวมต้องไม่น้อยกว่ายอดที่รับแล้ว")
+    for key, value in updates.items():
+        setattr(obj, key, value)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -1093,10 +1377,17 @@ async def receive_receivable(
     payload: ReceivablePayment,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Receivable, receivable_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการลูกหนี้นี้")
+    obj = await get_company_record(db, Receivable, receivable_id, company.id, "ไม่พบรายการลูกหนี้นี้")
+    if payload.account_id:
+        await get_company_record(
+            db, WalletAccount, payload.account_id, company.id, "ไม่พบบัญชีที่เลือก"
+        )
+    if payload.holder_id:
+        await get_company_record(
+            db, Holder, payload.holder_id, company.id, "ไม่พบ Holder ที่เลือก"
+        )
     if obj.status in (ReceivableStatus.received, ReceivableStatus.cancelled):
         raise HTTPException(400, "รายการนี้ไม่สามารถรับเงินได้แล้ว")
 
@@ -1116,6 +1407,7 @@ async def receive_receivable(
         received_date=payload.received_date,
         receivable_id=receivable_id,
         created_by=current_user.id,
+        company_id=company.id,
     )
     db.add(income)
     await db.flush()
@@ -1127,7 +1419,8 @@ async def receive_receivable(
     )
 
     await log_activity(db, current_user.id, "receive", "receivable", receivable_id,
-                       f"รับจากลูกหนี้ {obj.debtor_name} จำนวน {payload.amount:,.2f} บาท")
+                       f"รับจากลูกหนี้ {obj.debtor_name} จำนวน {payload.amount:,.2f} บาท",
+                       company_id=company.id)
     await db.commit()
     await db.refresh(obj)
     return obj
@@ -1138,10 +1431,11 @@ async def delete_receivable(
     receivable_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Receivable, receivable_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการลูกหนี้นี้")
+    obj = await get_company_record(db, Receivable, receivable_id, company.id, "ไม่พบรายการลูกหนี้นี้")
+    if obj.received_amount > 0:
+        raise HTTPException(400, "ไม่สามารถยกเลิกรายการที่มีการรับชำระแล้ว")
     obj.status = ReceivableStatus.cancelled
     await db.commit()
 
@@ -1181,13 +1475,21 @@ async def create_transfer(
 ):
     # Validate source balance
     if payload.from_account_id:
-        acc = await db.get(WalletAccount, payload.from_account_id)
-        if acc and acc.current_balance < payload.amount + payload.fee:
+        acc = await get_company_record(
+            db, WalletAccount, payload.from_account_id, company.id, "ไม่พบบัญชีต้นทาง"
+        )
+        if acc.current_balance < payload.amount + payload.fee:
             raise HTTPException(400, f"ยอดเงินในบัญชีต้นทางไม่เพียงพอ (คงเหลือ {acc.current_balance:,.2f} บาท)")
     if payload.from_holder_id:
-        holder = await db.get(Holder, payload.from_holder_id)
-        if holder and holder.current_balance < payload.amount:
+        holder = await get_company_record(
+            db, Holder, payload.from_holder_id, company.id, "ไม่พบ Holder ต้นทาง"
+        )
+        if holder.current_balance < payload.amount:
             raise HTTPException(400, f"ยอด Holder ต้นทางไม่เพียงพอ (คงเหลือ {holder.current_balance:,.2f} บาท)")
+    if payload.to_account_id:
+        await get_company_record(db, WalletAccount, payload.to_account_id, company.id, "ไม่พบบัญชีปลายทาง")
+    if payload.to_holder_id:
+        await get_company_record(db, Holder, payload.to_holder_id, company.id, "ไม่พบ Holder ปลายทาง")
 
     obj = Transfer(**payload.model_dump(), created_by=current_user.id, company_id=company.id)
     db.add(obj)
@@ -1220,10 +1522,10 @@ async def cancel_transfer(
     transfer_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    obj = await db.get(Transfer, transfer_id)
-    if not obj:
-        raise HTTPException(404, "ไม่พบรายการโอนเงินนี้")
+    obj = await get_company_record(db, Transfer, transfer_id, company.id, "ไม่พบรายการโอนเงินนี้")
+    await ensure_reference_not_reconciled(db, company.id, ("transfer",), transfer_id)
     if obj.status == EntryStatus.cancelled:
         raise HTTPException(400, "รายการนี้ถูกยกเลิกแล้ว")
     obj.status = EntryStatus.cancelled
@@ -1231,12 +1533,12 @@ async def cancel_transfer(
     await create_cash_transaction(
         db, "transfer_cancel", transfer_id, CashDirection.IN, obj.amount + obj.fee,
         obj.from_account_id, obj.from_holder_id, date.today(),
-        f"ยกเลิกการโอน (คืนต้นทาง)", current_user.id
+        f"ยกเลิกการโอน (คืนต้นทาง)", current_user.id, company_id=company.id
     )
     await create_cash_transaction(
         db, "transfer_cancel", transfer_id, CashDirection.OUT, obj.amount,
         obj.to_account_id, obj.to_holder_id, date.today(),
-        f"ยกเลิกการโอน (ตัดปลายทาง)", current_user.id
+        f"ยกเลิกการโอน (ตัดปลายทาง)", current_user.id, company_id=company.id
     )
     await db.commit()
 
@@ -1246,7 +1548,9 @@ async def cancel_transfer(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ALLOWED_TYPES = {"image/jpeg", "image/png", "application/pdf",
+                 "image/gif", "image/webp",
                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                  "text/csv"}
 MAX_SIZE = 20 * 1024 * 1024  # 20 MB
 
@@ -1255,11 +1559,12 @@ MAX_SIZE = 20 * 1024 * 1024  # 20 MB
 async def upload_document(
     file: UploadFile = File(...),
     reference_type: str = Form(...),
-    reference_id: str = Form(...),
+    reference_id: Optional[str] = Form(None),
     doc_type: str = Form("other"),
     description: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
     if file.content_type not in ALLOWED_TYPES:
         raise HTTPException(400, f"ประเภทไฟล์ไม่รองรับ: {file.content_type}")
@@ -1268,9 +1573,17 @@ async def upload_document(
     if len(contents) > MAX_SIZE:
         raise HTTPException(400, "ไฟล์มีขนาดใหญ่เกินไป (สูงสุด 20 MB)")
 
-    ext = os.path.splitext(file.filename or "")[1]
+    safe_reference_type = reference_type.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_-]{1,50}", safe_reference_type):
+        raise HTTPException(400, "reference_type ไม่ถูกต้อง")
+    clean_reference_id = reference_id.strip() if reference_id and reference_id.strip() else None
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
     save_name = f"{uuid.uuid4()}{ext}"
-    save_path = os.path.join(UPLOAD_DIR, reference_type, reference_id)
+    save_path = os.path.join(
+        UPLOAD_DIR, str(company.id), safe_reference_type,
+        re.sub(r"[^a-zA-Z0-9_.-]", "_", clean_reference_id or "general"),
+    )
     os.makedirs(save_path, exist_ok=True)
     full_path = os.path.join(save_path, save_name)
 
@@ -1278,8 +1591,8 @@ async def upload_document(
         f.write(contents)
 
     doc = Document(
-        reference_type=reference_type,
-        reference_id=reference_id,
+        reference_type=safe_reference_type,
+        reference_id=clean_reference_id,
         file_name=file.filename or save_name,
         file_path=full_path,
         file_type=file.content_type,
@@ -1287,6 +1600,7 @@ async def upload_document(
         doc_type=doc_type,
         description=description,
         uploaded_by=current_user.id,
+        company_id=company.id,
     )
     db.add(doc)
     await db.commit()
@@ -1340,15 +1654,38 @@ async def list_documents(
 
 @router.get("/documents/{doc_id}/download")
 async def download_document(
-    doc_id: int,
+    doc_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
 ):
-    from fastapi.responses import FileResponse
-    doc = await db.get(Document, doc_id)
-    if not doc or not os.path.exists(doc.file_path):
+    doc = await get_company_record(db, Document, doc_id, company.id, "ไม่พบไฟล์นี้")
+    if not os.path.exists(doc.file_path):
         raise HTTPException(404, "ไม่พบไฟล์นี้")
     return FileResponse(doc.file_path, filename=doc.file_name, media_type=doc.file_type or "application/octet-stream")
+
+
+@router.post("/documents/{doc_id}/extract")
+async def extract_document_data(
+    doc_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
+):
+    """อ่านภาพใบเสร็จ/ใบกำกับภาษีด้วย local vision model (Ollama) แล้วดึงข้อมูลออกมา
+    ให้ frontend เอาไป pre-fill ฟอร์มรายรับ/รายจ่าย — รันในเครื่อง host ไม่มีค่าใช้จ่ายต่อครั้ง"""
+    doc = await get_company_record(db, Document, doc_id, company.id, "ไม่พบเอกสารนี้")
+    if not doc.file_type or not doc.file_type.startswith("image/"):
+        raise HTTPException(400, "รองรับเฉพาะไฟล์ภาพ (JPEG/PNG/WEBP) สำหรับการอ่านข้อมูลอัตโนมัติ")
+    if not os.path.exists(doc.file_path):
+        raise HTTPException(404, "ไม่พบไฟล์นี้บนเซิร์ฟเวอร์")
+
+    try:
+        extracted = await extract_receipt_data(doc.file_path)
+    except OcrServiceError as exc:
+        raise HTTPException(502, str(exc))
+
+    return {"document_id": doc.id, "extracted": extracted}
 
 
 @router.delete("/documents/{doc_id}", status_code=204)
@@ -1356,10 +1693,9 @@ async def delete_document(
     doc_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    doc = await db.get(Document, doc_id)
-    if not doc:
-        raise HTTPException(404, "ไม่พบเอกสารนี้")
+    doc = await get_company_record(db, Document, doc_id, company.id, "ไม่พบเอกสารนี้")
     if os.path.exists(doc.file_path):
         os.remove(doc.file_path)
     await db.delete(doc)
@@ -1790,13 +2126,19 @@ async def get_cashflow_report(
 
 class BudgetIn(BaseModel):
     name: str
-    budget_type: str = "expense"
+    budget_type: Literal["expense", "income", "overall"] = "expense"
     category_id: Optional[int] = None
-    period_type: str = "monthly"
+    period_type: Literal["monthly", "quarterly", "yearly", "custom"] = "monthly"
     start_date: date
     end_date: date
-    amount: condecimal(max_digits=15, decimal_places=2)
+    amount: condecimal(gt=0, max_digits=15, decimal_places=2)
     notes: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_date_range(self):
+        if self.end_date < self.start_date:
+            raise ValueError("วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น")
+        return self
 
 class BudgetOut(BaseModel):
     id: int
@@ -1821,20 +2163,30 @@ async def list_budgets(
     company: Company = Depends(get_current_company),
 ):
     result = await db.execute(
-        select(text("*")).select_from(text("budgets")).where(text(f"is_active = TRUE AND company_id = {company.id}")).order_by(text("start_date DESC"))
+        text("""
+            SELECT * FROM budgets
+            WHERE is_active = TRUE AND company_id = :company_id
+            ORDER BY start_date DESC
+        """),
+        {"company_id": company.id},
     )
     rows = result.mappings().all()
     budgets = []
     for r in rows:
         # calc spent from expense_entries in the period
-        cat_filter = f"AND category_id = {r['category_id']}" if r['category_id'] else ""
+        category_clause = "AND category_id = :category_id" if r["category_id"] is not None else ""
         spent_q = await db.execute(text(f"""
             SELECT COALESCE(SUM(net_amount),0) FROM expense_entries
             WHERE status='completed'
-            AND company_id = {company.id}
-            AND expense_date >= '{r['start_date']}' AND expense_date <= '{r['end_date']}'
-            {cat_filter}
-        """))
+            AND company_id = :company_id
+            AND expense_date >= :start_date AND expense_date <= :end_date
+            {category_clause}
+        """), {
+            "company_id": company.id,
+            "start_date": r["start_date"],
+            "end_date": r["end_date"],
+            "category_id": r["category_id"],
+        })
         spent = float(spent_q.scalar() or 0)
         amt = float(r['amount'])
         budgets.append({
@@ -1855,16 +2207,16 @@ async def create_budget(
     current_user: User = Depends(require_accountant),
     company: Company = Depends(get_current_company),
 ):
-    await db.execute(text("""
+    result = await db.execute(text("""
         INSERT INTO budgets (name, budget_type, category_id, period_type, start_date, end_date, amount, notes, company_id)
         VALUES (:name, :budget_type, :category_id, :period_type, :start_date, :end_date, :amount, :notes, :company_id)
+        RETURNING *
     """), {"name": payload.name, "budget_type": payload.budget_type,
            "category_id": payload.category_id, "period_type": payload.period_type,
            "start_date": payload.start_date, "end_date": payload.end_date,
-           "amount": float(payload.amount), "notes": payload.notes, "company_id": company.id})
+           "amount": payload.amount, "notes": payload.notes, "company_id": company.id})
+    row = result.mappings().one()
     await db.commit()
-    result = await db.execute(text("SELECT * FROM budgets ORDER BY id DESC LIMIT 1"))
-    row = result.mappings().first()
     return dict(row)
 
 @router.patch("/budgets/{budget_id}")
@@ -1873,27 +2225,41 @@ async def update_budget(
     payload: BudgetIn,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    await db.execute(text("""
+    result = await db.execute(text("""
         UPDATE budgets SET name=:name, budget_type=:budget_type, category_id=:category_id,
         period_type=:period_type, start_date=:start_date, end_date=:end_date,
         amount=:amount, notes=:notes, updated_at=NOW()
-        WHERE id=:id
-    """), {"id": budget_id, "name": payload.name, "budget_type": payload.budget_type,
+        WHERE id=:id AND company_id=:company_id
+        RETURNING *
+    """), {"id": budget_id, "company_id": company.id,
+           "name": payload.name, "budget_type": payload.budget_type,
            "category_id": payload.category_id, "period_type": payload.period_type,
            "start_date": payload.start_date, "end_date": payload.end_date,
-           "amount": float(payload.amount), "notes": payload.notes})
+           "amount": payload.amount, "notes": payload.notes})
+    row = result.mappings().first()
+    if not row:
+        raise HTTPException(404, "ไม่พบงบประมาณนี้")
     await db.commit()
-    result = await db.execute(text("SELECT * FROM budgets WHERE id=:id"), {"id": budget_id})
-    return dict(result.mappings().first())
+    return dict(row)
 
 @router.delete("/budgets/{budget_id}", status_code=204)
 async def delete_budget(
     budget_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    await db.execute(text("UPDATE budgets SET is_active=FALSE WHERE id=:id"), {"id": budget_id})
+    result = await db.execute(
+        text("""
+            UPDATE budgets SET is_active=FALSE, updated_at=NOW()
+            WHERE id=:id AND company_id=:company_id
+        """),
+        {"id": budget_id, "company_id": company.id},
+    )
+    if result.rowcount == 0:
+        raise HTTPException(404, "ไม่พบงบประมาณนี้")
     await db.commit()
 
 
@@ -1901,12 +2267,44 @@ async def delete_budget(
 # COMPANY SETTINGS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class SettingsUpdate(BaseModel):
+    company_name: Optional[str] = None
+    company_name_en: Optional[str] = None
+    tax_id: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    website: Optional[str] = None
+    fiscal_year_start_month: Optional[int] = Field(default=None, ge=1, le=12)
+    default_currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    vat_rate: Optional[Decimal] = Field(default=None, ge=0, le=100)
+    crm_kawin_is_active: Optional[bool] = None
+    crm_kawin_base_url: Optional[str] = None
+    crm_kawin_orders_path: Optional[str] = None
+    crm_kawin_api_token: Optional[str] = None
+    crm_kawin_external_company_id: Optional[str] = None
+
+
+async def _get_crm_kawin_integration(
+    db: AsyncSession,
+    company_id: int,
+) -> CompanyIntegration | None:
+    result = await db.execute(
+        select(CompanyIntegration).where(
+            CompanyIntegration.company_id == company_id,
+            CompanyIntegration.provider == "crm_kawin",
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 @router.get("/settings")
 async def get_settings(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
+    crm_integration = await _get_crm_kawin_integration(db, company.id)
     # Return company fields as settings dict
     return {
         "company_name": company.name_th,
@@ -1919,15 +2317,32 @@ async def get_settings(
         "fiscal_year_start_month": company.fiscal_year_start_month,
         "default_currency": company.default_currency,
         "vat_rate": float(company.vat_rate),
+        "crm_kawin_is_active": bool(crm_integration.is_active) if crm_integration else False,
+        "crm_kawin_base_url": crm_integration.base_url if crm_integration else "",
+        "crm_kawin_orders_path": (
+            crm_integration.orders_path
+            if crm_integration and crm_integration.orders_path
+            else "/api/accounting/get_list_order.php"
+        ),
+        "crm_kawin_api_token_configured": bool(crm_integration and crm_integration.api_token),
+        "crm_kawin_external_company_id": crm_integration.external_company_id if crm_integration else "",
     }
 
 @router.patch("/settings")
 async def update_settings(
-    payload: dict,
+    payload: SettingsUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
     company: Company = Depends(get_current_company),
 ):
+    integration_keys = {
+        "crm_kawin_is_active",
+        "crm_kawin_base_url",
+        "crm_kawin_orders_path",
+        "crm_kawin_api_token",
+        "crm_kawin_external_company_id",
+    }
+    payload_data = payload.model_dump(exclude_unset=True)
     field_map = {
         "company_name": "name_th", "company_name_en": "name_en",
         "tax_id": "tax_id", "address": "address", "phone": "phone",
@@ -1935,16 +2350,55 @@ async def update_settings(
         "fiscal_year_start_month": "fiscal_year_start_month",
         "default_currency": "default_currency", "vat_rate": "vat_rate",
     }
-    for key, value in payload.items():
+    for key, value in payload_data.items():
+        if key in integration_keys:
+            continue
         db_field = field_map.get(key, key)
         if hasattr(company, db_field) and db_field not in ("id", "code", "created_at"):
             setattr(company, db_field, value)
+
+    if integration_keys.intersection(payload_data):
+        crm_integration = await _get_crm_kawin_integration(db, company.id)
+        if not crm_integration:
+            crm_integration = CompanyIntegration(
+                company_id=company.id,
+                provider="crm_kawin",
+                orders_path="/api/accounting/get_list_order.php",
+            )
+            db.add(crm_integration)
+
+        if "crm_kawin_is_active" in payload_data:
+            crm_integration.is_active = bool(payload.crm_kawin_is_active)
+        if "crm_kawin_base_url" in payload_data:
+            crm_integration.base_url = (payload.crm_kawin_base_url or "").strip() or None
+        if "crm_kawin_orders_path" in payload_data:
+            crm_integration.orders_path = (
+                (payload.crm_kawin_orders_path or "").strip()
+                or "/api/accounting/get_list_order.php"
+            )
+        if "crm_kawin_external_company_id" in payload_data:
+            crm_integration.external_company_id = (
+                (payload.crm_kawin_external_company_id or "").strip() or None
+            )
+        if payload.crm_kawin_api_token:
+            crm_integration.api_token = payload.crm_kawin_api_token.strip()
+
     await db.commit()
     await db.refresh(company)
+    crm_integration = await _get_crm_kawin_integration(db, company.id)
     return {
         "company_name": company.name_th, "company_name_en": company.name_en,
         "tax_id": company.tax_id, "address": company.address,
         "phone": company.phone, "email": company.email, "website": company.website,
         "fiscal_year_start_month": company.fiscal_year_start_month,
         "default_currency": company.default_currency, "vat_rate": float(company.vat_rate),
+        "crm_kawin_is_active": bool(crm_integration.is_active) if crm_integration else False,
+        "crm_kawin_base_url": crm_integration.base_url if crm_integration else "",
+        "crm_kawin_orders_path": (
+            crm_integration.orders_path
+            if crm_integration and crm_integration.orders_path
+            else "/api/accounting/get_list_order.php"
+        ),
+        "crm_kawin_api_token_configured": bool(crm_integration and crm_integration.api_token),
+        "crm_kawin_external_company_id": crm_integration.external_company_id if crm_integration else "",
     }

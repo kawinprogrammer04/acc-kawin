@@ -15,6 +15,7 @@ class User(Base):
     full_name: Mapped[str | None] = mapped_column(String(200))
     # admin | approver | accountant | viewer
     role: Mapped[str] = mapped_column(String(30), nullable=False, default="accountant")
+    is_platform_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_login: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

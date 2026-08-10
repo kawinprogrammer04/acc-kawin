@@ -4,8 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.core.dependencies import require_accountant, require_admin, require_viewer
+from app.core.dependencies import get_current_company, require_accountant, require_admin, require_viewer
 from app.models.account import Account
+from app.models.company import Company
 from app.models.user import User
 from app.schemas.account import AccountCreate, AccountOut, AccountTree, AccountUpdate
 
@@ -19,8 +20,9 @@ async def list_accounts(
     is_header: bool | None = Query(None),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
-    stmt = select(Account).order_by(Account.code)
+    stmt = select(Account).where(Account.company_id == company.id).order_by(Account.code)
     if account_type:
         stmt = stmt.where(cast(Account.account_type, String) == account_type)
     if is_active is not None:
@@ -35,10 +37,14 @@ async def list_accounts(
 async def get_account_tree(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     """ดึงผังบัญชีแบบ Tree (parent → children)"""
     result = await db.execute(
-        select(Account).options(selectinload(Account.children)).order_by(Account.code)
+        select(Account)
+        .options(selectinload(Account.children))
+        .where(Account.company_id == company.id)
+        .order_by(Account.code)
     )
     all_accounts = result.scalars().all()
 
@@ -57,11 +63,16 @@ async def get_account_tree(
 async def get_postable_accounts(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     """บัญชีที่ Post ได้ (is_header=False, is_active=True)"""
     result = await db.execute(
         select(Account)
-        .where(Account.is_header == False, Account.is_active == True)  # noqa: E712
+        .where(
+            Account.company_id == company.id,
+            Account.is_header == False,
+            Account.is_active == True,
+        )  # noqa: E712
         .order_by(Account.code)
     )
     return result.scalars().all()
@@ -72,8 +83,11 @@ async def get_account(
     account_id: int,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
-    account = await db.get(Account, account_id)
+    account = (await db.execute(
+        select(Account).where(Account.id == account_id, Account.company_id == company.id)
+    )).scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="ไม่พบบัญชีนี้")
     return account
@@ -84,19 +98,27 @@ async def create_account(
     payload: AccountCreate,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    existing = await db.execute(select(Account).where(Account.code == payload.code))
+    existing = await db.execute(
+        select(Account).where(Account.code == payload.code, Account.company_id == company.id)
+    )
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail=f"รหัสบัญชี {payload.code} มีอยู่แล้ว")
 
     if payload.parent_id:
-        parent = await db.get(Account, payload.parent_id)
+        parent = (await db.execute(
+            select(Account).where(
+                Account.id == payload.parent_id,
+                Account.company_id == company.id,
+            )
+        )).scalar_one_or_none()
         if not parent:
             raise HTTPException(status_code=400, detail="ไม่พบบัญชีแม่")
         if not parent.is_header:
             raise HTTPException(status_code=400, detail="บัญชีแม่ต้องเป็น Header Account")
 
-    account = Account(**payload.model_dump())
+    account = Account(**payload.model_dump(), company_id=company.id)
     db.add(account)
     await db.commit()
     await db.refresh(account)
@@ -109,8 +131,11 @@ async def update_account(
     payload: AccountUpdate,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
-    account = await db.get(Account, account_id)
+    account = (await db.execute(
+        select(Account).where(Account.id == account_id, Account.company_id == company.id)
+    )).scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="ไม่พบบัญชีนี้")
 
@@ -127,8 +152,11 @@ async def delete_account(
     account_id: int,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_admin),
+    company: Company = Depends(get_current_company),
 ):
-    account = await db.get(Account, account_id)
+    account = (await db.execute(
+        select(Account).where(Account.id == account_id, Account.company_id == company.id)
+    )).scalar_one_or_none()
     if not account:
         raise HTTPException(status_code=404, detail="ไม่พบบัญชีนี้")
 

@@ -6,7 +6,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
-from app.core.dependencies import require_accountant, require_approver, require_viewer
+from app.core.dependencies import get_current_company, require_accountant, require_approver, require_viewer
+from app.models.company import Company
 from app.models.journal import Journal, JournalLine
 from app.models.user import User
 from app.schemas.journal import JournalCreate, JournalLineOut, JournalOut, VoidRequest
@@ -39,10 +40,12 @@ async def list_journals(
     offset: int = Query(0),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     stmt = (
         select(Journal)
         .options(selectinload(Journal.lines).selectinload(JournalLine.account))
+        .where(Journal.company_id == company.id)
         .order_by(Journal.entry_date.desc(), Journal.entry_number.desc())
         .limit(limit)
         .offset(offset)
@@ -61,11 +64,12 @@ async def get_journal(
     journal_id: str,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     result = await db.execute(
         select(Journal)
         .options(selectinload(Journal.lines).selectinload(JournalLine.account))
-        .where(Journal.id == journal_id)
+        .where(Journal.id == journal_id, Journal.company_id == company.id)
     )
     journal = result.scalar_one_or_none()
     if not journal:
@@ -78,16 +82,17 @@ async def create_journal_entry(
     payload: JournalCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
     try:
-        journal = await create_journal(db, payload, current_user.id)
+        journal = await create_journal(db, payload, current_user.id, company.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     result = await db.execute(
         select(Journal)
         .options(selectinload(Journal.lines).selectinload(JournalLine.account))
-        .where(Journal.id == journal.id)
+        .where(Journal.id == journal.id, Journal.company_id == company.id)
     )
     return _enrich_journal(result.scalar_one())
 
@@ -97,17 +102,18 @@ async def post_journal_entry(
     journal_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_approver),
+    company: Company = Depends(get_current_company),
 ):
     """Post Journal Entry (ต้องการสิทธิ์ approver ขึ้นไป)"""
     try:
-        journal = await post_journal(db, journal_id, current_user.id)
+        journal = await post_journal(db, journal_id, current_user.id, company.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     result = await db.execute(
         select(Journal)
         .options(selectinload(Journal.lines).selectinload(JournalLine.account))
-        .where(Journal.id == journal.id)
+        .where(Journal.id == journal.id, Journal.company_id == company.id)
     )
     return _enrich_journal(result.scalar_one())
 
@@ -118,17 +124,18 @@ async def void_journal_entry(
     payload: VoidRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_approver),
+    company: Company = Depends(get_current_company),
 ):
     """Void Journal Entry (ต้องการสิทธิ์ approver ขึ้นไป)"""
     try:
-        journal = await void_journal(db, journal_id, payload.reason, current_user.id)
+        journal = await void_journal(db, journal_id, payload.reason, current_user.id, company.id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     result = await db.execute(
         select(Journal)
         .options(selectinload(Journal.lines).selectinload(JournalLine.account))
-        .where(Journal.id == journal.id)
+        .where(Journal.id == journal.id, Journal.company_id == company.id)
     )
     return _enrich_journal(result.scalar_one())
 
@@ -138,9 +145,12 @@ async def delete_draft_journal(
     journal_id: str,
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_accountant),
+    company: Company = Depends(get_current_company),
 ):
     """ลบ Journal ที่ยังเป็น Draft เท่านั้น"""
-    journal = await db.get(Journal, journal_id)
+    journal = (await db.execute(
+        select(Journal).where(Journal.id == journal_id, Journal.company_id == company.id)
+    )).scalar_one_or_none()
     if not journal:
         raise HTTPException(status_code=404, detail="ไม่พบ Journal Entry")
     if journal.status != "draft":

@@ -11,8 +11,10 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import require_viewer
+from app.core.dependencies import get_current_company, require_viewer
 from app.core.database import get_db
+from app.models.company import Company
+from app.models.user import User
 from app.services.report_queries import (
     query_income_expense,
     query_pp30,
@@ -38,10 +40,11 @@ async def download_pp30(
     year: int = Query(..., ge=2000, le=2100, description="ปี ค.ศ."),
     month: int = Query(..., ge=1, le=12, description="เดือน 1-12"),
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(require_viewer),
+    _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     """ดาวน์โหลด ภพ.30 (VAT monthly report) เป็น PDF."""
-    data = await query_pp30(db, year, month)
+    data = await query_pp30(db, year, month, company)
     pdf = render_pdf("pp30.html", data)
     return _pdf_response(pdf, f"PP30_{year}_{month:02d}.pdf")
 
@@ -51,10 +54,11 @@ async def download_wht50(
     year: int = Query(..., ge=2000, le=2100, description="ปี ค.ศ."),
     month: int = Query(..., ge=1, le=12, description="เดือน 1-12"),
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(require_viewer),
+    _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     """ดาวน์โหลด หัก ณ ที่จ่าย 50 ทวิ เป็น PDF."""
-    data = await query_wht50(db, year, month)
+    data = await query_wht50(db, year, month, company)
     pdf = render_pdf("wht_50twi.html", data)
     return _pdf_response(pdf, f"WHT50_{year}_{month:02d}.pdf")
 
@@ -65,10 +69,13 @@ async def download_income_expense(
     period_from: int = Query(..., ge=1, le=12, description="งวดเริ่มต้น"),
     period_to: int = Query(..., ge=1, le=12, description="งวดสิ้นสุด"),
     db: AsyncSession = Depends(get_db),
-    _: None = Depends(require_viewer),
+    _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     """ดาวน์โหลดรายงานรายได้-ค่าใช้จ่าย เป็น PDF."""
-    data = await query_income_expense(db, fiscal_year_id, period_from, period_to)
+    data = await query_income_expense(
+        db, fiscal_year_id, period_from, period_to, company
+    )
     pdf = render_pdf("income_expense.html", data)
     label = f"P{period_from:02d}-P{period_to:02d}"
     return _pdf_response(pdf, f"IncExp_FY{fiscal_year_id}_{label}.pdf")

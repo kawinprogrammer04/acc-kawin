@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/layout/PageHeader";
 import { expensesApi, walletAccountsApi, holdersApi, categoriesApi } from "@/api/cashflow";
 import type { ExpenseEntry, WalletAccount, Holder, CashflowCategory } from "@/api/cashflow";
 import { formatCurrency, formatDate, STATUS_COLORS, STATUS_LABELS, today, monthStart } from "@/lib/format";
+import { useNavigate } from "react-router-dom";
 
 const VAT_RATE = 0.07;
 
@@ -197,6 +198,7 @@ function ExpenseForm({
 }
 
 export function ExpensePage() {
+  const navigate = useNavigate();
   const [items, setItems] = useState<ExpenseEntry[]>([]);
   const [accounts, setAccounts] = useState<WalletAccount[]>([]);
   const [holders, setHolders] = useState<Holder[]>([]);
@@ -246,10 +248,16 @@ export function ExpensePage() {
   return (
     <div className="p-6 space-y-4">
       <PageHeader title="รายจ่าย" subtitle="บันทึกและติดตามรายจ่ายทั้งหมด">
-        <button onClick={() => setShowForm(true)}
-          className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90">
-          <Plus className="h-4 w-4" /> เพิ่มรายจ่าย
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setShowForm(true)}
+            className="flex items-center gap-2 rounded-md border bg-background px-4 py-2 text-sm hover:bg-muted">
+            <Plus className="h-4 w-4" /> เพิ่มรายจ่าย
+          </button>
+          <button onClick={() => navigate("/expense-requests/create?step=0")}
+            className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90">
+            <FileText className="h-4 w-4" /> สร้างคำขอ
+          </button>
+        </div>
       </PageHeader>
 
       <div className="grid grid-cols-3 gap-4">

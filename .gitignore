@@ -2,6 +2,11 @@
 .env
 .env.production
 .env.local
+.env.*
+!.env.example
+!.env.local.example
+!.env.production.example
+!frontend/.env.local.example
 
 # SSL certs — regenerated per environment
 nginx/ssl/
@@ -29,3 +34,8 @@ frontend/dist/
 
 # DB backups (local only)
 *_backup_*.sql
+
+# Generated local exports / scratch files
+output/
+outputs/
+tmp/

@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
-import { Loader2, Building2, Save } from "lucide-react";
+import { Building2, KeyRound, Loader2, Plug, Save } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { api } from "@/api/client";
+import { api, getApiErrorMessage } from "@/api/client";
 
 interface CompanySettings {
   company_name: string;
@@ -16,6 +16,12 @@ interface CompanySettings {
   fiscal_year_start_month: number;
   default_currency: string;
   vat_rate: number;
+  crm_kawin_is_active: boolean;
+  crm_kawin_base_url?: string;
+  crm_kawin_orders_path?: string;
+  crm_kawin_api_token?: string;
+  crm_kawin_api_token_configured?: boolean;
+  crm_kawin_external_company_id?: string;
 }
 
 const MONTHS = [
@@ -41,6 +47,12 @@ export function CompanySettingsPage() {
     fiscal_year_start_month: 1,
     default_currency: "THB",
     vat_rate: 7,
+    crm_kawin_is_active: false,
+    crm_kawin_base_url: "",
+    crm_kawin_orders_path: "/api/accounting/get_list_order.php",
+    crm_kawin_api_token: "",
+    crm_kawin_api_token_configured: false,
+    crm_kawin_external_company_id: "",
   });
 
   useEffect(() => {
@@ -53,6 +65,12 @@ export function CompanySettingsPage() {
             ...d,
             fiscal_year_start_month: d.fiscal_year_start_month ? Number(d.fiscal_year_start_month) : f.fiscal_year_start_month,
             vat_rate: d.vat_rate ? Number(d.vat_rate) : f.vat_rate,
+            crm_kawin_is_active: Boolean(d.crm_kawin_is_active),
+            crm_kawin_base_url: d.crm_kawin_base_url ?? "",
+            crm_kawin_orders_path: d.crm_kawin_orders_path || "/api/accounting/get_list_order.php",
+            crm_kawin_api_token: "",
+            crm_kawin_api_token_configured: Boolean(d.crm_kawin_api_token_configured),
+            crm_kawin_external_company_id: d.crm_kawin_external_company_id ?? "",
           }));
         }
       })
@@ -60,7 +78,7 @@ export function CompanySettingsPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  function update(key: keyof CompanySettings, val: string | number) {
+  function update(key: keyof CompanySettings, val: string | number | boolean) {
     setForm(f => ({ ...f, [key]: val }));
     setSaved(false);
   }
@@ -69,10 +87,19 @@ export function CompanySettingsPage() {
     if (!form.company_name) { setError("กรุณากรอกชื่อบริษัท"); return; }
     setSaving(true); setError("");
     try {
-      await api.patch("/settings", form);
+      const res = await api.patch("/settings", form);
+      const d = res.data;
+      setForm(f => ({
+        ...f,
+        ...d,
+        fiscal_year_start_month: d.fiscal_year_start_month ? Number(d.fiscal_year_start_month) : f.fiscal_year_start_month,
+        vat_rate: d.vat_rate ? Number(d.vat_rate) : f.vat_rate,
+        crm_kawin_api_token: "",
+        crm_kawin_api_token_configured: Boolean(d.crm_kawin_api_token_configured),
+      }));
       setSaved(true);
-    } catch (e: any) {
-      setError(e.response?.data?.detail ?? "เกิดข้อผิดพลาด");
+    } catch (e: unknown) {
+      setError(getApiErrorMessage(e));
     } finally { setSaving(false); }
   }
 
@@ -223,6 +250,61 @@ export function CompanySettingsPage() {
                   onChange={e => update("vat_rate", Number(e.target.value))}
                   min={0} max={100} step={0.1}
                 />
+              </Field>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                <Plug className="h-4 w-4" /> เชื่อมต่อ CRM Kawin
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border"
+                  checked={form.crm_kawin_is_active}
+                  onChange={e => update("crm_kawin_is_active", e.target.checked)}
+                />
+                เปิดใช้การดึงออเดอร์จาก CRM ของบริษัทนี้
+              </label>
+              <Field label="CRM Base URL">
+                <input
+                  className="w-full rounded-md border px-3 py-2 text-sm"
+                  value={form.crm_kawin_base_url ?? ""}
+                  onChange={e => update("crm_kawin_base_url", e.target.value)}
+                  placeholder="https://crm.kawinbrothers.com"
+                />
+              </Field>
+              <Field label="Orders API Path">
+                <input
+                  className="w-full rounded-md border px-3 py-2 text-sm"
+                  value={form.crm_kawin_orders_path ?? ""}
+                  onChange={e => update("crm_kawin_orders_path", e.target.value)}
+                  placeholder="/api/accounting/get_list_order.php"
+                />
+              </Field>
+              <Field label="รหัสบริษัทใน CRM (comp_id)">
+                <input
+                  className="w-full rounded-md border px-3 py-2 text-sm"
+                  value={form.crm_kawin_external_company_id ?? ""}
+                  onChange={e => update("crm_kawin_external_company_id", e.target.value)}
+                  placeholder="เช่น 1"
+                />
+              </Field>
+              <Field label={form.crm_kawin_api_token_configured ? "API Token (ตั้งค่าแล้ว ใส่ใหม่เมื่อต้องการเปลี่ยน)" : "API Token"}>
+                <div className="relative">
+                  <KeyRound className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                  <input
+                    type="password"
+                    className="w-full rounded-md border px-9 py-2 text-sm"
+                    value={form.crm_kawin_api_token ?? ""}
+                    onChange={e => update("crm_kawin_api_token", e.target.value)}
+                    placeholder={form.crm_kawin_api_token_configured ? "เว้นว่างไว้เพื่อใช้ token เดิม" : "ใส่ token ที่ตรงกับ ACCOUNTING_API_TOKEN ฝั่ง CRM"}
+                  />
+                </div>
               </Field>
             </CardContent>
           </Card>
