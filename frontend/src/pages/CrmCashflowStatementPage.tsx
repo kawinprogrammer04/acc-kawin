@@ -10,8 +10,10 @@ import {
   type CrmCashflowAttachment,
   type CrmCashflowCategory,
   type CrmCashflowDepartment,
+  type CrmCashflowInvoiceStatus,
   type CrmCashflowSource,
   type CrmCashflowStatement,
+  type CrmCashflowVerificationStatus,
   type CrmStatementInput,
   type DuplicateAction,
   type ImportPreview,
@@ -65,6 +67,8 @@ export function CrmCashflowStatementPage() {
   const [dateStart, setDateStart] = useState(today());
   const [dateEnd, setDateEnd] = useState(today());
   const [categoryFilter, setCategoryFilter] = useState("");
+  const [verificationFilter, setVerificationFilter] = useState<"" | CrmCashflowVerificationStatus>("");
+  const [invoiceFilter, setInvoiceFilter] = useState<"" | CrmCashflowInvoiceStatus>("");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -145,6 +149,8 @@ export function CrmCashflowStatementPage() {
         start_date: dateStart || undefined,
         end_date: dateEnd || undefined,
         cfcat_id: categoryFilter ? Number(categoryFilter) : undefined,
+        verification_status: verificationFilter || undefined,
+        invoice_status: invoiceFilter || undefined,
       });
       setRows(result.items);
       setSumRevenue(result.sum_revenue);
@@ -154,7 +160,7 @@ export function CrmCashflowStatementPage() {
     } finally {
       setLoading(false);
     }
-  }, [dateStart, dateEnd, categoryFilter]);
+  }, [dateStart, dateEnd, categoryFilter, verificationFilter, invoiceFilter]);
 
   useEffect(() => {
     loadMasters().catch((requestError) => showError(errorMessage(requestError)));
@@ -415,6 +421,8 @@ export function CrmCashflowStatementPage() {
           <Button variant="outline" onClick={() => crmCashflowApi.exportStatements({
             start_date: dateStart, end_date: dateEnd,
             cfcat_id: categoryFilter ? Number(categoryFilter) : undefined,
+            verification_status: verificationFilter || undefined,
+            invoice_status: invoiceFilter || undefined,
           })}><FileSpreadsheet className="h-4 w-4" />Excel</Button>
         </Can>
         <Can menuKey={MENU_KEY} action="create">
@@ -460,6 +468,36 @@ export function CrmCashflowStatementPage() {
               options={[{ value: "", label: "ทั้งหมด" }, ...activeCategories.map((item) => ({ value: String(item.cfcat_id), label: item.cfcat_name }))]}
             />
           </div>
+          <div className="min-w-44 space-y-1 text-xs">การตรวจสอบ
+            <Combobox
+              className="h-9 bg-white text-sm"
+              value={verificationFilter}
+              onChange={(value) => setVerificationFilter(value as "" | CrmCashflowVerificationStatus)}
+              placeholder="ทั้งหมด"
+              options={[
+                { value: "", label: "ทั้งหมด" },
+                { value: "pending", label: "รอตรวจสอบ" },
+                { value: "verified", label: "ตรวจสอบแล้ว" },
+              ]}
+            />
+          </div>
+          <div className="min-w-48 space-y-1 text-xs">ใบกำกับภาษี
+            <Combobox
+              className="h-9 bg-white text-sm"
+              value={invoiceFilter}
+              onChange={(value) => setInvoiceFilter(value as "" | CrmCashflowInvoiceStatus)}
+              placeholder="ทั้งหมด"
+              options={[
+                { value: "", label: "ทั้งหมด" },
+                { value: "none", label: "ไม่มีใบกำกับ" },
+                { value: "pending", label: "รอใบกำกับ" },
+                { value: "received", label: "ได้รับแล้ว" },
+                { value: "tax_invoice", label: "ใบกำกับภาษี" },
+                { value: "cash_bill", label: "บิลเงินสด" },
+                { value: "other", label: "อื่นๆ" },
+              ]}
+            />
+          </div>
           <Button variant="outline" onClick={loadRows}><RefreshCw className="h-4 w-4" />ดูรายงาน</Button>
           <Can menuKey={MENU_KEY} action="update">
             <Button variant="outline" onClick={() => setMasterOpen(true)}><Settings2 className="h-4 w-4" />จัดการข้อมูลตั้งต้น</Button>
@@ -475,7 +513,7 @@ export function CrmCashflowStatementPage() {
               <td className="px-3 py-2">{index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td>
               <td className="px-3 py-2">{row.cfcat_name}</td><td className="px-3 py-2">{row.cflist_name}</td>
               <td className="max-w-56 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td>
-              <td className="px-3 py-2"><InvoiceStatusBadge invoice={row.cfstate_invoice} /></td>
+              <td className="px-3 py-2"><InvoiceStatusBadge invoice={row.cfstate_invoice} documentType={row.cfstate_document_type} /></td>
               <td className="px-3 py-2 text-center">{row.cfstate_verified === 1 && <Check className="mx-auto h-4 w-4 text-emerald-600" />}</td>
               <td className="px-3 py-2"><Switch checked={row.cfstate_refrain === 1} onCheckedChange={(checked) => updateFlag(row.cfstate_id, { cfstate_refrain: checked ? 1 : 0 })} /></td>
               <td className="px-3 py-2 text-right text-emerald-700">{row.cfstate_amount > 0 ? money(row.cfstate_amount) : "0.00"}</td>

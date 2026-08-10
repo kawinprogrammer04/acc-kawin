@@ -72,6 +72,7 @@ class CrmCashflowStatement(Base):
     cfstate_amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     cfstate_refrain: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     cfstate_invoice: Mapped[Optional[int]] = mapped_column(SmallInteger)
+    cfstate_document_type: Mapped[Optional[str]] = mapped_column(String(30))
     # Set automatically once the invoice is marked "ได้รับแล้ว" from
     # /crm-cashflow/invoices — a separate, sticky "ตรวจสอบแล้ว" flag shown on
     # /crm-cashflow/statements (not user-editable there).

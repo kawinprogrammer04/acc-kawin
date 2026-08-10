@@ -10,7 +10,7 @@ import io
 import json
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import os
 from pathlib import Path
@@ -45,6 +45,18 @@ from app.models.user import User
 
 
 router = APIRouter(prefix="/crm-cashflow", tags=["CRM Cashflow"])
+
+DocumentType = Literal["tax_invoice", "cash_bill", "other"]
+VerificationStatus = Literal["pending", "verified"]
+InvoiceStatus = Literal[
+    "none", "pending", "received", "tax_invoice", "cash_bill", "other",
+]
+DOCUMENT_TYPE_LABELS: dict[str, str] = {
+    "tax_invoice": "ใบกำกับภาษี",
+    "cash_bill": "บิลเงินสด",
+    "other": "อื่นๆ",
+}
+LEGACY_INVOICE_LABELS = {None: "ไม่มีใบกำกับ", 0: "รอใบกำกับ", 1: "ได้รับแล้ว"}
 
 
 # ── Request schemas ──────────────────────────────────────────────────────────
@@ -177,10 +189,14 @@ class StatementFlagsUpdate(BaseModel):
     cfstate_invoice: Optional[int] = None
     cfstate_refrain: Optional[int] = None
     cfstate_verified: Optional[int] = None
+    cfstate_document_type: Optional[DocumentType] = None
 
     @model_validator(mode="after")
     def validate_flags(self):
-        if self.cfstate_invoice is None and self.cfstate_refrain is None and self.cfstate_verified is None:
+        editable_fields = {
+            "cfstate_invoice", "cfstate_refrain", "cfstate_verified", "cfstate_document_type",
+        }
+        if not self.model_fields_set.intersection(editable_fields):
             raise ValueError("ไม่มีข้อมูลที่ต้องแก้ไข")
         if self.cfstate_invoice is not None and self.cfstate_invoice not in (0, 1):
             raise ValueError("สถานะใบกำกับภาษีต้องเป็น 0 หรือ 1")
@@ -272,6 +288,17 @@ async def _find_duplicate_statement(
 
 
 def _statement_select():
+    attachment_count = (
+        select(func.count())
+        .select_from(CrmCashflowStatementAttachment)
+        .where(
+            CrmCashflowStatementAttachment.cfstate_id == CrmCashflowStatement.cfstate_id,
+            CrmCashflowStatementAttachment.comp_id == CrmCashflowStatement.comp_id,
+        )
+        .correlate(CrmCashflowStatement)
+        .scalar_subquery()
+        .label("attachment_count")
+    )
     return (
         select(
             CrmCashflowStatement.cfstate_id,
@@ -283,6 +310,7 @@ def _statement_select():
             CrmCashflowStatement.cfstate_amount,
             CrmCashflowStatement.cfstate_refrain,
             CrmCashflowStatement.cfstate_invoice,
+            CrmCashflowStatement.cfstate_document_type,
             CrmCashflowStatement.cfstate_verified,
             CrmCashflowStatement.cfstate_detail,
             CrmCashflowStatement.cfstate_status,
@@ -291,6 +319,7 @@ def _statement_select():
             CrmCashflowCategory.cfcat_name,
             CrmCashflowList.cflist_name,
             CrmCashflowDepartment.cfstate_dep_name,
+            attachment_count,
             User.full_name.label("user_name"),
             User.username.label("username"),
         )
@@ -311,6 +340,8 @@ async def _list_statements(
     end_date: Optional[date],
     cfcat_id: Optional[int],
     pending_verification_only: bool = False,
+    verification_status: Optional[VerificationStatus] = None,
+    invoice_status: Optional[InvoiceStatus] = None,
 ):
     stmt = _statement_select().where(
         CrmCashflowStatement.comp_id == comp_id,
@@ -322,10 +353,27 @@ async def _list_statements(
         stmt = stmt.where(CrmCashflowStatement.cfstate_date <= end_date)
     if cfcat_id is not None:
         stmt = stmt.where(CrmCashflowStatement.cfcat_id == cfcat_id)
+    if verification_status is not None:
+        stmt = stmt.where(
+            CrmCashflowStatement.cfstate_verified
+            == (1 if verification_status == "verified" else 0)
+        )
+    if invoice_status in DOCUMENT_TYPE_LABELS:
+        stmt = stmt.where(CrmCashflowStatement.cfstate_document_type == invoice_status)
+    elif invoice_status is not None:
+        legacy_invoice_value = {"none": None, "pending": 0, "received": 1}[invoice_status]
+        stmt = stmt.where(CrmCashflowStatement.cfstate_document_type.is_(None))
+        if legacy_invoice_value is None:
+            stmt = stmt.where(CrmCashflowStatement.cfstate_invoice.is_(None))
+        else:
+            stmt = stmt.where(CrmCashflowStatement.cfstate_invoice == legacy_invoice_value)
     if pending_verification_only:
-        # Show every "ใบเสร็จ" status (0/1/null) — the gate for this list is
-        # whether the row has been reviewed, not whether it has an invoice.
-        stmt = stmt.where(CrmCashflowStatement.cfstate_verified == 0)
+        # Invoice tracking is only relevant to money paid out. Keep every
+        # "ใบเสร็จ" status (0/1/null), but exclude positive receipt amounts.
+        stmt = stmt.where(
+            CrmCashflowStatement.cfstate_verified == 0,
+            CrmCashflowStatement.cfstate_amount <= 0,
+        )
     stmt = stmt.order_by(
         CrmCashflowStatement.cfstate_date.desc(),
         CrmCashflowStatement.cfstate_id.desc(),
@@ -339,6 +387,14 @@ def _serialize_statement(row) -> dict[str, Any]:
     data["cfstate_amount_str"] = f'{data["cfstate_amount"]:,.2f}'
     data["user_name"] = data.get("user_name") or data.get("username")
     return data
+
+
+def _invoice_status_label(
+    cfstate_invoice: Optional[int], cfstate_document_type: Optional[str]
+) -> str:
+    if cfstate_document_type in DOCUMENT_TYPE_LABELS:
+        return DOCUMENT_TYPE_LABELS[cfstate_document_type]
+    return LEGACY_INVOICE_LABELS.get(cfstate_invoice, "")
 
 
 # ── Master data: categories ─────────────────────────────────────────────────
@@ -781,12 +837,18 @@ async def list_statements(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     cfcat_id: Optional[int] = None,
+    verification_status: Optional[VerificationStatus] = None,
+    invoice_status: Optional[InvoiceStatus] = None,
     db: AsyncSession = Depends(get_db),
     company: Company = Depends(get_current_company),
 ):
     if start_date and end_date and start_date > end_date:
         raise HTTPException(422, "วันที่เริ่มต้นต้องไม่เกินวันที่สิ้นสุด")
-    rows = await _list_statements(db, company.id, start_date, end_date, cfcat_id)
+    rows = await _list_statements(
+        db, company.id, start_date, end_date, cfcat_id,
+        verification_status=verification_status,
+        invoice_status=invoice_status,
+    )
     items = [_serialize_statement(row) for row in rows]
     sum_revenue = sum(item["cfstate_amount"] for item in items if item["cfstate_amount"] > 0)
     sum_expenses = sum(item["cfstate_amount"] for item in items if item["cfstate_amount"] <= 0)
@@ -818,10 +880,16 @@ async def export_statements(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     cfcat_id: Optional[int] = None,
+    verification_status: Optional[VerificationStatus] = None,
+    invoice_status: Optional[InvoiceStatus] = None,
     db: AsyncSession = Depends(get_db),
     company: Company = Depends(get_current_company),
 ):
-    rows = await _list_statements(db, company.id, start_date, end_date, cfcat_id)
+    rows = await _list_statements(
+        db, company.id, start_date, end_date, cfcat_id,
+        verification_status=verification_status,
+        invoice_status=invoice_status,
+    )
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Cashflow Statement"
@@ -832,7 +900,6 @@ async def export_statements(
     sheet.append(headers)
     for cell in sheet[1]:
         cell.font = Font(bold=True)
-    invoice_label = {None: "ไม่มีใบกำกับ", 0: "รอใบกำกับ", 1: "ได้รับแล้ว"}
     for index, row in enumerate(rows, 1):
         amount = Decimal(row.cfstate_amount)
         sheet.append([
@@ -842,7 +909,7 @@ async def export_statements(
             row.cfcat_name,
             row.cflist_name,
             row.cfstate_detail or "",
-            invoice_label.get(row.cfstate_invoice, ""),
+            _invoice_status_label(row.cfstate_invoice, row.cfstate_document_type),
             "ON" if row.cfstate_refrain == 1 else "OFF",
             amount if amount > 0 else Decimal("0"),
             amount if amount < 0 else Decimal("0"),
@@ -953,12 +1020,28 @@ async def update_statement_flags(
         db, CrmCashflowStatement, CrmCashflowStatement.cfstate_id,
         statement_id, company.id, "ไม่พบรายการ"
     )
+    if payload.cfstate_verified == 1:
+        attachment_count = (
+            await db.execute(
+                select(func.count()).select_from(CrmCashflowStatementAttachment).where(
+                    CrmCashflowStatementAttachment.cfstate_id == statement_id,
+                    CrmCashflowStatementAttachment.comp_id == company.id,
+                )
+            )
+        ).scalar_one()
+        if attachment_count == 0:
+            raise HTTPException(
+                409,
+                "ไม่สามารถตรวจสอบรายการได้ เนื่องจากยังไม่มีไฟล์แนบ กรุณาแนบเอกสารอย่างน้อย 1 ไฟล์ก่อน",
+            )
     if payload.cfstate_invoice is not None:
         row.cfstate_invoice = payload.cfstate_invoice
     if payload.cfstate_refrain is not None:
         row.cfstate_refrain = payload.cfstate_refrain
     if payload.cfstate_verified is not None:
         row.cfstate_verified = payload.cfstate_verified
+    if "cfstate_document_type" in payload.model_fields_set:
+        row.cfstate_document_type = payload.cfstate_document_type
     await db.commit()
     return {"status": 1}
 

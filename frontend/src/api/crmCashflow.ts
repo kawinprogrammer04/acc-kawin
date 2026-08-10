@@ -24,6 +24,19 @@ export interface CrmCashflowDepartment {
   comp_id: number;
 }
 
+export type CrmCashflowDocumentType = "tax_invoice" | "cash_bill" | "other";
+export type CrmCashflowVerificationStatus = "pending" | "verified";
+export type CrmCashflowInvoiceStatus =
+  | "none" | "pending" | "received" | CrmCashflowDocumentType;
+
+export interface CrmCashflowStatementFilters {
+  start_date?: string;
+  end_date?: string;
+  cfcat_id?: number;
+  verification_status?: CrmCashflowVerificationStatus;
+  invoice_status?: CrmCashflowInvoiceStatus;
+}
+
 export interface CrmCashflowStatement {
   cfstate_id: number;
   cfstate_date: string;
@@ -35,11 +48,13 @@ export interface CrmCashflowStatement {
   cfstate_amount_str: string;
   cfstate_refrain: 0 | 1;
   cfstate_invoice: 0 | 1 | null;
+  cfstate_document_type: CrmCashflowDocumentType | null;
   cfstate_verified: 0 | 1;
   cfstate_detail?: string | null;
   cfstate_status: 0 | 1;
   cfstate_dep_id?: number | null;
   cfstate_ref?: string | null;
+  attachment_count: number;
   cfcat_name: string;
   cflist_name: string;
   cfstate_dep_name?: string | null;
@@ -198,7 +213,7 @@ export const crmCashflowApi = {
       .then((response) => response.data),
   deleteDepartment: (id: number) => api.delete(`/crm-cashflow/departments/${id}`),
 
-  statements: (params: { start_date?: string; end_date?: string; cfcat_id?: number }) =>
+  statements: (params: CrmCashflowStatementFilters) =>
     api.get<{ items: CrmCashflowStatement[]; sum_revenue: number; sum_expenses: number; total: number }>(
       "/crm-cashflow/statements", { params }
     ).then((response) => response.data),
@@ -212,10 +227,15 @@ export const crmCashflowApi = {
   checkDuplicates: (items: CrmStatementInput[]) =>
     api.post<CheckDuplicatesResult>("/crm-cashflow/statements/check-duplicates", { items })
       .then((response) => response.data),
-  updateStatement: (id: number, data: { cfstate_invoice?: 0 | 1; cfstate_refrain?: 0 | 1; cfstate_verified?: 0 | 1 }) =>
+  updateStatement: (id: number, data: {
+    cfstate_invoice?: 0 | 1;
+    cfstate_refrain?: 0 | 1;
+    cfstate_verified?: 0 | 1;
+    cfstate_document_type?: CrmCashflowDocumentType | null;
+  }) =>
     api.patch(`/crm-cashflow/statements/${id}`, data).then((response) => response.data),
   deleteStatement: (id: number) => api.delete(`/crm-cashflow/statements/${id}`),
-  exportStatements: async (params: { start_date?: string; end_date?: string; cfcat_id?: number }) => {
+  exportStatements: async (params: CrmCashflowStatementFilters) => {
     const response = await api.get<Blob>("/crm-cashflow/statements/export", {
       params,
       responseType: "blob",
