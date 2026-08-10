@@ -1,8 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
-import { Loader2, Building2, Plus, Pencil, Users, ChevronDown, ChevronUp } from "lucide-react";
+import { Loader2, Building2, Plus, Pencil, Users, ChevronDown, ChevronUp, Settings } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { api } from "@/api/client";
+import { api, getApiErrorMessage } from "@/api/client";
+import { useAuth } from "@/context/AuthContext";
+import { rolesApi } from "@/api/roles";
+import type { Role } from "@/api/roles";
+import { RoleManagerModal } from "@/components/RoleManager";
 
 interface Company {
   id: number;
@@ -27,13 +31,24 @@ interface CompanyUser {
   role: string;
 }
 
+interface UserSearchResult {
+  id: number;
+  username: string;
+  full_name?: string;
+  email: string;
+}
+
 const emptyForm = {
   code: "", name_th: "", name_en: "", tax_id: "", address: "",
   phone: "", email: "", website: "", fiscal_year_start_month: 1,
   default_currency: "THB", vat_rate: 7,
 };
+const emptyInviteForm = {
+  username: "", email: "", password: "", full_name: "", role: "viewer",
+};
 
 export function CompaniesPage() {
+  const { user } = useAuth();
   const [companies, setCompanies] = useState<Company[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -43,6 +58,16 @@ export function CompaniesPage() {
   const [error, setError] = useState("");
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [companyUsers, setCompanyUsers] = useState<Record<number, CompanyUser[]>>({});
+  const [inviteCompanyId, setInviteCompanyId] = useState<number | null>(null);
+  const [inviteForm, setInviteForm] = useState(emptyInviteForm);
+  const [roles, setRoles] = useState<Role[]>([]);
+  const [showRoleManager, setShowRoleManager] = useState(false);
+  const [grantCompanyId, setGrantCompanyId] = useState<number | null>(null);
+  const [grantQuery, setGrantQuery] = useState("");
+  const [grantResults, setGrantResults] = useState<UserSearchResult[]>([]);
+  const [grantSearching, setGrantSearching] = useState(false);
+  const [grantingUserId, setGrantingUserId] = useState<number | null>(null);
+  const [grantRole, setGrantRole] = useState("viewer");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -52,7 +77,11 @@ export function CompaniesPage() {
     } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const loadRoles = useCallback(async () => {
+    setRoles(await rolesApi.list());
+  }, []);
+
+  useEffect(() => { load(); loadRoles(); }, [load, loadRoles]);
 
   async function loadUsers(companyId: number) {
     if (companyUsers[companyId]) return;
@@ -93,8 +122,8 @@ export function CompaniesPage() {
       }
       setShowForm(false);
       load();
-    } catch (e: any) {
-      setError(e.response?.data?.detail ?? "เกิดข้อผิดพลาด");
+    } catch (e: unknown) {
+      setError(getApiErrorMessage(e));
     } finally { setSaving(false); }
   }
 
@@ -107,15 +136,79 @@ export function CompaniesPage() {
     }
   }
 
+  async function inviteUser() {
+    if (!inviteCompanyId || !inviteForm.username || !inviteForm.email || !inviteForm.password) {
+      setError("กรุณากรอก Username, Email และรหัสผ่าน");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const res = await api.post(
+        `/companies/${inviteCompanyId}/users/invite`,
+        inviteForm,
+      );
+      setCompanyUsers(current => ({
+        ...current,
+        [inviteCompanyId]: [...(current[inviteCompanyId] ?? []), res.data],
+      }));
+      setInviteCompanyId(null);
+      setInviteForm(emptyInviteForm);
+    } catch (e: unknown) {
+      setError(getApiErrorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!grantCompanyId || grantQuery.trim().length < 2) { setGrantResults([]); return; }
+    const timer = window.setTimeout(async () => {
+      setGrantSearching(true);
+      try {
+        const res = await api.get(`/companies/${grantCompanyId}/users/search`, { params: { q: grantQuery.trim() } });
+        setGrantResults(res.data);
+      } catch (e: unknown) {
+        setError(getApiErrorMessage(e));
+      } finally {
+        setGrantSearching(false);
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [grantCompanyId, grantQuery]);
+
+  async function grantExisting(targetUser: UserSearchResult) {
+    if (!grantCompanyId) return;
+    setGrantingUserId(targetUser.id);
+    setError("");
+    try {
+      await api.post(`/companies/${grantCompanyId}/users`, { user_id: targetUser.id, role: grantRole });
+      setCompanyUsers(current => ({
+        ...current,
+        [grantCompanyId]: [
+          ...(current[grantCompanyId] ?? []),
+          { user_id: targetUser.id, username: targetUser.username, full_name: targetUser.full_name, role: grantRole },
+        ],
+      }));
+      setGrantResults(results => results.filter(u => u.id !== targetUser.id));
+    } catch (e: unknown) {
+      setError(getApiErrorMessage(e));
+    } finally {
+      setGrantingUserId(null);
+    }
+  }
+
   return (
     <div className="p-6 space-y-4">
       <PageHeader title="บริษัท" subtitle="จัดการบริษัทและสิทธิ์ผู้ใช้งานต่อบริษัท">
-        <button
-          onClick={openAdd}
-          className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-        >
-          <Plus className="h-4 w-4" /> เพิ่มบริษัท
-        </button>
+        {user?.is_platform_admin && (
+          <button
+            onClick={openAdd}
+            className="flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            <Plus className="h-4 w-4" /> เพิ่มบริษัท
+          </button>
+        )}
       </PageHeader>
 
       {/* Form Modal */}
@@ -192,6 +285,117 @@ export function CompaniesPage() {
         </div>
       )}
 
+      {grantCompanyId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h2 className="mb-1 text-base font-semibold">เพิ่มสิทธิ์ผู้ใช้ที่มีอยู่แล้ว</h2>
+            <p className="mb-4 text-xs text-muted-foreground">ค้นหาด้วย username, email หรือชื่อ (ผู้ใช้ที่เป็นสมาชิกแล้วจะไม่แสดง)</p>
+            <div className="space-y-3">
+              <input
+                autoFocus
+                className="w-full rounded-md border px-3 py-2 text-sm"
+                value={grantQuery}
+                onChange={e => setGrantQuery(e.target.value)}
+                placeholder="พิมพ์อย่างน้อย 2 ตัวอักษร..."
+              />
+              <div className="flex items-center gap-2">
+                <select className="flex-1 rounded-md border px-3 py-2 text-sm"
+                  value={grantRole}
+                  onChange={e => setGrantRole(e.target.value)}>
+                  {roles.filter(r => r.is_active).map(r => (
+                    <option key={r.code} value={r.code}>{r.label} ({r.code})</option>
+                  ))}
+                </select>
+                <button type="button" onClick={() => setShowRoleManager(true)}
+                  className="rounded-md border p-2 hover:bg-accent" title="จัดการบทบาท">
+                  <Settings className="h-4 w-4 text-muted-foreground" />
+                </button>
+              </div>
+              {error && <p className="text-xs text-rose-600">{error}</p>}
+              <div className="max-h-60 space-y-1 overflow-y-auto">
+                {grantSearching && (
+                  <div className="flex justify-center py-3"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
+                )}
+                {!grantSearching && grantQuery.trim().length >= 2 && grantResults.length === 0 && (
+                  <p className="py-2 text-center text-xs text-muted-foreground">ไม่พบผู้ใช้ที่ตรงกัน (หรือเป็นสมาชิกอยู่แล้ว)</p>
+                )}
+                {grantResults.map(u => (
+                  <div key={u.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
+                    <div>
+                      <p className="font-medium">{u.full_name || u.username}</p>
+                      <p className="text-xs text-muted-foreground">{u.username} · {u.email}</p>
+                    </div>
+                    <button
+                      onClick={() => grantExisting(u)}
+                      disabled={grantingUserId === u.id}
+                      className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    >
+                      {grantingUserId === u.id && <Loader2 className="h-3 w-3 animate-spin" />} เพิ่ม
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={() => { setGrantCompanyId(null); setGrantQuery(""); setGrantResults([]); setError(""); }}
+                className="rounded-lg border px-4 py-2 text-sm hover:bg-muted"
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {inviteCompanyId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+            <h2 className="mb-4 text-base font-semibold">เพิ่มผู้ใช้เข้าบริษัท</h2>
+            <div className="space-y-3">
+              <input className="w-full rounded-md border px-3 py-2 text-sm"
+                value={inviteForm.username}
+                onChange={e => setInviteForm(f => ({ ...f, username: e.target.value }))}
+                placeholder="Username" />
+              <input type="email" className="w-full rounded-md border px-3 py-2 text-sm"
+                value={inviteForm.email}
+                onChange={e => setInviteForm(f => ({ ...f, email: e.target.value }))}
+                placeholder="Email" />
+              <input className="w-full rounded-md border px-3 py-2 text-sm"
+                value={inviteForm.full_name}
+                onChange={e => setInviteForm(f => ({ ...f, full_name: e.target.value }))}
+                placeholder="ชื่อ-นามสกุล" />
+              <input type="password" className="w-full rounded-md border px-3 py-2 text-sm"
+                value={inviteForm.password}
+                onChange={e => setInviteForm(f => ({ ...f, password: e.target.value }))}
+                placeholder="รหัสผ่านเริ่มต้น" />
+              <div className="flex items-center gap-2">
+                <select className="flex-1 rounded-md border px-3 py-2 text-sm"
+                  value={inviteForm.role}
+                  onChange={e => setInviteForm(f => ({ ...f, role: e.target.value }))}>
+                  {roles.filter(r => r.is_active).map(r => (
+                    <option key={r.code} value={r.code}>{r.label} ({r.code})</option>
+                  ))}
+                </select>
+                <button type="button" onClick={() => setShowRoleManager(true)}
+                  className="rounded-md border p-2 hover:bg-accent" title="จัดการบทบาท">
+                  <Settings className="h-4 w-4 text-muted-foreground" />
+                </button>
+              </div>
+              {error && <p className="text-xs text-rose-600">{error}</p>}
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => { setInviteCompanyId(null); setError(""); }}
+                className="rounded-lg border px-4 py-2 text-sm hover:bg-muted">ยกเลิก</button>
+              <button onClick={inviteUser} disabled={saving}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">
+                เพิ่มผู้ใช้
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-3">
         {loading ? (
           <div className="flex h-40 items-center justify-center">
@@ -232,7 +436,23 @@ export function CompaniesPage() {
 
                 {expandedId === c.id && (
                   <div className="mt-3 pt-3 border-t">
-                    <p className="text-xs font-medium text-muted-foreground mb-2">ผู้ใช้ที่มีสิทธิ์</p>
+                    <div className="mb-2 flex items-center justify-between">
+                      <p className="text-xs font-medium text-muted-foreground">ผู้ใช้ที่มีสิทธิ์</p>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => { setGrantCompanyId(c.id); setGrantQuery(""); setGrantResults([]); setGrantRole("viewer"); setError(""); }}
+                          className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted"
+                        >
+                          <Plus className="h-3 w-3" /> เพิ่มผู้ใช้ที่มีอยู่แล้ว
+                        </button>
+                        <button
+                          onClick={() => { setInviteCompanyId(c.id); setInviteForm(emptyInviteForm); setError(""); }}
+                          className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted"
+                        >
+                          <Plus className="h-3 w-3" /> เชิญผู้ใช้ใหม่
+                        </button>
+                      </div>
+                    </div>
                     {companyUsers[c.id] ? (
                       <div className="flex flex-wrap gap-2">
                         {companyUsers[c.id].map(u => (
@@ -255,6 +475,13 @@ export function CompaniesPage() {
           ))
         )}
       </div>
+
+      <RoleManagerModal
+        open={showRoleManager}
+        onClose={() => setShowRoleManager(false)}
+        roles={roles}
+        onChanged={loadRoles}
+      />
     </div>
   );
 }

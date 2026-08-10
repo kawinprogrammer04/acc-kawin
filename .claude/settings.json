@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx tsc *)",
+      "Bash(pip show *)",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)",
+      "Bash(git status *)",
+      "Bash(git check-ignore *)",
+      "Bash(grep -rInE '\\(sk-ant-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|password\\\\s*=\\\\s*['\\\\''\"][^'\\\\''\"]{4,}['\\\\''\"]|api_key\\\\s*=\\\\s*['\\\\''\"][^'\\\\''\"]{8,}['\\\\''\"]\\)' --include=*.py --include=*.ts --include=*.tsx --include=*.sql --include=*.ini --include=*.yml --include=*.sh --include=*.conf backend/alembic backend/app backend/entrypoint.sh backend/dompdf_renderer credit_statement_matcher db docs frontend/src nginx scripts docker-compose.yml)",
+      "Bash(grep -rInE \"\\(sk-ant-[a-zA-Z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|password[[:space:]]*[:=][[:space:]]*['\\\\\"][^'\\\\\"]{4,}['\\\\\"]|api[_-]?key[[:space:]]*[:=][[:space:]]*['\\\\\"][^'\\\\\"]{8,}['\\\\\"]\\)\" backend/alembic backend/app backend/entrypoint.sh backend/dompdf_renderer credit_statement_matcher db docs frontend/src nginx scripts docker-compose.yml)",
+      "Bash(lsof -i :5173 -sTCP:LISTEN)",
+      "Bash(npm -v)",
+      "Bash(nohup npm run dev)",
+      "Bash(echo \"started PID $!\")",
+      "Bash(sleep 2; cat /tmp/vite-dev.log)",
+      "Read(//private/tmp/**)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git fetch *)",
+      "Bash(docker inspect *)",
+      "Bash(git merge-tree *)",
+      "Bash(git checkout *)",
+      "Bash(git reset *)",
+      "Bash(git merge *)"
+    ]
+  }
+}

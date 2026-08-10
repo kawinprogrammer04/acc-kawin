@@ -7,6 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.models.account import Account
+from app.models.fiscal import AccountingPeriod
 from app.models.invoice import Invoice, InvoiceLine
 from app.models.journal import Journal, JournalLine
 from app.models.party import Party
@@ -46,12 +47,18 @@ def calculate_vat(amount: Decimal, inclusive: bool = False, rate: Decimal = VAT_
     )
 
 
-async def _next_invoice_number(db: AsyncSession, invoice_type: str, invoice_date: datetime) -> str:
+async def _next_invoice_number(
+    db: AsyncSession,
+    invoice_type: str,
+    invoice_date: datetime,
+    company_id: int,
+) -> str:
     prefix = "INV" if invoice_type == "ar" else "AP"
     year = invoice_date.year
     result = await db.execute(
         select(func.count()).select_from(Invoice).where(
             Invoice.invoice_type == invoice_type,
+            Invoice.company_id == company_id,
             text(f"EXTRACT(YEAR FROM invoice_date) = {year}"),
         )
     )
@@ -59,21 +66,60 @@ async def _next_invoice_number(db: AsyncSession, invoice_type: str, invoice_date
     return f"{prefix}{year}-{seq:05d}"
 
 
-async def create_invoice(db: AsyncSession, payload: InvoiceCreate, user_id: int) -> Invoice:
+async def create_invoice(
+    db: AsyncSession,
+    payload: InvoiceCreate,
+    user_id: int,
+    company_id: int,
+) -> Invoice:
     # Validate party
-    party = await db.get(Party, payload.party_id)
+    party = (await db.execute(
+        select(Party).where(Party.id == payload.party_id, Party.company_id == company_id)
+    )).scalar_one_or_none()
     if not party:
         raise ValueError("ไม่พบลูกค้า/ผู้ขาย")
 
     # Validate accounts
-    ar_ap_account = await db.get(Account, payload.ar_ap_account_id)
+    ar_ap_account = (await db.execute(
+        select(Account).where(
+            Account.id == payload.ar_ap_account_id,
+            Account.company_id == company_id,
+        )
+    )).scalar_one_or_none()
     if not ar_ap_account:
         raise ValueError("ไม่พบบัญชีลูกหนี้/เจ้าหนี้")
 
     # Auto-generate invoice number if not provided
     invoice_number = payload.invoice_number
     if not invoice_number:
-        invoice_number = await _next_invoice_number(db, payload.invoice_type, payload.invoice_date)
+        invoice_number = await _next_invoice_number(
+            db, payload.invoice_type, payload.invoice_date, company_id
+        )
+
+    period = (await db.execute(
+        select(AccountingPeriod).where(
+            AccountingPeriod.id == payload.period_id,
+            AccountingPeriod.company_id == company_id,
+        )
+    )).scalar_one_or_none()
+    if not period:
+        raise ValueError("ไม่พบงวดบัญชีในบริษัทนี้")
+
+    extra_account_ids = {
+        account_id for account_id in (
+            payload.revenue_expense_account_id,
+            *(line.account_id for line in payload.lines),
+        ) if account_id is not None
+    }
+    if extra_account_ids:
+        found_ids = set((await db.execute(
+            select(Account.id).where(
+                Account.id.in_(extra_account_ids),
+                Account.company_id == company_id,
+            )
+        )).scalars().all())
+        if found_ids != extra_account_ids:
+            raise ValueError("พบบัญชีที่ไม่ได้อยู่ในบริษัทนี้")
 
     # Process lines: calculate totals
     subtotal = Decimal("0")
@@ -128,6 +174,7 @@ async def create_invoice(db: AsyncSession, payload: InvoiceCreate, user_id: int)
     # For AP: WHT reduces the payment (not the invoice total)
     # total_amount stays as invoice face value; WHT shown separately
     invoice = Invoice(
+        company_id=company_id,
         invoice_type=payload.invoice_type,
         invoice_number=invoice_number,
         reference=payload.reference,
@@ -160,12 +207,17 @@ async def create_invoice(db: AsyncSession, payload: InvoiceCreate, user_id: int)
     return invoice
 
 
-async def post_invoice_to_journal(db: AsyncSession, invoice_id: str, user_id: int) -> Journal:
+async def post_invoice_to_journal(
+    db: AsyncSession,
+    invoice_id: str,
+    user_id: int,
+    company_id: int,
+) -> Journal:
     """สร้าง Journal Entry จาก Invoice อัตโนมัติ"""
     result = await db.execute(
         select(Invoice)
         .options(selectinload(Invoice.lines), selectinload(Invoice.party))
-        .where(Invoice.id == invoice_id)
+        .where(Invoice.id == invoice_id, Invoice.company_id == company_id)
     )
     invoice = result.scalar_one_or_none()
     if not invoice:
@@ -177,6 +229,7 @@ async def post_invoice_to_journal(db: AsyncSession, invoice_id: str, user_id: in
     tax_year = invoice.invoice_date.year
     count_result = await db.execute(
         select(func.count()).select_from(Journal).where(
+            Journal.company_id == company_id,
             text(f"EXTRACT(YEAR FROM entry_date) = {tax_year}")
         )
     )
@@ -190,6 +243,7 @@ async def post_invoice_to_journal(db: AsyncSession, invoice_id: str, user_id: in
     )
 
     journal = Journal(
+        company_id=company_id,
         entry_number=entry_number,
         entry_date=invoice.invoice_date,
         period_id=invoice.period_id,
@@ -229,7 +283,10 @@ async def post_invoice_to_journal(db: AsyncSession, invoice_id: str, user_id: in
         # Cr ภาษีขาย
         if float(invoice.vat_amount) > 0:
             output_vat_account = await db.execute(
-                select(Account).where(Account.code == "2202")
+                select(Account).where(
+                    Account.code == "2202",
+                    Account.company_id == company_id,
+                )
             )
             vat_account = output_vat_account.scalar_one_or_none()
             if vat_account:
@@ -253,7 +310,10 @@ async def post_invoice_to_journal(db: AsyncSession, invoice_id: str, user_id: in
         # Dr ภาษีซื้อ
         if float(invoice.vat_amount) > 0:
             input_vat_account = await db.execute(
-                select(Account).where(Account.code == "1402")
+                select(Account).where(
+                    Account.code == "1402",
+                    Account.company_id == company_id,
+                )
             )
             vat_account = input_vat_account.scalar_one_or_none()
             if vat_account:
@@ -275,6 +335,7 @@ async def post_invoice_to_journal(db: AsyncSession, invoice_id: str, user_id: in
     # Auto-create VAT record
     if float(invoice.vat_amount) > 0:
         db.add(VatRecord(
+            company_id=company_id,
             record_type="output" if invoice.invoice_type == "ar" else "input",
             tax_invoice_number=invoice.invoice_number,
             tax_invoice_date=invoice.invoice_date,
@@ -294,6 +355,7 @@ async def post_invoice_to_journal(db: AsyncSession, invoice_id: str, user_id: in
     for line in invoice.lines:
         if line.wht_type and float(line.wht_amount) > 0:
             db.add(WhtRecord(
+                company_id=company_id,
                 transaction_date=invoice.invoice_date,
                 period_month=invoice.invoice_date.month,
                 period_year=invoice.invoice_date.year,

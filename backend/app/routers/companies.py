@@ -12,13 +12,15 @@ Company management endpoints
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, EmailStr
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_user, require_admin
+from app.core.dependencies import get_current_user, require_platform_admin
+from app.core.roles import get_role_level, get_role_levels, role_is_active
+from app.core.security import hash_password
 from app.models.company import Company, UserCompany
 from app.models.user import User
 
@@ -77,6 +79,15 @@ class CompanyUpdate(BaseModel):
 
 class GrantUserIn(BaseModel):
     user_id: int
+    role: str = "viewer"
+
+
+class InviteCompanyUserIn(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+    full_name: Optional[str] = None
+    role: str = "viewer"
 
 
 class UserCompanyOut(BaseModel):
@@ -84,6 +95,13 @@ class UserCompanyOut(BaseModel):
     username: str
     full_name: Optional[str]
     role: str
+
+
+class UserSearchOut(BaseModel):
+    id: int
+    username: str
+    full_name: Optional[str]
+    email: str
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -95,17 +113,96 @@ async def _get_accessible_company(company_id: int, current_user: User, db: Async
     company = result.scalar_one_or_none()
     if not company:
         raise HTTPException(404, "ไม่พบบริษัท")
-    if current_user.role == "admin":
+    if current_user.is_platform_admin:
         return company
     access = await db.execute(
         select(UserCompany).where(
             UserCompany.user_id == current_user.id,
             UserCompany.company_id == company_id,
+            UserCompany.is_active == True,
         )
     )
     if not access.scalar_one_or_none():
         raise HTTPException(403, "ไม่มีสิทธิ์เข้าถึงบริษัทนี้")
     return company
+
+
+async def _require_company_admin(
+    company_id: int,
+    current_user: User,
+    db: AsyncSession,
+) -> Company:
+    company = await _get_accessible_company(company_id, current_user, db)
+    if current_user.is_platform_admin:
+        return company
+    membership = (await db.execute(
+        select(UserCompany).where(
+            UserCompany.user_id == current_user.id,
+            UserCompany.company_id == company_id,
+            UserCompany.is_active == True,
+        )
+    )).scalar_one_or_none()
+    admin_level = await get_role_level(db, "admin")
+    if not membership or await get_role_level(db, membership.role) < admin_level:
+        raise HTTPException(403, "ต้องการสิทธิ์ผู้ดูแลบริษัท")
+    return company
+
+
+async def _seed_new_company(db: AsyncSession, company_id: int) -> None:
+    """Clone safe master data from company 1 into a newly-created tenant."""
+    await db.execute(text("""
+        INSERT INTO cashflow_categories
+            (type, name, parent_id, color, icon, sort_order, is_active, company_id)
+        SELECT type, name, NULL, color, icon, sort_order, is_active, :cid
+        FROM cashflow_categories
+        WHERE company_id = 1
+        ON CONFLICT DO NOTHING
+    """), {"cid": company_id})
+
+    await db.execute(text("""
+        INSERT INTO accounts
+            (code, name_th, name_en, account_type, category, normal_balance,
+             parent_id, level, is_header, is_active, description, company_id)
+        SELECT code, name_th, name_en, account_type, category, normal_balance,
+               NULL, level, is_header, is_active, description, :cid
+        FROM accounts
+        WHERE company_id = 1
+        ON CONFLICT (company_id, code) DO NOTHING
+    """), {"cid": company_id})
+    await db.execute(text("""
+        UPDATE accounts target
+        SET parent_id = target_parent.id
+        FROM accounts source
+        JOIN accounts source_parent ON source_parent.id = source.parent_id
+        JOIN accounts target_parent
+          ON target_parent.company_id = :cid
+         AND target_parent.code = source_parent.code
+        WHERE source.company_id = 1
+          AND target.company_id = :cid
+          AND target.code = source.code
+    """), {"cid": company_id})
+
+    await db.execute(text("""
+        INSERT INTO fiscal_years
+            (name, start_date, end_date, is_closed, company_id)
+        SELECT name, start_date, end_date, FALSE, :cid
+        FROM fiscal_years
+        WHERE company_id = 1
+        ON CONFLICT (company_id, name) DO NOTHING
+    """), {"cid": company_id})
+    await db.execute(text("""
+        INSERT INTO accounting_periods
+            (fiscal_year_id, period_number, start_date, end_date, is_closed, company_id)
+        SELECT target_fy.id, source_period.period_number,
+               source_period.start_date, source_period.end_date, FALSE, :cid
+        FROM accounting_periods source_period
+        JOIN fiscal_years source_fy ON source_fy.id = source_period.fiscal_year_id
+        JOIN fiscal_years target_fy
+          ON target_fy.company_id = :cid
+         AND target_fy.name = source_fy.name
+        WHERE source_period.company_id = 1
+        ON CONFLICT (company_id, fiscal_year_id, period_number) DO NOTHING
+    """), {"cid": company_id})
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
@@ -116,7 +213,7 @@ async def list_companies(
     current_user: User = Depends(get_current_user),
 ):
     """Return companies accessible to the current user."""
-    if current_user.role == "admin":
+    if current_user.is_platform_admin:
         result = await db.execute(
             select(Company).where(Company.is_active == True).order_by(Company.id)
         )
@@ -124,7 +221,11 @@ async def list_companies(
         result = await db.execute(
             select(Company)
             .join(UserCompany, Company.id == UserCompany.company_id)
-            .where(UserCompany.user_id == current_user.id, Company.is_active == True)
+            .where(
+                UserCompany.user_id == current_user.id,
+                UserCompany.is_active == True,
+                Company.is_active == True,
+            )
             .order_by(Company.id)
         )
     return result.scalars().all()
@@ -134,24 +235,28 @@ async def list_companies(
 async def create_company(
     payload: CompanyIn,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    current_user: User = Depends(require_platform_admin),
 ):
     existing = await db.execute(select(Company).where(Company.code == payload.code))
     if existing.scalar_one_or_none():
         raise HTTPException(400, "Company code ซ้ำ")
     company = Company(**payload.model_dump())
     db.add(company)
+    await db.flush()
+    await db.execute(
+        text("SELECT set_config('app.current_company_id', :company_id, true)"),
+        {"company_id": str(company.id)},
+    )
+
+    await _seed_new_company(db, company.id)
+    db.add(UserCompany(
+        user_id=current_user.id,
+        company_id=company.id,
+        granted_by=current_user.id,
+        role="admin",
+    ))
     await db.commit()
     await db.refresh(company)
-
-    # Seed the default category set so a new company is usable immediately.
-    # Company 1 holds the canonical defaults; copy them to the new company.
-    await db.execute(text("""
-        INSERT INTO cashflow_categories (type, name, parent_id, color, icon, sort_order, is_active, company_id)
-        SELECT type, name, NULL, color, icon, sort_order, is_active, :cid
-        FROM cashflow_categories WHERE company_id = 1
-    """), {"cid": company.id})
-    await db.commit()
 
     return company
 
@@ -170,12 +275,9 @@ async def update_company(
     company_id: int,
     payload: CompanyUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Company).where(Company.id == company_id))
-    company = result.scalar_one_or_none()
-    if not company:
-        raise HTTPException(404, "ไม่พบบริษัท")
+    company = await _require_company_admin(company_id, current_user, db)
     for field, value in payload.model_dump(exclude_none=True).items():
         setattr(company, field, value)
     await db.commit()
@@ -187,7 +289,7 @@ async def update_company(
 async def deactivate_company(
     company_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    _: User = Depends(require_platform_admin),
 ):
     result = await db.execute(select(Company).where(Company.id == company_id))
     company = result.scalar_one_or_none()
@@ -201,8 +303,9 @@ async def deactivate_company(
 async def list_company_users(
     company_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
 ):
+    await _require_company_admin(company_id, current_user, db)
     result = await db.execute(
         select(User, UserCompany)
         .join(UserCompany, User.id == UserCompany.user_id)
@@ -210,8 +313,35 @@ async def list_company_users(
         .order_by(User.id)
     )
     rows = result.all()
-    return [{"user_id": u.id, "username": u.username, "full_name": u.full_name, "role": u.role}
-            for u, _ in rows]
+    return [{"user_id": u.id, "username": u.username, "full_name": u.full_name, "role": uc.role}
+            for u, uc in rows if uc.is_active]
+
+
+@router.get("/{company_id}/users/search", response_model=list[UserSearchOut])
+async def search_users_to_grant(
+    company_id: int,
+    q: str = Query(min_length=2),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Find existing, active users not yet granted access to this company."""
+    await _require_company_admin(company_id, current_user, db)
+    pattern = f"%{q}%"
+    result = await db.execute(
+        select(User)
+        .where(
+            (User.username.ilike(pattern)) | (User.email.ilike(pattern)) | (User.full_name.ilike(pattern)),
+            User.is_active == True,
+            ~User.id.in_(
+                select(UserCompany.user_id).where(
+                    UserCompany.company_id == company_id, UserCompany.is_active == True
+                )
+            ),
+        )
+        .order_by(User.username)
+        .limit(20)
+    )
+    return result.scalars().all()
 
 
 @router.post("/{company_id}/users", status_code=201)
@@ -219,9 +349,14 @@ async def grant_company_access(
     company_id: int,
     payload: GrantUserIn,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
 ):
-    company = await _get_accessible_company(company_id, current_user, db)
+    company = await _require_company_admin(company_id, current_user, db)
+    if not await role_is_active(db, payload.role):
+        raise HTTPException(400, "ไม่พบบทบาทนี้ หรือบทบาทนี้ถูกปิดใช้งานแล้ว")
+    levels = await get_role_levels(db)
+    if payload.user_id == current_user.id and levels.get(payload.role, 0) < levels.get("admin", 0):
+        raise HTTPException(400, "ไม่สามารถลดสิทธิ์ผู้ดูแลของบัญชีตัวเองได้")
     user_result = await db.execute(select(User).where(User.id == payload.user_id))
     user = user_result.scalar_one_or_none()
     if not user:
@@ -232,12 +367,64 @@ async def grant_company_access(
             UserCompany.company_id == company_id,
         )
     )
-    if existing.scalar_one_or_none():
-        return {"detail": "มีสิทธิ์อยู่แล้ว"}
-    uc = UserCompany(user_id=payload.user_id, company_id=company_id, granted_by=current_user.id)
-    db.add(uc)
+    membership = existing.scalar_one_or_none()
+    if membership:
+        membership.role = payload.role
+        membership.is_active = True
+    else:
+        db.add(UserCompany(
+            user_id=payload.user_id,
+            company_id=company.id,
+            granted_by=current_user.id,
+            role=payload.role,
+        ))
     await db.commit()
-    return {"detail": "เพิ่มสิทธิ์เรียบร้อย"}
+    return {"detail": "บันทึกสิทธิ์เรียบร้อย"}
+
+
+@router.post("/{company_id}/users/invite", response_model=UserCompanyOut, status_code=201)
+async def invite_company_user(
+    company_id: int,
+    payload: InviteCompanyUserIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _require_company_admin(company_id, current_user, db)
+    if not await role_is_active(db, payload.role):
+        raise HTTPException(400, "ไม่พบบทบาทนี้ หรือบทบาทนี้ถูกปิดใช้งานแล้ว")
+    existing = (await db.execute(
+        select(User).where(
+            (User.username == payload.username) | (User.email == payload.email)
+        )
+    )).scalar_one_or_none()
+    if existing:
+        raise HTTPException(
+            400,
+            "Username หรือ Email มีอยู่แล้ว ให้ผู้ดูแลแพลตฟอร์มเพิ่มบัญชีเดิมเข้าบริษัท",
+        )
+
+    user = User(
+        username=payload.username.strip(),
+        email=str(payload.email).lower(),
+        password_hash=hash_password(payload.password),
+        full_name=payload.full_name,
+        role="viewer",
+    )
+    db.add(user)
+    await db.flush()
+    db.add(UserCompany(
+        user_id=user.id,
+        company_id=company_id,
+        granted_by=current_user.id,
+        role=payload.role,
+    ))
+    await db.commit()
+    return {
+        "user_id": user.id,
+        "username": user.username,
+        "full_name": user.full_name,
+        "role": payload.role,
+    }
 
 
 @router.delete("/{company_id}/users/{user_id}", status_code=204)
@@ -245,8 +432,11 @@ async def revoke_company_access(
     company_id: int,
     user_id: int,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(require_admin),
+    current_user: User = Depends(get_current_user),
 ):
+    await _require_company_admin(company_id, current_user, db)
+    if user_id == current_user.id:
+        raise HTTPException(400, "ไม่สามารถถอนสิทธิ์ของบัญชีตัวเองได้")
     result = await db.execute(
         select(UserCompany).where(
             UserCompany.user_id == user_id,
@@ -256,5 +446,5 @@ async def revoke_company_access(
     uc = result.scalar_one_or_none()
     if not uc:
         raise HTTPException(404, "ไม่พบการกำหนดสิทธิ์")
-    await db.delete(uc)
+    uc.is_active = False
     await db.commit()

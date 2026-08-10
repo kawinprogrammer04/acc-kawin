@@ -6,6 +6,7 @@ export interface Company {
   name_en?: string;
   tax_id?: string;
   is_active: boolean;
+  role: "admin" | "approver" | "accountant" | "viewer";
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -15,8 +16,101 @@ export interface User {
   email: string;
   full_name: string | null;
   role: "admin" | "approver" | "accountant" | "viewer";
+  is_platform_admin: boolean;
   is_active: boolean;
   companies?: Company[];
+  permissions_configured?: boolean;
+  menu_permissions?: MenuPermission[];
+  menus?: AppMenu[];
+  allowed_menus?: AppMenu[];
+  allowed_permissions?: string[];
+  permission_sets?: PermissionSet[];
+}
+
+export type PermissionAction = string;
+
+export interface MenuPermission {
+  menu_id: number;
+  menu_key: string;
+  can_view: boolean;
+  can_create: boolean;
+  can_update: boolean;
+  can_delete: boolean;
+  can_approve: boolean;
+  can_export: boolean;
+}
+
+export interface AppMenu {
+  id: number;
+  key: string;
+  label: string;
+  path: string | null;
+  icon: string | null;
+  group_key: string | null;
+  group_label: string | null;
+  description?: string | null;
+  sort_order: number;
+  is_active: boolean;
+  is_system: boolean;
+}
+
+export interface DiscoveredRoute {
+  method: string;
+  path: string;
+  name: string | null;
+  permission_key: string;
+  action_key: string;
+  action_label: string;
+  menu_id: number | null;
+  menu_key: string | null;
+  menu_label: string | null;
+  is_synced: boolean;
+}
+
+export interface PermissionItem {
+  id: number;
+  key: string;
+  menu_id: number | null;
+  menu_key: string | null;
+  menu_label?: string | null;
+  action_key: string;
+  label: string;
+  route_method: string | null;
+  route_path: string | null;
+  source: string;
+  sort_order: number;
+  is_active: boolean;
+}
+
+export interface PermissionSet {
+  id: number;
+  name: string;
+  description: string | null;
+  is_active: boolean;
+  is_system: boolean;
+  permission_item_ids: number[];
+}
+
+export interface UserPermissionOverride {
+  permission_item_id: number;
+  permission_key: string;
+  is_allowed: boolean;
+}
+
+export interface UserPermissionCatalog {
+  user_id: number;
+  username: string;
+  full_name: string | null;
+  permission_set_ids: number[];
+  overrides: UserPermissionOverride[];
+  effective_permission_keys: string[];
+}
+
+export interface PositionPermissionCatalog {
+  position_id: number;
+  position_name: string;
+  permission_set_ids: number[];
+  effective_permission_keys: string[];
 }
 
 export interface TokenResponse {

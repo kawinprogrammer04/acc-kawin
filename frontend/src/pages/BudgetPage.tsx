@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Loader2, PiggyBank, Plus, Pencil, Trash2, AlertTriangle } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { api } from "@/api/client";
+import { api, getApiErrorMessage } from "@/api/client";
 import { formatCurrency, today, monthStart } from "@/lib/format";
 
 interface Budget {
@@ -92,8 +92,8 @@ export function BudgetPage() {
       }
       setShowForm(false);
       load();
-    } catch (e: any) {
-      setError(e.response?.data?.detail ?? "เกิดข้อผิดพลาด");
+    } catch (e: unknown) {
+      setError(getApiErrorMessage(e));
     } finally { setSaving(false); }
   }
 

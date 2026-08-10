@@ -35,6 +35,9 @@ services:
       - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
       - ./db/02_seed_chart_of_accounts.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
       - ./db/03_views_and_functions.sql:/docker-entrypoint-initdb.d/03_views.sql:ro
+      - ./db/05_cashflow_tables.sql:/docker-entrypoint-initdb.d/05_cashflow.sql:ro
+      - ./db/06_multi_company.sql:/docker-entrypoint-initdb.d/06_multi_company.sql:ro
+      - ./db/07_runtime_fixes.sql:/docker-entrypoint-initdb.d/07_runtime_fixes.sql:ro
       - ./scripts/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
 
     # Tune Postgres for a small-medium instance (512 MB RAM server)
@@ -75,19 +78,49 @@ services:
     container_name: acc_backend
     restart: unless-stopped
     logging: *default-logging
+    extra_hosts:
+      - "dev.crm-kawin.test:host-gateway"
+      # Lets the container reach Ollama running natively on the host (macOS
+      # dev machine or a production server) — on Docker Desktop for Mac this
+      # already resolves automatically, but the explicit mapping is required
+      # on Linux (e.g. the Plesk production host).
+      - "host.docker.internal:host-gateway"
 
     depends_on:
       db:
         condition: service_healthy
+      tax_invoice_renderer:
+        condition: service_healthy
 
     environment:
-      DATABASE_URL:               postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?}@db:5432/${POSTGRES_DB:-accounting_db}
+      APP_ENV:                    ${APP_ENV:-local}
+      DATABASE_URL:               ${DATABASE_URL:-}
+      MIGRATION_DATABASE_URL:     ${MIGRATION_DATABASE_URL:-}
+      DATABASE_HOST:              ${DATABASE_HOST:-db}
+      POSTGRES_DB:                ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER:              ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD:          ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       SECRET_KEY:                 ${SECRET_KEY:?SECRET_KEY must be set (min 32 chars)}
       ALGORITHM:                  ${ALGORITHM:-HS256}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
       COMPANY_NAME:               ${COMPANY_NAME:-บริษัท ของคุณ จำกัด}
       COMPANY_TAX_ID:             ${COMPANY_TAX_ID:-}
       VAT_RATE:                   ${VAT_RATE:-7.0}
+      DEBUG:                      ${DEBUG:-false}
+      CRM_KAWIN_BASE_URL:         ${CRM_KAWIN_BASE_URL:-}
+      CRM_KAWIN_ORDERS_PATH:      ${CRM_KAWIN_ORDERS_PATH:-/api/accounting/get_list_order.php}
+      CRM_KAWIN_API_KEY:          ${CRM_KAWIN_API_KEY:-}
+      CRM_KAWIN_TIMEOUT_SECONDS:  ${CRM_KAWIN_TIMEOUT_SECONDS:-15}
+      TAX_INVOICE_SOFFICE_PATH:   ${TAX_INVOICE_SOFFICE_PATH:-}
+      TAX_INVOICE_PDF_TIMEOUT_SECONDS: ${TAX_INVOICE_PDF_TIMEOUT_SECONDS:-60}
+      DOMPDF_RENDERER_URL:        ${DOMPDF_RENDERER_URL:-http://tax_invoice_renderer:8090}
+      DOMPDF_TIMEOUT_SECONDS:     ${DOMPDF_TIMEOUT_SECONDS:-30}
+      XDG_CACHE_HOME:             /tmp/.cache
+      OLLAMA_URL:                 ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_VISION_MODEL:        ${OLLAMA_VISION_MODEL:-qwen2.5vl:7b}
+
+    volumes:
+      - backend_uploads:/app/uploads
 
     # Backend NOT exposed externally — Nginx is the only entry point
     expose:
@@ -103,13 +136,36 @@ services:
     networks:
       - backend_net
 
+  # ── Tax Invoice PDF Renderer (PHP + Dompdf) ───────────────────────────────
+  tax_invoice_renderer:
+    build:
+      context: ./backend
+      dockerfile: dompdf_renderer/Dockerfile
+    image: acc_tax_invoice_renderer:latest
+    container_name: acc_tax_invoice_renderer
+    restart: unless-stopped
+    logging: *default-logging
+
+    expose:
+      - "8090"
+
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8090/health') === 'ok' ? 0 : 1);"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      - backend_net
+
   # ── Credit Statement Matcher (embedded under /statement) ───────────────────
-  # Source lives in the sibling repo ../credit_statement_matcher. Built here so a
+  # Source lives in ./credit_statement_matcher. Built here so a
   # single `docker compose up` brings the statement checker online behind the
   # same Nginx + TLS as the accounting app, reachable at https://${DOMAIN}/statement/
   statement:
     build:
-      context: ../credit_statement_matcher
+      context: ./credit_statement_matcher
       dockerfile: Dockerfile
     image: credit_statement_matcher:latest
     container_name: acc_statement
@@ -120,18 +176,25 @@ services:
       # Served behind Nginx under a sub-path → prefix every generated link
       ROOT_PATH: /statement
       PORT: 8010
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      STATEMENT_DATABASE_URL: ${STATEMENT_DATABASE_URL:-}
+      UPLOAD_DIR: /tmp/statement_uploads
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+
+    depends_on:
+      db:
+        condition: service_healthy
 
     # Not exposed externally — only Nginx (frontend) reaches it on backend_net
     expose:
       - "8010"
 
-    volumes:
-      # Persist SQLite DB + uploaded statements on the host (sibling repo paths)
-      - ../credit_statement_matcher/credit_statements.db:/app/credit_statements.db
-      - ../credit_statement_matcher/uploads:/app/uploads
-
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8010/upload').status==200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8010/health').status==200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -181,16 +244,8 @@ services:
     environment:
       DOMAIN: ${DOMAIN:-accounting.internal}
 
-    # Replace ${DOMAIN} placeholder in nginx config before starting
-    command: >
-      sh -c "
-        find /etc/nginx/conf.d -name '*.conf' -exec
-          sed -i 's/\$${DOMAIN}/'"$$DOMAIN"'/g' {} \\;
-        nginx -t && nginx -g 'daemon off;'
-      "
-
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      test: ["CMD", "wget", "--no-check-certificate", "-qO-", "https://localhost/health"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -266,3 +321,4 @@ volumes:
   # Named volumes (managed by Docker, no host path needed)
   certbot_webroot:
   nginx_logs:
+  backend_uploads:

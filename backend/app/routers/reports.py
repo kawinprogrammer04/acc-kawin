@@ -6,8 +6,9 @@ from sqlalchemy import cast, func, select, String, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import require_viewer
+from app.core.dependencies import get_current_company, require_viewer
 from app.models.account import Account
+from app.models.company import Company
 from app.models.fiscal import AccountingPeriod
 from app.models.invoice import Invoice
 from app.models.journal import Journal, JournalLine
@@ -38,6 +39,7 @@ async def _get_period_balances(
     fiscal_year_id: int,
     period_from: int,
     period_to: int,
+    company_id: int,
 ) -> dict[int, tuple[Decimal, Decimal]]:
     """Returns {account_id: (total_debit, total_credit)}"""
     stmt = (
@@ -46,6 +48,8 @@ async def _get_period_balances(
         .join(AccountingPeriod, AccountingPeriod.id == Journal.period_id)
         .where(
             cast(Journal.status, String) == "posted",
+            Journal.company_id == company_id,
+            AccountingPeriod.company_id == company_id,
             AccountingPeriod.fiscal_year_id == fiscal_year_id,
             AccountingPeriod.period_number >= period_from,
             AccountingPeriod.period_number <= period_to,
@@ -59,12 +63,20 @@ async def _get_period_balances(
     }
 
 
-async def _get_cumulative_balances(db: AsyncSession, as_of: date) -> dict[int, tuple[Decimal, Decimal]]:
+async def _get_cumulative_balances(
+    db: AsyncSession,
+    as_of: date,
+    company_id: int,
+) -> dict[int, tuple[Decimal, Decimal]]:
     """Returns {account_id: (total_debit, total_credit)} up to as_of date"""
     stmt = (
         select(JournalLine.account_id, func.sum(JournalLine.debit), func.sum(JournalLine.credit))
         .join(Journal, Journal.id == JournalLine.journal_id)
-        .where(cast(Journal.status, String) == "posted", Journal.entry_date <= as_of)
+        .where(
+            cast(Journal.status, String) == "posted",
+            Journal.entry_date <= as_of,
+            Journal.company_id == company_id,
+        )
         .group_by(JournalLine.account_id)
     )
     result = await db.execute(stmt)
@@ -83,9 +95,17 @@ async def trial_balance(
     period_number: int = Query(..., ge=1, le=12),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
-    balances = await _get_period_balances(db, fiscal_year_id, period_number, period_number)
-    result = await db.execute(select(Account).where(Account.is_header == False).order_by(Account.code))  # noqa: E712
+    balances = await _get_period_balances(
+        db, fiscal_year_id, period_number, period_number, company.id
+    )
+    result = await db.execute(
+        select(Account).where(
+            Account.company_id == company.id,
+            Account.is_header == False,
+        ).order_by(Account.code)
+    )  # noqa: E712
     accounts = result.scalars().all()
 
     lines = []
@@ -123,14 +143,21 @@ async def income_statement(
     period_to: int = Query(12, ge=1, le=12),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     if period_from > period_to:
         raise HTTPException(status_code=400, detail="period_from ต้องไม่มากกว่า period_to")
 
-    balances = await _get_period_balances(db, fiscal_year_id, period_from, period_to)
+    balances = await _get_period_balances(
+        db, fiscal_year_id, period_from, period_to, company.id
+    )
     result = await db.execute(
         select(Account)
-        .where(cast(Account.account_type, String).in_(["revenue", "expense"]), Account.is_header == False)  # noqa: E712
+        .where(
+            Account.company_id == company.id,
+            cast(Account.account_type, String).in_(["revenue", "expense"]),
+            Account.is_header == False,
+        )  # noqa: E712
         .order_by(Account.code)
     )
     accounts = result.scalars().all()
@@ -183,11 +210,16 @@ async def balance_sheet(
     as_of_date: date = Query(..., description="วันที่ เช่น 2024-12-31"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
-    balances = await _get_cumulative_balances(db, as_of_date)
+    balances = await _get_cumulative_balances(db, as_of_date, company.id)
     result = await db.execute(
         select(Account)
-        .where(cast(Account.account_type, String).in_(["asset", "liability", "equity"]), Account.is_header == False)  # noqa: E712
+        .where(
+            Account.company_id == company.id,
+            cast(Account.account_type, String).in_(["asset", "liability", "equity"]),
+            Account.is_header == False,
+        )  # noqa: E712
         .order_by(Account.code)
     )
     accounts = result.scalars().all()
@@ -225,24 +257,28 @@ async def balance_sheet(
 async def ar_aging(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
-    return await _aging_report(db, "ar")
+    return await _aging_report(db, "ar", company.id)
 
 
 @router.get("/ap-aging", response_model=AgingOut)
 async def ap_aging(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
-    return await _aging_report(db, "ap")
+    return await _aging_report(db, "ap", company.id)
 
 
-async def _aging_report(db: AsyncSession, invoice_type: str) -> AgingOut:
+async def _aging_report(db: AsyncSession, invoice_type: str, company_id: int) -> AgingOut:
     result = await db.execute(
         select(Invoice, Party)
         .join(Party, Party.id == Invoice.party_id)
         .where(
             cast(Invoice.invoice_type, String) == invoice_type,
+            Invoice.company_id == company_id,
+            Party.company_id == company_id,
             cast(Invoice.status, String).not_in(["paid", "voided"]),
             Invoice.paid_amount < Invoice.total_amount,
         )
@@ -291,6 +327,7 @@ async def vat_pp30(
     month: int = Query(..., ge=1, le=12, description="เดือน 1-12"),
     db: AsyncSession = Depends(get_db),
     _: User = Depends(require_viewer),
+    company: Company = Depends(get_current_company),
 ):
     result = await db.execute(
         select(
@@ -299,7 +336,11 @@ async def vat_pp30(
             func.sum(VatRecord.taxable_amount).label("total_taxable"),
             func.sum(VatRecord.vat_amount).label("total_vat"),
         )
-        .where(VatRecord.period_year == year, VatRecord.period_month == month)
+        .where(
+            VatRecord.period_year == year,
+            VatRecord.period_month == month,
+            VatRecord.company_id == company.id,
+        )
         .group_by(VatRecord.record_type)
     )
     rows = {row.record_type: row for row in result.all()}

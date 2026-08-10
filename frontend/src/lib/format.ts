@@ -17,12 +17,19 @@ export function formatDate(d: string | Date | undefined): string {
 }
 
 export function today(): string {
-  return new Date().toISOString().split("T")[0];
+  return localDateInput(new Date());
 }
 
 export function monthStart(): string {
   const d = new Date();
-  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().split("T")[0];
+  return localDateInput(new Date(d.getFullYear(), d.getMonth(), 1));
+}
+
+export function localDateInput(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export function isOverdue(dateStr?: string): boolean {

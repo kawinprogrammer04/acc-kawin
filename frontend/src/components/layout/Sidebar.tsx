@@ -6,57 +6,67 @@ import {
   Building2, ChevronDown, ChevronUp, ClipboardList, Users,
   PiggyBank, Settings, FolderOpen, ChevronsUpDown, FileSearch,
   Upload, List, PenSquare,
+  Receipt, ShieldCheck, ListTree,
+  RefreshCcw, Send, Inbox, Workflow, KeyRound, X,
 } from "lucide-react";
+import * as LucideIcons from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
 import { Separator } from "@/components/ui/separator";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { AppMenu } from "@/types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type NavLeaf = { label: string; href: string; icon?: React.ComponentType<any> };
+type NavLeaf = { key: string; label: string; href: string; icon?: React.ComponentType<any> };
 type NavGroup = { label: string; icon: React.ComponentType<any>; children: NavLeaf[] };
 type NavItem = NavLeaf | NavGroup;
 
 // ── Navigation config ─────────────────────────────────────────────────────────
 const cashflowNav: NavItem[] = [
-  { label: "แดชบอร์ด", href: "/", icon: LayoutDashboard },
-  { label: "รายรับ", href: "/income", icon: ArrowUpCircle },
-  { label: "รายจ่าย", href: "/expenses", icon: ArrowDownCircle },
-  { label: "เจ้าหนี้", href: "/payables", icon: CreditCard },
-  { label: "ลูกหนี้", href: "/receivables", icon: HelpingHand },
-  { label: "กำหนดการจ่าย / รับ", href: "/schedule", icon: Calendar },
-  { label: "บัญชีเงิน / Wallet", href: "/wallet-accounts", icon: Wallet },
-  { label: "Holder / กระเป๋าย่อย", href: "/holders", icon: Package },
-  { label: "โอนเงิน", href: "/transfers", icon: ArrowLeftRight },
-  { label: "หมวดหมู่", href: "/categories", icon: Tag },
-  { label: "รายงาน", href: "/cashflow-reports", icon: FileBarChart },
-  { label: "เอกสาร", href: "/documents", icon: FolderOpen },
-  { label: "งบประมาณ", href: "/budgets", icon: PiggyBank },
-  { label: "Activity Log", href: "/activity-logs", icon: ClipboardList },
+  { key: "dashboard", label: "แดชบอร์ด", href: "/", icon: LayoutDashboard },
+  { key: "income", label: "รายรับ", href: "/income", icon: ArrowUpCircle },
+  { key: "expenses", label: "รายจ่าย", href: "/expenses", icon: ArrowDownCircle },
+  { key: "payables", label: "เจ้าหนี้", href: "/payables", icon: CreditCard },
+  { key: "receivables", label: "ลูกหนี้", href: "/receivables", icon: HelpingHand },
+  { key: "schedule", label: "กำหนดการจ่าย / รับ", href: "/schedule", icon: Calendar },
+  { key: "wallet_accounts", label: "บัญชีเงิน / Wallet", href: "/wallet-accounts", icon: Wallet },
+  { key: "wallet_accounts", label: "กระทบยอดธนาคาร", href: "/bank-reconciliation", icon: RefreshCcw },
+  { key: "holders", label: "Holder / กระเป๋าย่อย", href: "/holders", icon: Package },
+  { key: "transfers", label: "โอนเงิน", href: "/transfers", icon: ArrowLeftRight },
+  { key: "categories", label: "หมวดหมู่", href: "/categories", icon: Tag },
+  { key: "cashflow_reports", label: "รายงาน", href: "/cashflow-reports", icon: FileBarChart },
+  { key: "crm_cashflow_statement", label: "รายรับ-รายจ่าย (CRM)", href: "/crm-cashflow/statements", icon: ListTree },
+  { key: "crm_cashflow_invoice", label: "ติดตามใบกำกับภาษี (CRM)", href: "/crm-cashflow/invoices", icon: Receipt },
+  { key: "documents", label: "เอกสาร", href: "/documents", icon: FolderOpen },
+  { key: "tax_invoices", label: "ใบกำกับภาษี", href: "/tax-invoices", icon: Receipt },
+  { key: "budgets", label: "งบประมาณ", href: "/budgets", icon: PiggyBank },
+  { key: "expense_requests", label: "เบิกเงิน / ขออนุมัติ", href: "/expense-requests", icon: Send },
+  { key: "approvals_inbox", label: "รออนุมัติของฉัน", href: "/approvals/inbox", icon: Inbox },
+  { key: "activity_logs", label: "Activity Log", href: "/activity-logs", icon: ClipboardList },
 ];
 
 const accountingNav: NavItem[] = [
-  { label: "ภาพรวมบัญชี", href: "/accounting", icon: LayoutDashboard },
-  { label: "ผังบัญชี", href: "/accounts", icon: Building2 },
-  { label: "สมุดรายวัน", href: "/journals", icon: BookOpen },
+  { key: "accounting", label: "ภาพรวมบัญชี", href: "/accounting", icon: LayoutDashboard },
+  { key: "accounts", label: "ผังบัญชี", href: "/accounts", icon: Building2 },
+  { key: "journals", label: "สมุดรายวัน", href: "/journals", icon: BookOpen },
   {
     label: "ใบแจ้งหนี้",
     icon: FileText,
     children: [
-      { label: "ลูกหนี้ (AR)", href: "/invoices/ar" },
-      { label: "เจ้าหนี้ (AP)", href: "/invoices/ap" },
+      { key: "invoices_ar", label: "ลูกหนี้ (AR)", href: "/invoices/ar" },
+      { key: "invoices_ap", label: "เจ้าหนี้ (AP)", href: "/invoices/ap" },
     ],
   },
   {
     label: "รายงานบัญชี",
     icon: BarChart3,
     children: [
-      { label: "งบกำไรขาดทุน", href: "/reports/income-statement" },
-      { label: "งบดุล", href: "/reports/balance-sheet" },
-      { label: "งบทดลอง", href: "/reports/trial-balance" },
-      { label: "อายุลูกหนี้", href: "/reports/ar-aging" },
-      { label: "ภพ.30", href: "/reports/vat" },
+      { key: "report_income_statement", label: "งบกำไรขาดทุน", href: "/reports/income-statement" },
+      { key: "report_balance_sheet", label: "งบดุล", href: "/reports/balance-sheet" },
+      { key: "report_trial_balance", label: "งบทดลอง", href: "/reports/trial-balance" },
+      { key: "report_ar_aging", label: "อายุลูกหนี้", href: "/reports/ar-aging" },
+      { key: "report_vat", label: "ภพ.30", href: "/reports/vat" },
     ],
   },
 ];
@@ -66,12 +76,39 @@ const accountingNav: NavItem[] = [
 // routes; each switches the framed iframe via ?tab=, read by StatementPage.
 type StatementTab = { tab: string; label: string; icon: React.ComponentType<any> };
 const statementNav: StatementTab[] = [
-  { tab: "upload", label: "Upload", icon: Upload },
-  { tab: "transactions", label: "รายการทั้งหมด", icon: List },
-  { tab: "manual-edit", label: "Manual Edit", icon: PenSquare },
-  { tab: "summary", label: "Summary", icon: BarChart3 },
-  { tab: "cards", label: "จัดการบัตร", icon: CreditCard },
+  { tab: "upload",      label: "1. อัปโหลด Statement / TikTok", icon: Upload },
+  { tab: "review",      label: "2. จับคู่ & ดูผล",              icon: FileSearch },
+  { tab: "summary",     label: "3. รายงาน / Export",            icon: BarChart3 },
+  { tab: "references",  label: "TikTok Refs",                    icon: ArrowLeftRight },
+  { tab: "manual-edit", label: "จับคู่เอง",                      icon: PenSquare },
 ];
+
+const statementKeyByTab: Record<string, string> = {
+  review: "statement_transactions",
+  upload: "statement_upload",
+  references: "statement_manual_edit",
+  transactions: "statement_transactions",
+  "manual-edit": "statement_manual_edit",
+  summary: "statement_summary",
+  audit: "statement_summary",
+  cards: "statement_cards",
+};
+
+const iconMap: Record<string, React.ComponentType<any>> = {
+  LayoutDashboard, BookOpen, FileText, BarChart3, ChevronRight,
+  ArrowUpCircle, ArrowDownCircle, CreditCard, HelpingHand,
+  Calendar, Wallet, Package, ArrowLeftRight, Tag, FileBarChart,
+  Building2, ClipboardList, Users, PiggyBank, Settings, FolderOpen,
+  FileSearch, Upload, List, PenSquare, Receipt, ShieldCheck, ListTree,
+  RefreshCcw,
+};
+
+const lucideIconMap = LucideIcons as unknown as Record<string, React.ComponentType<any>>;
+
+function resolveIcon(icon?: string | null) {
+  if (!icon) return undefined;
+  return iconMap[icon] ?? lucideIconMap[icon];
+}
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const activeCls = "bg-primary text-primary-foreground font-medium";
@@ -146,11 +183,17 @@ function NavSection({ items }: { items: NavItem[] }) {
 function StatementSubmenu() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const { can } = useAuth();
   const activeTab = location.pathname === "/statement" ? (searchParams.get("tab") ?? "upload") : null;
+  const visibleStatementNav = statementNav.filter(({ tab }) => can(statementKeyByTab[tab]));
+
+  const mainTabs = ["upload", "review", "summary"];
+  const advTabs  = ["references", "manual-edit"];
+  const visible  = new Set(visibleStatementNav.map(n => n.tab));
 
   return (
     <div className="flex flex-col gap-0.5">
-      {statementNav.map(({ tab, label, icon: Icon }) => (
+      {statementNav.filter(n => mainTabs.includes(n.tab) && visible.has(n.tab)).map(({ tab, label, icon: Icon }) => (
         <Link
           key={tab}
           to={`/statement?tab=${tab}`}
@@ -160,28 +203,187 @@ function StatementSubmenu() {
           {label}
         </Link>
       ))}
+      {advTabs.some(t => visible.has(t)) && (
+        <div className="my-1 border-t border-border/50" />
+      )}
+      {statementNav.filter(n => advTabs.includes(n.tab) && visible.has(n.tab)).map(({ tab, label, icon: Icon }) => (
+        <Link
+          key={tab}
+          to={`/statement?tab=${tab}`}
+          className={cn(baseCls, activeTab === tab ? activeCls : inactiveCls, "text-muted-foreground/80")}
+        >
+          <Icon className="h-4 w-4 shrink-0" />
+          {label}
+        </Link>
+      ))}
     </div>
   );
 }
 
-const adminNav: NavItem[] = [
-  { label: "บริษัท", href: "/companies", icon: Building2 },
-  { label: "ผู้ใช้งาน", href: "/users", icon: Users },
-  { label: "ตั้งค่าบริษัท", href: "/settings", icon: Settings },
+const adminNav: NavLeaf[] = [
+  { key: "companies", label: "บริษัท", href: "/companies", icon: Building2 },
+  { key: "users", label: "ผู้ใช้งาน", href: "/users", icon: Users },
+  { key: "settings", label: "ตั้งค่าบริษัท", href: "/settings", icon: Settings },
+  { key: "approval_matrix", label: "สายอนุมัติ", href: "/approval-matrix", icon: Workflow },
+  { key: "roles", label: "จัดการบทบาท", href: "/roles", icon: KeyRound },
+  { key: "permissions", label: "Permission", href: "/permissions", icon: ShieldCheck },
+  { key: "menus", label: "จัดการเมนู", href: "/menus", icon: ListTree },
 ];
 
+function filterNavItems(items: NavItem[], canView: (key: string) => boolean): NavItem[] {
+  return items
+    .map(item => {
+      if ("children" in item) {
+        const children = item.children.filter(child => canView(child.key));
+        return children.length ? { ...item, children } : null;
+      }
+      return canView(item.key) ? item : null;
+    })
+    .filter(Boolean) as NavItem[];
+}
+
+function menuToLeaf(menu: AppMenu): NavLeaf | null {
+  if (!menu.path) return null;
+  return {
+    key: menu.key,
+    label: menu.label,
+    href: menu.path,
+    icon: resolveIcon(menu.icon),
+  };
+}
+
+function DynamicMenuGroup({
+  label,
+  icon,
+  items,
+  defaultOpen = false,
+}: {
+  label: string;
+  icon: React.ComponentType<any>;
+  items: NavLeaf[];
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const Icon = icon;
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex w-full items-center gap-2 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground"
+      >
+        <Icon className="h-3 w-3" />
+        {label}
+        {open ? <ChevronUp className="h-3 w-3 ml-auto" /> : <ChevronDown className="h-3 w-3 ml-auto" />}
+      </button>
+      {open && (
+        <div className="mt-1">
+          <NavSection items={items} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DynamicNav({ menus }: { menus: AppMenu[] }) {
+  const location = useLocation();
+  const sortedMenus = [...menus].sort((a, b) =>
+    a.sort_order - b.sort_order ||
+    (a.group_key ?? "").localeCompare(b.group_key ?? "") ||
+    a.id - b.id
+  );
+  const groups = sortedMenus.reduce<Record<string, { label: string; items: NavLeaf[] }>>((acc, menu) => {
+    const leaf = menuToLeaf(menu);
+    if (!leaf) return acc;
+    const key = menu.group_key || "other";
+    if (!acc[key]) acc[key] = { label: menu.group_label || "เมนู", items: [] };
+    acc[key].items.push(leaf);
+    return acc;
+  }, {});
+
+  const cashflow = [...(groups.cashflow?.items ?? [])];
+  const hasReconciliation = cashflow.some(item => item.href === "/bank-reconciliation");
+  const walletIndex = cashflow.findIndex(item => item.key === "wallet_accounts");
+  if (!hasReconciliation && walletIndex >= 0) {
+    cashflow.splice(walletIndex + 1, 0, {
+      key: "wallet_accounts",
+      label: "กระทบยอดธนาคาร",
+      href: "/bank-reconciliation",
+      icon: RefreshCcw,
+    });
+  }
+  const otherGroups = Object.entries(groups).filter(([key]) => key !== "cashflow");
+  const groupIcon: Record<string, React.ComponentType<any>> = {
+    statement: FileSearch,
+    accounting: BookOpen,
+    admin: Settings,
+  };
+
+  return (
+    <>
+      {cashflow.length > 0 && <NavSection items={cashflow} />}
+      {otherGroups.map(([key, group]) => (
+        <div key={key}>
+          {cashflow.length > 0 && <Separator />}
+          <DynamicMenuGroup
+            label={group.label}
+            icon={groupIcon[key] ?? ListTree}
+            items={group.items}
+            defaultOpen={location.pathname === "/statement" || group.items.some(item => location.pathname === item.href)}
+          />
+        </div>
+      ))}
+    </>
+  );
+}
+
 // ── Sidebar ───────────────────────────────────────────────────────────────────
-export function Sidebar() {
-  const { user, logout } = useAuth();
+interface SidebarProps {
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
+}
+
+export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
+  const { user, logout, can } = useAuth();
   const { companies, currentCompany, setCurrentCompany } = useCompany();
   const location = useLocation();
+  // Auto-close the mobile drawer whenever the route changes (link tap, back button, etc.)
+  useEffect(() => { onMobileClose?.(); }, [location.pathname]);
   const [showAccounting, setShowAccounting] = useState(false);
   const [showStatement, setShowStatement] = useState(location.pathname === "/statement");
   const [showAdmin, setShowAdmin] = useState(false);
   const [showCompanySwitcher, setShowCompanySwitcher] = useState(false);
+  const isCompanyAdmin = currentCompany?.role === "admin";
+  const dynamicMenus = user?.permissions_configured && Array.isArray(user.allowed_menus)
+    ? user.allowed_menus
+    : (user?.menus ?? []);
+  const useDynamicMenu = Boolean(dynamicMenus.length);
+  const visibleCashflowNav = filterNavItems(cashflowNav, (key) => can(key));
+  const visibleAccountingNav = filterNavItems(accountingNav, (key) => can(key));
+  const visibleStatementNavCount = statementNav.filter(({ tab }) => can(statementKeyByTab[tab])).length;
+  const visibleAdminNav = adminNav.filter((item) => {
+    if (!can(item.key)) return false;
+    if (item.href === "/users" || item.href === "/permissions" || item.href === "/menus" || item.href === "/roles") return user?.is_platform_admin;
+    if (item.href === "/companies") return user?.is_platform_admin || isCompanyAdmin;
+    return user?.is_platform_admin || isCompanyAdmin;
+  });
 
   return (
-    <aside className="flex h-screen w-60 flex-col border-r bg-white">
+    <>
+      {/* Mobile backdrop — tap to close the drawer */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={onMobileClose}
+          aria-hidden="true"
+        />
+      )}
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 z-50 flex h-screen w-60 flex-col border-r bg-white transition-transform duration-200 md:static md:z-auto md:translate-x-0",
+          mobileOpen ? "translate-x-0" : "-translate-x-full"
+        )}
+      >
       {/* Logo */}
       <div className="flex h-14 items-center gap-2 border-b px-4">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
@@ -191,6 +393,14 @@ export function Sidebar() {
           <p className="text-sm font-semibold">ระบบบัญชี</p>
           <p className="text-[10px] text-muted-foreground">SME Thailand</p>
         </div>
+        <button
+          type="button"
+          onClick={onMobileClose}
+          className="ml-auto rounded-md p-1.5 text-muted-foreground hover:bg-muted md:hidden"
+          aria-label="ปิดเมนู"
+        >
+          <X className="h-4 w-4" />
+        </button>
       </div>
 
       {/* Company Switcher */}
@@ -228,66 +438,76 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto p-3 space-y-4">
-        {/* Cash Flow Section */}
-        <NavSection items={cashflowNav} />
-
-        <Separator />
-
-        {/* Statement Section (Collapsible) — same pattern as บัญชีคู่ below */}
-        <div>
-          <button
-            onClick={() => setShowStatement(o => !o)}
-            className="flex w-full items-center gap-2 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground"
-          >
-            <FileSearch className="h-3 w-3" />
-            ตรวจ Statement บัตร
-            {showStatement ? <ChevronUp className="h-3 w-3 ml-auto" /> : <ChevronDown className="h-3 w-3 ml-auto" />}
-          </button>
-          {showStatement && (
-            <div className="mt-1">
-              <StatementSubmenu />
-            </div>
-          )}
-        </div>
-
-        <Separator />
-
-        {/* Accounting Section (Collapsible) */}
-        <div>
-          <button
-            onClick={() => setShowAccounting(o => !o)}
-            className="flex w-full items-center gap-2 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground"
-          >
-            <BookOpen className="h-3 w-3" />
-            บัญชีคู่ (Advanced)
-            {showAccounting ? <ChevronUp className="h-3 w-3 ml-auto" /> : <ChevronDown className="h-3 w-3 ml-auto" />}
-          </button>
-          {showAccounting && (
-            <div className="mt-1">
-              <NavSection items={accountingNav} />
-            </div>
-          )}
-        </div>
-
-        {/* Admin Section */}
-        {user?.role === "admin" && (
+        {useDynamicMenu ? (
+          <DynamicNav menus={dynamicMenus} />
+        ) : (
           <>
+            {/* Cash Flow Section */}
+            <NavSection items={visibleCashflowNav} />
+
             <Separator />
-            <div>
-              <button
-                onClick={() => setShowAdmin(o => !o)}
-                className="flex w-full items-center gap-2 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground"
-              >
-                <Settings className="h-3 w-3" />
-                ผู้ดูแลระบบ
-                {showAdmin ? <ChevronUp className="h-3 w-3 ml-auto" /> : <ChevronDown className="h-3 w-3 ml-auto" />}
-              </button>
-              {showAdmin && (
-                <div className="mt-1">
-                  <NavSection items={adminNav} />
+
+            {/* Statement Section (Collapsible) — same pattern as บัญชีคู่ below */}
+            {visibleStatementNavCount > 0 && (
+              <div>
+                <button
+                  onClick={() => setShowStatement(o => !o)}
+                  className="flex w-full items-center gap-2 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground"
+                >
+                  <FileSearch className="h-3 w-3" />
+                  ตรวจ Statement บัตร
+                  {showStatement ? <ChevronUp className="h-3 w-3 ml-auto" /> : <ChevronDown className="h-3 w-3 ml-auto" />}
+                </button>
+                {showStatement && (
+                  <div className="mt-1">
+                    <StatementSubmenu />
+                  </div>
+                )}
+              </div>
+            )}
+
+            <Separator />
+
+            {/* Accounting Section (Collapsible) */}
+            {visibleAccountingNav.length > 0 && (
+              <div>
+                <button
+                  onClick={() => setShowAccounting(o => !o)}
+                  className="flex w-full items-center gap-2 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground"
+                >
+                  <BookOpen className="h-3 w-3" />
+                  บัญชีคู่ (Advanced)
+                  {showAccounting ? <ChevronUp className="h-3 w-3 ml-auto" /> : <ChevronDown className="h-3 w-3 ml-auto" />}
+                </button>
+                {showAccounting && (
+                  <div className="mt-1">
+                    <NavSection items={visibleAccountingNav} />
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Admin Section */}
+            {visibleAdminNav.length > 0 && (
+              <>
+                <Separator />
+                <div>
+                  <button
+                    onClick={() => setShowAdmin(o => !o)}
+                    className="flex w-full items-center gap-2 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/60 hover:text-muted-foreground"
+                  >
+                    <Settings className="h-3 w-3" />
+                    ผู้ดูแลระบบ
+                    {showAdmin ? <ChevronUp className="h-3 w-3 ml-auto" /> : <ChevronDown className="h-3 w-3 ml-auto" />}
+                  </button>
+                  {showAdmin && (
+                    <div className="mt-1">
+                      <NavSection items={visibleAdminNav} />
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              </>
+            )}
           </>
         )}
       </nav>
@@ -302,7 +522,9 @@ export function Sidebar() {
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium truncate">{user?.full_name ?? user?.username}</p>
-            <p className="text-[10px] text-muted-foreground">{roleLabel(user?.role)}</p>
+            <p className="text-[10px] text-muted-foreground">
+              {user?.is_platform_admin ? "ผู้ดูแลแพลตฟอร์ม" : roleLabel(currentCompany?.role)}
+            </p>
           </div>
         </div>
         <button
@@ -313,7 +535,8 @@ export function Sidebar() {
           ออกจากระบบ
         </button>
       </div>
-    </aside>
+      </aside>
+    </>
   );
 }
 

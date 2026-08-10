@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, ForeignKey, Integer, Numeric, SmallInteger, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -35,3 +35,24 @@ class UserCompany(Base):
     company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True)
     granted_at: Mapped[datetime] = mapped_column(server_default=func.now())
     granted_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"))
+    role: Mapped[str] = mapped_column(String(30), nullable=False, default="viewer")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class CompanyIntegration(Base):
+    __tablename__ = "company_integrations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    base_url: Mapped[Optional[str]] = mapped_column(String(500))
+    orders_path: Mapped[Optional[str]] = mapped_column(String(300))
+    api_token: Mapped[Optional[str]] = mapped_column(Text)
+    external_company_id: Mapped[Optional[str]] = mapped_column(String(100))
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "provider", name="uq_company_integration_provider"),
+    )

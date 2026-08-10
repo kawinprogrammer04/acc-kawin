@@ -8,6 +8,7 @@ export interface Company {
   name_en?: string;
   tax_id?: string;
   is_active: boolean;
+  role: "admin" | "approver" | "accountant" | "viewer";
 }
 
 interface CompanyContextValue {
@@ -24,7 +25,7 @@ const CompanyContext = createContext<CompanyContextValue>({
 
 export function CompanyProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
-  const companies: Company[] = (user as any)?.companies ?? [];
+  const companies: Company[] = user?.companies ?? [];
 
   // Restore from localStorage or default to first company
   const [currentCompany, setCurrentCompanyState] = useState<Company | null>(() => {

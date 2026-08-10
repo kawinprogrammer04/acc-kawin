@@ -1,0 +1,557 @@
+{% extends "base.html" %}
+{% block title %}ตรวจข้อมูลก่อนบันทึก{% endblock %}
+{% block heading %}ตรวจข้อมูลก่อนบันทึก{% endblock %}
+{% block content %}
+  <div id="preview-validation-alert" class="alert error" {{ "" if error else "hidden" }} role="alert">
+    <strong>ยังบันทึกไม่ได้</strong><span id="preview-validation-message">{{ error or "" }}</span>
+  </div>
+
+  {% set is_tiktok = statement.statement_type == "ads_screenshot" %}
+
+  <section class="preview-hero card">
+    <div>
+      <p class="eyebrow">{% if is_tiktok %}Ads — ข้อมูลอ้างอิง{% else %}Statement preview{% endif %}</p>
+      <h2>{{ statement.issuer }}</h2>
+      <p>{{ original_name }}</p>
+    </div>
+    <div class="preview-badges">
+      <span class="status matched">{{ statement.extraction_method }}</span>
+      <span class="status {% if is_tiktok %}cool{% else %}ignored{% endif %}">
+        {% if is_tiktok %}บันทึกเป็น Reference Items{% else %}{{ statement.statement_type }}{% endif %}
+      </span>
+      {% if statement.masked_reference %}
+        <span class="status unmatched">{{ statement.masked_reference }}</span>
+      {% endif %}
+    </div>
+  </section>
+
+  {% if is_tiktok %}
+  <div class="alert" style="background:var(--color-cool-bg,#e8f4fd);border-color:var(--color-cool,#3b82f6);margin-bottom:1rem">
+    <strong>Ads Screenshots</strong>
+    <span>รายการเหล่านี้จะถูกบันทึกเป็น <strong>Reference Items</strong> เพื่อนำมาชนกับ Statement ของธนาคาร — รหัสอ้างอิงจากช่องวิธีชำระเงิน (เช่น NJSA6KMPM2) จะใช้จับคู่</span>
+  </div>
+  {% endif %}
+
+  <section class="preview-metrics">
+    <div class="metric">
+      <span>จำนวนแถวที่ตรวจพบ</span>
+      <strong>{{ rows|length }}</strong>
+      <small>ยังไม่บันทึกลงฐานข้อมูล</small>
+    </div>
+    <div class="metric cool">
+      <span>ช่วงวันที่</span>
+      <strong class="metric-date">{{ statement.statement_date_from or "—" }}</strong>
+      <small>ถึง {{ statement.statement_date_to or "—" }}</small>
+    </div>
+    <div class="metric">
+      <span>วิธีอ่านเอกสาร</span>
+      <strong class="metric-date">
+        {% if is_tiktok %}Claude Vision OCR{% elif statement.extraction_method == "ocr" %}OCR ไทย + อังกฤษ{% else %}PDF text layer{% endif %}
+      </strong>
+      <small>{% if is_tiktok %}จะบันทึกลง Reference Items{% else %}แถวความมั่นใจต่ำต้องยืนยันการตรวจทาน{% endif %}</small>
+    </div>
+  </section>
+
+  {% if statement.warnings %}
+    <section class="warning-strip preview-warnings">
+      {% for warning in statement.warnings %}
+        <span>{{ warning }}</span>
+      {% endfor %}
+    </section>
+  {% endif %}
+
+  {% if statement.summary_totals %}
+    <section class="card summary-card">
+      <p class="eyebrow">Statement summary</p>
+      {% set summary_labels = {
+        "total_payment_due": "ยอดที่ต้องชำระ",
+        "minimum_payment_due": "ยอดชำระขั้นต่ำ",
+        "total_charges": "ยอดใช้จ่ายรวม",
+        "total_credits": "ยอดชำระ / เครดิต",
+        "total_credit": "เงินเข้ารวม",
+        "total_debit": "เงินออกรวม",
+        "shared_credit_line": "วงเงินรวม",
+        "shared_credit_line_used": "วงเงินที่ใช้",
+        "shared_available_credit_limit": "วงเงินคงเหลือ",
+        "previous_statement_balance": "ยอดรอบบัญชีก่อน",
+        "total_payments": "ยอดชำระรวม"
+      } %}
+      <div class="summary-values">
+        {% for key, value in statement.summary_totals.items() %}
+          <div><span>{{ summary_labels.get(key, key.replace("_", " ")) }}</span><strong>{{ value|money }}</strong></div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  <form id="preview-form" action="{{ root_path }}/upload/confirm" method="post">
+    <input type="hidden" name="preview_token" value="{{ preview_token }}">
+
+    <div class="section-heading compact-heading">
+      <div>
+        <p class="eyebrow">Review before save</p>
+        <h2>รายการที่อ่านได้</h2>
+      </div>
+      {% if rows %}
+        <button id="toggle-all" class="button secondary" type="button">เลือก/ไม่เลือกทั้งหมด</button>
+      {% endif %}
+    </div>
+
+    {% if rows %}
+      <section class="preview-table-panel card" aria-label="เครื่องมือจัดกลุ่มรายการ">
+        <div id="review-required-summary" class="review-required-summary" hidden>
+          <div>
+            <strong><span id="review-required-count">0</span> แถวที่เลือกยังต้องกด “ตรวจแล้ว”</strong>
+            <span>เกิดจาก OCR ต่ำกว่า 60% หรือข้อมูลต้นฉบับเคยอ่านไม่ครบ กรุณาตรวจค่าบนแถวนั้นก่อนรับรอง</span>
+          </div>
+          <button id="review-all-selected" class="button secondary" type="button">ทำเครื่องหมายตรวจแล้วทุกแถวที่เลือก</button>
+        </div>
+        <div class="preview-table-toolbar">
+          <label>จัดกลุ่ม
+            <select id="group-by">
+              <option value="none">ไม่จัดกลุ่ม</option>
+              <option value="day">วัน</option>
+              <option value="month">เดือน</option>
+              <option value="year">ปี</option>
+              <option value="direction">เงินเข้า / เงินออก</option>
+            </select>
+          </label>
+          <label>แสดงรายการ
+            <select id="direction-filter">
+              <option value="all">ทั้งหมด</option>
+              <option value="in">เงินเข้า</option>
+              <option value="out">เงินออก</option>
+            </select>
+          </label>
+          <label>เรียงตาม
+            <select id="preview-sort">
+              <option value="original">ลำดับจากเอกสาร</option>
+              <option value="date-asc">วันที่เก่า → ใหม่</option>
+              <option value="date-desc">วันที่ใหม่ → เก่า</option>
+              <option value="amount-desc">ยอดสูง → ต่ำ</option>
+              <option value="amount-asc">ยอดต่ำ → สูง</option>
+            </select>
+          </label>
+          <label class="preview-search">ค้นหา
+            <input id="preview-search" type="search" placeholder="รายละเอียด วันที่ หรือเลขท้ายบัตร">
+          </label>
+        </div>
+
+        <div class="preview-live-summary" aria-live="polite">
+          <div>
+            <span>รายการที่แสดง</span>
+            <strong id="visible-count">{{ rows|length }}</strong>
+          </div>
+          <div class="summary-in">
+            <span>เงินเข้า</span>
+            <strong id="visible-in">฿0.00</strong>
+          </div>
+          <div class="summary-out">
+            <span>เงินออก</span>
+            <strong id="visible-out">฿0.00</strong>
+          </div>
+          <div class="summary-net">
+            <span>สุทธิ</span>
+            <strong id="visible-net">฿0.00</strong>
+          </div>
+        </div>
+      </section>
+
+      <div class="table-wrap preview-table-wrap">
+        <table class="preview-data-table" id="preview-data-table">
+          <thead>
+            <tr>
+              <th class="select-col"><span class="sr-only">เลือกนำเข้า</span></th>
+              <th class="row-number-col">#</th>
+              <th>วันที่</th>
+              <th>รายการ / ร้านค้า</th>
+              <th class="number money-column money-in-heading">เงินเข้า</th>
+              <th class="number money-column money-out-heading">เงินออก</th>
+              <th>เลขท้ายบัตร</th>
+              <th>แหล่งข้อมูล</th>
+              <th>ตรวจทาน</th>
+            </tr>
+          </thead>
+          <tbody id="preview-table-body">
+            {% for row in rows %}
+              <tr
+                class="preview-transaction-row {{ 'preview-row-error' if row.row_errors else '' }}"
+                data-index="{{ row.index }}"
+                data-date="{{ row.transaction_date or '' }}"
+                data-amount="{{ row.amount if row.amount is not none else '' }}"
+                data-original-order="{{ row.index }}"
+              >
+                <td class="select-col">
+                  <label class="table-checkbox" title="นำเข้ารายการนี้">
+                    <input
+                      class="preview-include-checkbox"
+                      type="checkbox"
+                      name="include_{{ row.index }}"
+                      value="1"
+                      aria-label="นำเข้ารายการที่ {{ row.index + 1 }}"
+                      {{ "checked" if row.include else "" }}
+                    >
+                  </label>
+                </td>
+                <td class="row-number-col"><span class="row-number">{{ row.index + 1 }}</span></td>
+                <td class="preview-date-cell">
+                  <input
+                    class="preview-table-input transaction-date-input"
+                    type="date"
+                    name="transaction_date_{{ row.index }}"
+                    value="{{ row.transaction_date or '' }}"
+                    aria-label="วันที่รายการที่ {{ row.index + 1 }}"
+                  >
+                </td>
+                <td class="preview-description-cell">
+                  <input
+                    class="preview-table-input description-input"
+                    name="description_{{ row.index }}"
+                    value="{{ row.description or '' }}"
+                    maxlength="500"
+                    aria-label="รายละเอียดรายการที่ {{ row.index + 1 }}"
+                  >
+                  <input
+                    class="preview-table-input tr-code-input"
+                    name="tr_code_{{ row.index }}"
+                    value="{{ row.tr_code or '' }}"
+                    maxlength="50"
+                    placeholder="รหัสอ้างอิง"
+                    aria-label="รหัสอ้างอิงรายการที่ {{ row.index + 1 }}"
+                  >
+                  <div class="transaction-meta">
+                    {% if row.channel %}
+                      <span>
+                        <strong>{{ "สถานที่:" if statement.issuer == "American Express" else "ช่องทาง:" }}</strong>
+                        &nbsp;{{ row.channel }}
+                      </span>
+                    {% endif %}
+                    {% for warning in row.warnings %}
+                      <span class="table-warning">{{ warning }}</span>
+                    {% endfor %}
+                    {% for row_error in row.row_errors %}
+                      <span class="table-error">{{ row_error }}</span>
+                    {% endfor %}
+                  </div>
+                </td>
+                <td class="number money-cell money-in-cell"><span class="money-slot"></span></td>
+                <td class="number money-cell money-out-cell">
+                  <span class="money-slot">
+                    <span class="amount-editor">
+                      <span class="currency-prefix">฿</span>
+                      <input
+                        class="preview-table-input amount-input"
+                        type="number"
+                        step="0.01"
+                        name="amount_{{ row.index }}"
+                        value="{{ row.amount if row.amount is not none else '' }}"
+                        aria-label="จำนวนเงินรายการที่ {{ row.index + 1 }}"
+                      >
+                    </span>
+                  </span>
+                </td>
+                <td>
+                  <input
+                    class="preview-table-input card-last4-input"
+                    name="card_last4_{{ row.index }}"
+                    value="{{ row.card_last4 or '' }}"
+                    inputmode="numeric"
+                    maxlength="4"
+                    placeholder="—"
+                    aria-label="เลขท้ายบัตรรายการที่ {{ row.index + 1 }}"
+                  >
+                </td>
+                <td class="preview-source-cell">
+                  <span>หน้า {{ row.source_page or "—" }}</span>
+                  <span class="confidence-pill {{ 'confidence-low' if row.confidence < 60 else ('confidence-medium' if row.confidence < 80 else 'confidence-good') }}">
+                    {{ "%.1f"|format(row.confidence or 0) }}%
+                  </span>
+                </td>
+                <td class="review-cell">
+                  {% if row.requires_review %}
+                    <label class="table-review-confirmation">
+                      <input
+                        type="checkbox"
+                        name="reviewed_{{ row.index }}"
+                        value="1"
+                        {{ "checked" if row.reviewed else "" }}
+                      >
+                      <span>ตรวจแล้ว</span>
+                    </label>
+                  {% else %}
+                    <span class="review-ok">พร้อม</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">
+        ไม่พบรายการธุรกรรมใน Statement นี้ คุณยังสามารถบันทึกข้อมูล Statement เพื่อเก็บเป็นหลักฐานได้
+      </div>
+    {% endif %}
+
+    <div class="preview-actions">
+      <button class="button primary" type="submit">ยืนยันและบันทึก</button>
+    </div>
+  </form>
+
+  <form class="preview-cancel" action="{{ root_path }}/upload/cancel" method="post">
+    <input type="hidden" name="preview_token" value="{{ preview_token }}">
+    <button class="button danger ghost" type="submit">ยกเลิกและลบ Preview</button>
+  </form>
+
+  <script>
+    const toggleAll = document.getElementById("toggle-all");
+    const includeBoxes = Array.from(document.querySelectorAll(".preview-include-checkbox"));
+    const tableBody = document.getElementById("preview-table-body");
+    const groupBy = document.getElementById("group-by");
+    const directionFilter = document.getElementById("direction-filter");
+    const previewSort = document.getElementById("preview-sort");
+    const previewSearch = document.getElementById("preview-search");
+    const previewForm = document.getElementById("preview-form");
+    const validationAlert = document.getElementById("preview-validation-alert");
+    const validationMessage = document.getElementById("preview-validation-message");
+    const reviewRequiredSummary = document.getElementById("review-required-summary");
+    const reviewRequiredCount = document.getElementById("review-required-count");
+    const reviewAllSelected = document.getElementById("review-all-selected");
+    const transactionRows = Array.from(document.querySelectorAll(".preview-transaction-row"));
+    const moneyFormatter = new Intl.NumberFormat("th-TH", {
+      style: "currency",
+      currency: "THB",
+      minimumFractionDigits: 2
+    });
+
+    function rowAmount(row) {
+      const value = Number.parseFloat(row.querySelector(".amount-input")?.value || "");
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    function rowDate(row) {
+      return row.querySelector(".transaction-date-input")?.value || "";
+    }
+
+    function rowDirection(row) {
+      return rowAmount(row) >= 0 ? "in" : "out";
+    }
+
+    function formatThaiDate(value, options) {
+      if (!value) return "ไม่ระบุวันที่";
+      const parsed = new Date(`${value}T00:00:00`);
+      if (Number.isNaN(parsed.getTime())) return "ไม่ระบุวันที่";
+      return new Intl.DateTimeFormat("th-TH", options).format(parsed);
+    }
+
+    function groupKey(row) {
+      const mode = groupBy?.value || "none";
+      const value = rowDate(row);
+      if (mode === "direction") return rowDirection(row);
+      if (mode === "day") return value || "unknown";
+      if (mode === "month") return value ? value.slice(0, 7) : "unknown";
+      if (mode === "year") return value ? value.slice(0, 4) : "unknown";
+      return "all";
+    }
+
+    function groupLabel(key) {
+      const mode = groupBy?.value || "none";
+      if (mode === "direction") return key === "in" ? "เงินเข้า" : "เงินออก";
+      if (key === "unknown") return "ไม่ระบุวันที่";
+      if (mode === "day") {
+        return formatThaiDate(key, { day: "numeric", month: "long", year: "numeric" });
+      }
+      if (mode === "month") {
+        return formatThaiDate(`${key}-01`, { month: "long", year: "numeric" });
+      }
+      if (mode === "year") {
+        return formatThaiDate(`${key}-01-01`, { year: "numeric" });
+      }
+      return "รายการทั้งหมด";
+    }
+
+    function syncAmountPlacement(row) {
+      const editor = row.querySelector(".amount-editor");
+      const target = rowDirection(row) === "in"
+        ? row.querySelector(".money-in-cell .money-slot")
+        : row.querySelector(".money-out-cell .money-slot");
+      if (editor && target && editor.parentElement !== target) target.appendChild(editor);
+      row.dataset.amount = String(rowAmount(row));
+      row.dataset.direction = rowDirection(row);
+    }
+
+    function matchesFilters(row) {
+      const wantedDirection = directionFilter?.value || "all";
+      if (wantedDirection !== "all" && rowDirection(row) !== wantedDirection) return false;
+      const query = (previewSearch?.value || "").trim().toLocaleLowerCase("th-TH");
+      if (!query) return true;
+      const text = [
+        rowDate(row),
+        row.querySelector(".description-input")?.value,
+        row.querySelector(".card-last4-input")?.value,
+        row.querySelector(".preview-source-cell")?.textContent
+      ].filter(Boolean).join(" ").toLocaleLowerCase("th-TH");
+      return text.includes(query);
+    }
+
+    function compareRows(left, right) {
+      const mode = previewSort?.value || "original";
+      if (mode === "date-asc") return rowDate(left).localeCompare(rowDate(right));
+      if (mode === "date-desc") return rowDate(right).localeCompare(rowDate(left));
+      if (mode === "amount-desc") return Math.abs(rowAmount(right)) - Math.abs(rowAmount(left));
+      if (mode === "amount-asc") return Math.abs(rowAmount(left)) - Math.abs(rowAmount(right));
+      return Number(left.dataset.originalOrder) - Number(right.dataset.originalOrder);
+    }
+
+    function groupSummary(rows) {
+      const incoming = rows.reduce((sum, row) => sum + Math.max(rowAmount(row), 0), 0);
+      const outgoing = rows.reduce((sum, row) => sum + Math.abs(Math.min(rowAmount(row), 0)), 0);
+      return {
+        count: rows.length,
+        incoming,
+        outgoing,
+        net: incoming - outgoing
+      };
+    }
+
+    function makeGroupRow(key, rows) {
+      const summary = groupSummary(rows);
+      const groupRow = document.createElement("tr");
+      groupRow.className = "preview-group-row";
+      groupRow.innerHTML = `
+        <td colspan="9">
+          <div>
+            <strong>${groupLabel(key)}</strong>
+            <span>${summary.count.toLocaleString("th-TH")} รายการ</span>
+            <span class="group-in">เข้า ${moneyFormatter.format(summary.incoming)}</span>
+            <span class="group-out">ออก ${moneyFormatter.format(summary.outgoing)}</span>
+            <span>สุทธิ ${moneyFormatter.format(summary.net)}</span>
+          </div>
+        </td>
+      `;
+      return groupRow;
+    }
+
+    function updateVisibleSummary(rows) {
+      const selected = rows.filter((row) => row.querySelector(".preview-include-checkbox")?.checked);
+      const summary = groupSummary(selected);
+      document.getElementById("visible-count").textContent = selected.length.toLocaleString("th-TH");
+      document.getElementById("visible-in").textContent = moneyFormatter.format(summary.incoming);
+      document.getElementById("visible-out").textContent = moneyFormatter.format(summary.outgoing);
+      document.getElementById("visible-net").textContent = moneyFormatter.format(summary.net);
+    }
+
+    function unresolvedReviewRows() {
+      return transactionRows.filter((row) => {
+        const included = row.querySelector(".preview-include-checkbox")?.checked;
+        const reviewed = row.querySelector(".table-review-confirmation input");
+        return included && reviewed && !reviewed.checked;
+      });
+    }
+
+    function updateReviewSummary() {
+      const unresolved = unresolvedReviewRows();
+      if (reviewRequiredCount) {
+        reviewRequiredCount.textContent = unresolved.length.toLocaleString("th-TH");
+      }
+      if (reviewRequiredSummary) reviewRequiredSummary.hidden = unresolved.length === 0;
+    }
+
+    function renderTable() {
+      if (!tableBody) return;
+      transactionRows.forEach(syncAmountPlacement);
+      const visibleRows = transactionRows.filter(matchesFilters).sort(compareRows);
+      const hiddenRows = transactionRows.filter((row) => !matchesFilters(row));
+      tableBody.replaceChildren();
+      const grouped = groupBy?.value !== "none";
+      let visibleIndex = 0;
+      visibleRows.forEach((row) => { row.hidden = false; });
+      hiddenRows.forEach((row) => { row.hidden = true; });
+      if (grouped) {
+        const groups = new Map();
+        visibleRows.forEach((row) => {
+          const key = groupKey(row);
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key).push(row);
+        });
+        groups.forEach((rows, key) => {
+          tableBody.appendChild(makeGroupRow(key, rows));
+          rows.forEach((row) => {
+            visibleIndex += 1;
+            row.querySelector(".row-number").textContent = visibleIndex.toLocaleString("th-TH");
+            tableBody.appendChild(row);
+          });
+        });
+      } else {
+        visibleRows.forEach((row) => {
+          visibleIndex += 1;
+          row.querySelector(".row-number").textContent = visibleIndex.toLocaleString("th-TH");
+          tableBody.appendChild(row);
+        });
+      }
+      hiddenRows.forEach((row) => tableBody.appendChild(row));
+      updateVisibleSummary(visibleRows);
+      updateReviewSummary();
+    }
+
+    toggleAll?.addEventListener("click", () => {
+      const visibleBoxes = transactionRows
+        .filter(matchesFilters)
+        .map((row) => row.querySelector(".preview-include-checkbox"))
+        .filter(Boolean);
+      const shouldSelect = visibleBoxes.some((box) => !box.checked);
+      visibleBoxes.forEach((box) => { box.checked = shouldSelect; });
+      renderTable();
+    });
+    groupBy?.addEventListener("change", renderTable);
+    directionFilter?.addEventListener("change", renderTable);
+    previewSort?.addEventListener("change", renderTable);
+    previewSearch?.addEventListener("input", renderTable);
+    includeBoxes.forEach((box) => box.addEventListener("change", renderTable));
+    transactionRows.forEach((row) => {
+      row.querySelector(".table-review-confirmation input")?.addEventListener("change", updateReviewSummary);
+    });
+    reviewAllSelected?.addEventListener("click", () => {
+      unresolvedReviewRows().forEach((row) => {
+        const checkbox = row.querySelector(".table-review-confirmation input");
+        if (checkbox) checkbox.checked = true;
+      });
+      updateReviewSummary();
+    });
+    transactionRows.forEach((row) => {
+      row.querySelector(".amount-input")?.addEventListener("change", renderTable);
+      row.querySelector(".transaction-date-input")?.addEventListener("change", renderTable);
+      row.querySelector(".description-input")?.addEventListener("change", renderTable);
+      row.querySelector(".card-last4-input")?.addEventListener("change", renderTable);
+    });
+    previewForm?.addEventListener("submit", (event) => {
+      const errors = [];
+      let firstInvalidRow = null;
+      transactionRows.forEach((row) => {
+        row.classList.remove("preview-row-error");
+        if (!row.querySelector(".preview-include-checkbox")?.checked) return;
+        const rowNumber = Number(row.dataset.index || 0) + 1;
+        const reasons = [];
+        if (!row.querySelector(".transaction-date-input")?.value) reasons.push("ไม่มีวันที่");
+        if (!row.querySelector(".description-input")?.value.trim()) reasons.push("ไม่มีรายละเอียด");
+        const amountValue = row.querySelector(".amount-input")?.value || "";
+        if (!amountValue || !Number.isFinite(Number(amountValue))) reasons.push("ยอดเงินไม่ถูกต้อง");
+        const reviewCheckbox = row.querySelector(".table-review-confirmation input");
+        if (reviewCheckbox && !reviewCheckbox.checked) reasons.push("ยังไม่ได้กดตรวจแล้ว");
+        if (!reasons.length) return;
+        row.classList.add("preview-row-error");
+        if (!firstInvalidRow) firstInvalidRow = row;
+        errors.push(`แถว ${rowNumber}: ${reasons.join(", ")}`);
+      });
+      if (!errors.length) return;
+      event.preventDefault();
+      const shown = errors.slice(0, 6);
+      if (errors.length > shown.length) shown.push(`และอีก ${errors.length - shown.length} แถว`);
+      validationMessage.textContent = `พบ ${errors.length} แถวที่ต้องแก้ — ${shown.join("; ")}`;
+      validationAlert.hidden = false;
+      validationAlert.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.setTimeout(() => firstInvalidRow?.scrollIntoView({ behavior: "smooth", block: "center" }), 450);
+    });
+    renderTable();
+  </script>
+{% endblock %}

@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -9,7 +9,8 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id"), nullable=False)
+    code: Mapped[str] = mapped_column(String(20), nullable=False)
     name_th: Mapped[str] = mapped_column(String(200), nullable=False)
     name_en: Mapped[str | None] = mapped_column(String(200))
     # asset | liability | equity | revenue | expense
@@ -25,6 +26,14 @@ class Account(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    parent: Mapped["Account | None"] = relationship("Account", remote_side="Account.id", foreign_keys=[parent_id])
-    children: Mapped[list["Account"]] = relationship("Account", foreign_keys=[parent_id])
+    parent: Mapped["Account | None"] = relationship(
+        "Account", remote_side="Account.id", foreign_keys=[parent_id], back_populates="children"
+    )
+    children: Mapped[list["Account"]] = relationship(
+        "Account", foreign_keys=[parent_id], back_populates="parent"
+    )
     journal_lines: Mapped[list["JournalLine"]] = relationship("JournalLine", back_populates="account")  # noqa: F821
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "code", name="uq_account_company_code"),
+    )

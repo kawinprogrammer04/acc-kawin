@@ -1,0 +1,367 @@
+{% extends "base.html" %}
+{% block title %}จับคู่รายการ{% endblock %}
+{% block heading %}จับคู่รายการ{% endblock %}
+{% block content %}
+
+  {% if error %}
+    <div class="alert error"><strong>จับคู่ไม่สำเร็จ</strong><span>{{ error }}</span></div>
+  {% endif %}
+
+  <section class="warning-strip" style="margin-bottom:16px">
+    <span>รอจับคู่ <strong>{{ warning_stats.unmatched or 0 }}</strong></span>
+    <span>รายการซ้ำ <strong>{{ warning_stats.duplicates or 0 }}</strong></span>
+  </section>
+
+  {# ── Step indicator ──────────────────────────────────────────── #}
+  <div class="wz-steps">
+    <div class="wz-step active" data-step="1"><span class="wz-num">1</span>เลือก Statement</div>
+    <div class="wz-sep">›</div>
+    <div class="wz-step" data-step="2"><span class="wz-num">2</span>เลือกรายการ</div>
+    <div class="wz-sep">›</div>
+    <div class="wz-step" data-step="3"><span class="wz-num">3</span>เลือก Ref</div>
+    <div class="wz-sep">›</div>
+    <div class="wz-step" data-step="4"><span class="wz-num">4</span>ยืนยัน</div>
+  </div>
+
+  {# ── Step 1: Select Statement ────────────────────────────────── #}
+  <div class="wz-panel" id="wz-panel-1">
+    <div class="wz-panel-head">
+      <p class="eyebrow">ขั้นตอนที่ 1</p>
+      <h2>เลือกไฟล์ Statement</h2>
+    </div>
+    {% if statements %}
+      <div class="wz-stmt-grid">
+        {% for s in statements %}
+          <div class="wz-stmt-card" data-stmt-id="{{ s.id }}" tabindex="0">
+            <div class="wz-stmt-icon">📄</div>
+            <div class="wz-stmt-name">{{ s.original_filename }}</div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty">ยังไม่มี Statement — <a href="{{ root_path }}/upload">อัปโหลดก่อน</a></div>
+    {% endif %}
+    <div class="wz-actions">
+      <a class="button secondary" href="{{ root_path }}/review">← กลับ Review</a>
+      <button class="button primary" id="btn-1-next" disabled>ถัดไป →</button>
+    </div>
+  </div>
+
+  {# ── Step 2: Select Transactions ─────────────────────────────── #}
+  <div class="wz-panel hidden" id="wz-panel-2">
+    <div class="wz-panel-head">
+      <p class="eyebrow">ขั้นตอนที่ 2</p>
+      <h2>เลือกรายการที่ต้องการจับคู่</h2>
+      <p class="muted">เลือกได้หลายรายการสำหรับการรวมยอด</p>
+    </div>
+    <div class="wz-tx-bar">
+      <span>เลือก <strong id="wz-tx-count">0</strong> รายการ</span>
+      <span>ยอดรวม <strong id="wz-tx-total">฿0.00</strong></span>
+    </div>
+    <div class="table-wrap">
+      <table class="statement-table">
+        <thead>
+          <tr>
+            <th class="select-col"></th>
+            <th>วันที่</th>
+            <th>รายการ</th>
+            <th class="number">ยอดเงิน</th>
+          </tr>
+        </thead>
+        <tbody id="wz-tx-body"></tbody>
+      </table>
+    </div>
+    <div class="wz-actions">
+      <button class="button secondary" id="btn-2-back">← กลับ</button>
+      <button class="button primary" id="btn-2-next" disabled>ถัดไป →</button>
+    </div>
+  </div>
+
+  {# ── Step 3: Reference or Manual ─────────────────────────────── #}
+  <div class="wz-panel hidden" id="wz-panel-3">
+    <div class="wz-panel-head">
+      <p class="eyebrow">ขั้นตอนที่ 3</p>
+      <h2>เลือกข้อมูล Ref หรือกรอกเอง</h2>
+    </div>
+    <div class="wz-tabs">
+      <button class="wz-tab active" id="tab-file">เลือกจากรูปที่อัป</button>
+      <button class="wz-tab" id="tab-manual">กรอกข้อมูลเอง</button>
+    </div>
+
+    <div id="wz-panel-file">
+      <div id="wz-ref-no-match" class="empty hidden">ไม่พบ Ref ที่ตรงกัน — ลองกรอกข้อมูลเองแท็บขวา</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th style="width:28px"></th><th>Reference</th><th>วันที่</th><th class="number">ยอด</th><th>ไฟล์</th></tr>
+          </thead>
+          <tbody id="wz-ref-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="wz-panel-manual" class="hidden">
+      <div class="edit-grid" style="max-width:540px;margin-top:12px">
+        <label class="span-2">
+          Reference / รหัสอ้างอิง
+          <small style="color:var(--green-dark);font-weight:700">* จำเป็น</small>
+          <input id="man-ref" placeholder="เช่น LCGEWIJVSU2"
+                 style="font-family:monospace;font-weight:700;font-size:15px">
+        </label>
+        <label class="check-label span-2">
+          <input type="checkbox" id="man-attach"><span>มีเอกสารแนบครบ</span>
+        </label>
+        <label class="span-2">หมายเหตุ<input id="man-notes"></label>
+      </div>
+    </div>
+
+    <div class="wz-actions">
+      <button class="button secondary" id="btn-3-back">← กลับ</button>
+      <button class="button primary" id="btn-3-next" disabled>ถัดไป →</button>
+    </div>
+  </div>
+
+  {# ── Step 4: Confirm ─────────────────────────────────────────── #}
+  <div class="wz-panel hidden" id="wz-panel-4">
+    <div class="wz-panel-head">
+      <p class="eyebrow">ขั้นตอนที่ 4</p>
+      <h2>ยืนยันการจับคู่</h2>
+    </div>
+    <div class="wz-confirm card" id="wz-confirm"></div>
+
+    <form id="form-ref" method="post" action="{{ root_path }}/matches/reference" class="hidden">
+      <input type="hidden" id="f-ref-txids" name="transaction_ids">
+      <input type="hidden" id="f-ref-refid" name="reference_item_id">
+    </form>
+    <form id="form-man" method="post" action="{{ root_path }}/matches/manual" class="hidden">
+      <input type="hidden" id="f-man-txids" name="transaction_ids">
+      <input type="hidden" id="f-man-amount" name="expected_amount">
+      <input type="hidden" id="f-man-ref" name="target_reference">
+      <input type="hidden" id="f-man-attach" name="has_attachment">
+      <input type="hidden" id="f-man-notes" name="notes">
+    </form>
+
+    <div class="wz-actions">
+      <button class="button secondary" id="btn-4-back">← กลับ</button>
+      <button class="button primary" id="btn-confirm">✓ ตกลง บันทึกการจับคู่</button>
+    </div>
+  </div>
+
+  {# ── Embedded data ────────────────────────────────────────────── #}
+  <script type="application/json" id="d-tx">{{ transactions_json | safe }}</script>
+  <script type="application/json" id="d-ref">{{ reference_items_json | safe }}</script>
+
+  <script>
+  (function () {
+    const allTx  = JSON.parse(document.getElementById("d-tx").textContent);
+    const allRef = JSON.parse(document.getElementById("d-ref").textContent);
+
+    let step = 1;
+    let stmtId = null;
+    let txIds  = new Set();
+    let refId  = null;
+    let refTab = "file";
+
+    // ── helpers ──────────────────────────────────────────────────
+    const money = v => "฿" + Number(v || 0).toLocaleString("th-TH", {minimumFractionDigits:2,maximumFractionDigits:2});
+    const esc   = s => String(s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    function cleanDesc(d) {
+      if (!d) return "";
+      const p = d.split(" | ");
+      return (p.length > 1 && p[0].length >= 15) ? p[p.length - 1] : d;
+    }
+    function totalCents(ids) {
+      return Math.round(allTx.filter(t => ids.has(t.id)).reduce((s,t) => s + Math.abs(Number(t.amount)), 0) * 100);
+    }
+
+    // ── step navigation ───────────────────────────────────────────
+    function goStep(n) {
+      document.getElementById(`wz-panel-${step}`).classList.add("hidden");
+      document.getElementById(`wz-panel-${n}`).classList.remove("hidden");
+      document.querySelectorAll(".wz-step").forEach(el => {
+        const s = Number(el.dataset.step);
+        el.classList.toggle("active", s === n);
+        el.classList.toggle("done",   s < n);
+      });
+      step = n;
+      if (n === 2) renderTxTable();
+      if (n === 3) renderRefPanel();
+      if (n === 4) renderConfirm();
+    }
+
+    // ── step 1 ────────────────────────────────────────────────────
+    document.querySelectorAll(".wz-stmt-card").forEach(card => {
+      function pick() {
+        document.querySelectorAll(".wz-stmt-card").forEach(c => c.classList.remove("selected"));
+        card.classList.add("selected");
+        stmtId = Number(card.dataset.stmtId);
+        txIds.clear();
+        document.getElementById("btn-1-next").disabled = false;
+      }
+      card.addEventListener("click", pick);
+      card.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") pick(); });
+    });
+    document.getElementById("btn-1-next")?.addEventListener("click", () => goStep(2));
+
+    // ── step 2 ────────────────────────────────────────────────────
+    function renderTxTable() {
+      const body = document.getElementById("wz-tx-body");
+      const txs = allTx.filter(t => t.statement_id === stmtId);
+      if (!txs.length) {
+        body.innerHTML = `<tr><td colspan="4" class="empty">ไม่มีรายการที่รอจับคู่ใน Statement นี้</td></tr>`;
+        return;
+      }
+      body.innerHTML = txs.map(t => `
+        <tr>
+          <td class="select-col">
+            <label class="table-checkbox">
+              <input type="checkbox" class="wz-ck" data-id="${t.id}" data-amt="${Math.abs(Number(t.amount))}"
+                     ${txIds.has(t.id) ? "checked" : ""}>
+            </label>
+          </td>
+          <td class="nowrap">${esc(t.transaction_date || "—")}${t.transaction_time && t.transaction_time.slice(0,5) !== "00:00" ? `<br><small>${t.transaction_time.slice(0,5)}</small>` : ""}</td>
+          <td>
+            <strong>${esc(cleanDesc(t.description || ""))}</strong>
+            ${t.tr_code ? `<br><code style="font-size:11px;color:var(--green-dark)">${esc(t.tr_code)}</code>` : ""}
+            ${t.channel ? `<small style="color:var(--muted)"> · ${esc(t.channel)}</small>` : ""}
+          </td>
+          <td class="number">${money(t.amount)}</td>
+        </tr>`).join("");
+      body.querySelectorAll(".wz-ck").forEach(cb => {
+        cb.addEventListener("change", () => {
+          const id = Number(cb.dataset.id);
+          if (cb.checked) txIds.add(id); else txIds.delete(id);
+          updateTxBar();
+        });
+      });
+      updateTxBar();
+    }
+    function updateTxBar() {
+      document.getElementById("wz-tx-count").textContent = txIds.size;
+      document.getElementById("wz-tx-total").textContent = money(totalCents(txIds) / 100);
+      document.getElementById("btn-2-next").disabled = txIds.size === 0;
+    }
+    document.getElementById("btn-2-back")?.addEventListener("click", () => goStep(1));
+    document.getElementById("btn-2-next")?.addEventListener("click", () => goStep(3));
+
+    // ── step 3 ────────────────────────────────────────────────────
+    document.getElementById("tab-file")?.addEventListener("click", () => switchTab("file"));
+    document.getElementById("tab-manual")?.addEventListener("click", () => switchTab("manual"));
+    document.getElementById("man-ref")?.addEventListener("input", updateStep3Btn);
+
+    function switchTab(t) {
+      refTab = t;
+      refId = null;
+      document.getElementById("tab-file").classList.toggle("active",   t === "file");
+      document.getElementById("tab-manual").classList.toggle("active", t === "manual");
+      document.getElementById("wz-panel-file").classList.toggle("hidden",   t !== "file");
+      document.getElementById("wz-panel-manual").classList.toggle("hidden", t !== "manual");
+      updateStep3Btn();
+    }
+
+    function renderRefPanel() {
+      const cents = totalCents(txIds);
+      const dates = [...new Set(allTx.filter(t => txIds.has(t.id)).map(t => t.transaction_date).filter(Boolean))];
+      const matching = allRef.filter(r => {
+        const rc = Math.round(Math.abs(Number(r.amount)) * 100);
+        if (Math.abs(rc - cents) > 1) return false;
+        if (dates.length && r.transaction_date && !dates.includes(r.transaction_date)) return false;
+        return true;
+      });
+      const body = document.getElementById("wz-ref-body");
+      const noMatch = document.getElementById("wz-ref-no-match");
+      if (!matching.length) {
+        body.innerHTML = "";
+        noMatch.classList.remove("hidden");
+      } else {
+        noMatch.classList.add("hidden");
+        body.innerHTML = matching.map(r => `
+          <tr class="wz-ref-row${refId === r.id ? " selected" : ""}"
+              data-rid="${r.id}" tabindex="0">
+            <td>${refId === r.id ? `<span class="rv-badge rv-badge-matched" style="font-size:11px">✓</span>` : ""}</td>
+            <td><code style="font-family:monospace;font-weight:700;color:var(--green-dark)">${esc(r.reference)}</code></td>
+            <td class="nowrap">${r.transaction_date || "—"}</td>
+            <td class="number">${money(r.amount)}</td>
+            <td><small>${esc(r.source_filename || "manual")}</small></td>
+          </tr>`).join("");
+        body.querySelectorAll(".wz-ref-row").forEach(row => {
+          function pick() {
+            refId = Number(row.dataset.rid);
+            renderRefPanel();
+            updateStep3Btn();
+          }
+          row.addEventListener("click", pick);
+          row.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") pick(); });
+        });
+      }
+      updateStep3Btn();
+    }
+
+    function updateStep3Btn() {
+      const ok = refTab === "file"
+        ? refId !== null
+        : (document.getElementById("man-ref")?.value.trim().length > 0);
+      document.getElementById("btn-3-next").disabled = !ok;
+    }
+    document.getElementById("btn-3-back")?.addEventListener("click", () => goStep(2));
+    document.getElementById("btn-3-next")?.addEventListener("click", () => goStep(4));
+
+    // ── step 4 ────────────────────────────────────────────────────
+    function renderConfirm() {
+      const selectedTxs = allTx.filter(t => txIds.has(t.id));
+      const cents = totalCents(txIds);
+      const txRows = selectedTxs.map(t => `
+        <div class="confirm-row">
+          <span>${esc(t.transaction_date || "—")}</span>
+          <strong>${esc(cleanDesc(t.description || ""))}</strong>
+          <span class="number" style="margin-left:auto">${money(t.amount)}</span>
+        </div>`).join("");
+
+      let refRows = "";
+      if (refTab === "file" && refId) {
+        const r = allRef.find(x => x.id === refId);
+        refRows = `
+          <div class="confirm-row"><span>รหัส</span><code style="font-family:monospace;font-weight:700;color:var(--green-dark)">${esc(r?.reference || "—")}</code></div>
+          <div class="confirm-row"><span>วันที่</span>${r?.transaction_date || "—"}</div>
+          <div class="confirm-row"><span>ยอด</span>${money(r?.amount)}</div>
+          <div class="confirm-row"><span>ไฟล์</span><small>${esc(r?.source_filename || "manual")}</small></div>`;
+      } else {
+        const manRef = document.getElementById("man-ref")?.value.trim();
+        const attach = document.getElementById("man-attach")?.checked;
+        refRows = `
+          <div class="confirm-row"><span>รหัส</span><code style="font-family:monospace;font-weight:700;color:var(--green-dark)">${esc(manRef)}</code></div>
+          ${attach ? `<div class="confirm-row"><span>เอกสาร</span>มีเอกสารแนบ ✓</div>` : ""}`;
+      }
+
+      document.getElementById("wz-confirm").innerHTML = `
+        <div class="confirm-section">
+          <div class="confirm-label">📄 Statement — ${selectedTxs.length} รายการ</div>
+          ${txRows}
+          <div class="confirm-row confirm-total"><span>ยอดรวม</span><strong>${money(cents / 100)}</strong></div>
+        </div>
+        <div class="confirm-section">
+          <div class="confirm-label">🔗 จับคู่กับ${refTab === "manual" ? " (กรอกเอง)" : ""}</div>
+          ${refRows}
+        </div>`;
+    }
+
+    document.getElementById("btn-4-back")?.addEventListener("click", () => goStep(3));
+    document.getElementById("btn-confirm")?.addEventListener("click", () => {
+      const ids = [...txIds].join(",");
+      const cents = totalCents(txIds);
+      if (refTab === "file" && refId) {
+        document.getElementById("f-ref-txids").value = ids;
+        document.getElementById("f-ref-refid").value = refId;
+        document.getElementById("form-ref").submit();
+      } else {
+        document.getElementById("f-man-txids").value  = ids;
+        document.getElementById("f-man-amount").value = (cents / 100).toFixed(2);
+        document.getElementById("f-man-ref").value    = document.getElementById("man-ref")?.value.trim();
+        document.getElementById("f-man-attach").value = document.getElementById("man-attach")?.checked ? "1" : "";
+        document.getElementById("f-man-notes").value  = document.getElementById("man-notes")?.value.trim();
+        document.getElementById("form-man").submit();
+      }
+    });
+  })();
+  </script>
+{% endblock %}

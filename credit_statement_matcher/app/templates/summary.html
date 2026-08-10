@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}สรุป Statement{% endblock %}
+{% block heading %}สรุปยอด Statement{% endblock %}
+{% block content %}
+  <section class="metrics">
+    <article class="metric"><span>ยอดใช้จ่าย</span><strong>{{ totals.charges|money }}</strong><small>บาท</small></article>
+    <article class="metric cool"><span>ยอดคืน/ชำระ</span><strong>{{ totals.refunds|money }}</strong><small>บาท</small></article>
+    <article class="metric dark"><span>ยอดสุทธิ</span><strong>{{ totals.net|money }}</strong><small>บาท</small></article>
+    <article class="metric"><span>รายการทั้งหมด</span><strong>{{ totals.transaction_count }}</strong><small>รายการ</small></article>
+  </section>
+
+  <section class="status-grid">
+    <a href="{{ root_path }}/transactions?status=matched"><span class="dot matched"></span><strong>{{ totals.matched or 0 }}</strong><small>จับคู่แล้ว</small></a>
+    <a href="{{ root_path }}/manual-edit?status=unmatched"><span class="dot unmatched"></span><strong>{{ totals.unmatched or 0 }}</strong><small>รอตรวจ</small></a>
+    <a href="{{ root_path }}/transactions?status=ignored"><span class="dot ignored"></span><strong>{{ totals.ignored or 0 }}</strong><small>ไม่นับ</small></a>
+  </section>
+
+  <section class="warning-strip summary-warnings">
+    <span>Match group <strong>{{ match_groups.count or 0 }}</strong></span>
+    <span>Group matching <strong>{{ match_groups.group_count or 0 }}</strong></span>
+    <span>รายการซ้ำ <strong>{{ totals.duplicates or 0 }}</strong></span>
+    <span>ไม่มีเอกสารแนบ <strong>{{ totals.missing_attachments or 0 }}</strong></span>
+  </section>
+
+  <section class="section" style="margin-bottom:1rem">
+    <div class="section-heading">
+      <div><p class="eyebrow">Export</p><h2>ดาวน์โหลดรายงาน</h2></div>
+    </div>
+    <div style="display:flex;gap:.75rem;flex-wrap:wrap">
+      <a class="button primary" href="{{ root_path }}/export/report.xlsx">Export Excel (.xlsx) — Matched / Unmatched / Duplicate</a>
+      <a class="button" href="{{ root_path }}/export/matched.csv">CSV Matched</a>
+      <a class="button" href="{{ root_path }}/export/unmatched.csv">CSV Unmatched</a>
+    </div>
+  </section>
+
+  <section class="split">
+    <div>
+      <div class="section-heading"><div><p class="eyebrow">Category breakdown</p><h2>ตามหมวดหมู่</h2></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>หมวดหมู่</th><th class="number">รายการ</th><th class="number">ยอดสุทธิ</th></tr></thead>
+          <tbody>
+          {% for item in categories %}
+            <tr><td>{{ item.category }}</td><td class="number">{{ item.count }}</td><td class="number">{{ item.total|money }}</td></tr>
+          {% else %}
+            <tr><td colspan="3" class="empty-cell">ยังไม่มีข้อมูล</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div>
+      <div class="section-heading"><div><p class="eyebrow">Monthly trend</p><h2>ตามเดือน</h2></div></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>เดือน</th><th class="number">รายการ</th><th class="number">ยอดสุทธิ</th></tr></thead>
+          <tbody>
+          {% for item in months %}
+            <tr><td>{{ item.month }}</td><td class="number">{{ item.count }}</td><td class="number">{{ item.total|money }}</td></tr>
+          {% else %}
+            <tr><td colspan="3" class="empty-cell">ยังไม่มีข้อมูล</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+{% endblock %}

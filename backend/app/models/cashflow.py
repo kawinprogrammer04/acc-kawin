@@ -92,6 +92,15 @@ class CashDirection(str, enum.Enum):
     TRANSFER_OUT = "transfer_out"
 
 
+def enum_values(enum_class):
+    """Persist the enum's public values, not Python member names.
+
+    This matters for CashDirection, whose Python names are upper-case while the
+    existing PostgreSQL enum values are lower-case.
+    """
+    return [member.value for member in enum_class]
+
+
 # ─── WalletAccount ────────────────────────────────────────────
 class WalletAccount(Base):
     __tablename__ = "wallet_accounts"
@@ -99,10 +108,10 @@ class WalletAccount(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     account_type: Mapped[WalletAccountType] = mapped_column(
-        Enum(WalletAccountType, name="wallet_account_type", create_type=False), default=WalletAccountType.bank
+        Enum(WalletAccountType, name="wallet_account_type", create_type=False, values_callable=enum_values), default=WalletAccountType.bank
     )
     owner_type: Mapped[MoneyOwnerType] = mapped_column(
-        Enum(MoneyOwnerType, name="money_owner_type", create_type=False), default=MoneyOwnerType.company
+        Enum(MoneyOwnerType, name="money_owner_type", create_type=False, values_callable=enum_values), default=MoneyOwnerType.company
     )
     bank_name: Mapped[Optional[str]] = mapped_column(String(100))
     account_number: Mapped[Optional[str]] = mapped_column(String(50))
@@ -125,10 +134,10 @@ class Holder(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     holder_type: Mapped[HolderType] = mapped_column(
-        Enum(HolderType, name="holder_type", create_type=False), default=HolderType.company
+        Enum(HolderType, name="holder_type", create_type=False, values_callable=enum_values), default=HolderType.company
     )
     owner_type: Mapped[MoneyOwnerType] = mapped_column(
-        Enum(MoneyOwnerType, name="money_owner_type", create_type=False), default=MoneyOwnerType.company
+        Enum(MoneyOwnerType, name="money_owner_type", create_type=False, values_callable=enum_values), default=MoneyOwnerType.company
     )
     wallet_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("wallet_accounts.id"))
     purpose: Mapped[Optional[str]] = mapped_column(Text)
@@ -149,7 +158,7 @@ class CashflowCategory(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     type: Mapped[CashflowCategoryType] = mapped_column(
-        Enum(CashflowCategoryType, name="cashflow_category_type", create_type=False)
+        Enum(CashflowCategoryType, name="cashflow_category_type", create_type=False, values_callable=enum_values)
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     parent_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("cashflow_categories.id"))
@@ -181,11 +190,11 @@ class IncomeEntry(Base):
     wallet_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("wallet_accounts.id"))
     holder_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("holders.id"))
     status: Mapped[EntryStatus] = mapped_column(
-        Enum(EntryStatus, name="entry_status", create_type=False), default=EntryStatus.pending
+        Enum(EntryStatus, name="entry_status", create_type=False, values_callable=enum_values), default=EntryStatus.pending
     )
     received_date: Mapped[Optional[date]] = mapped_column(Date)
     owner_type: Mapped[MoneyOwnerType] = mapped_column(
-        Enum(MoneyOwnerType, name="money_owner_type", create_type=False), default=MoneyOwnerType.company
+        Enum(MoneyOwnerType, name="money_owner_type", create_type=False, values_callable=enum_values), default=MoneyOwnerType.company
     )
     notes: Mapped[Optional[str]] = mapped_column(Text)
     receivable_id: Mapped[Optional[str]] = mapped_column(PG_UUID(as_uuid=False))
@@ -215,11 +224,11 @@ class ExpenseEntry(Base):
     holder_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("holders.id"))
     is_company_expense: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[EntryStatus] = mapped_column(
-        Enum(EntryStatus, name="entry_status", create_type=False), default=EntryStatus.pending
+        Enum(EntryStatus, name="entry_status", create_type=False, values_callable=enum_values), default=EntryStatus.pending
     )
     paid_date: Mapped[Optional[date]] = mapped_column(Date)
     owner_type: Mapped[MoneyOwnerType] = mapped_column(
-        Enum(MoneyOwnerType, name="money_owner_type", create_type=False), default=MoneyOwnerType.company
+        Enum(MoneyOwnerType, name="money_owner_type", create_type=False, values_callable=enum_values), default=MoneyOwnerType.company
     )
     notes: Mapped[Optional[str]] = mapped_column(Text)
     payable_id: Mapped[Optional[str]] = mapped_column(PG_UUID(as_uuid=False))
@@ -245,7 +254,7 @@ class Payable(Base):
     expected_holder_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("holders.id"))
     category_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("cashflow_categories.id"))
     status: Mapped[PayableStatus] = mapped_column(
-        Enum(PayableStatus, name="payable_status", create_type=False), default=PayableStatus.unpaid
+        Enum(PayableStatus, name="payable_status", create_type=False, values_callable=enum_values), default=PayableStatus.unpaid
     )
     reference_doc: Mapped[Optional[str]] = mapped_column(String(200))
     notes: Mapped[Optional[str]] = mapped_column(Text)
@@ -253,6 +262,10 @@ class Payable(Base):
     created_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    @property
+    def remaining_amount(self) -> Decimal:
+        return self.total_amount - self.paid_amount
 
 
 # ─── Receivable ───────────────────────────────────────────────
@@ -271,7 +284,7 @@ class Receivable(Base):
     expected_holder_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("holders.id"))
     category_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("cashflow_categories.id"))
     status: Mapped[ReceivableStatus] = mapped_column(
-        Enum(ReceivableStatus, name="receivable_status", create_type=False), default=ReceivableStatus.unreceived
+        Enum(ReceivableStatus, name="receivable_status", create_type=False, values_callable=enum_values), default=ReceivableStatus.unreceived
     )
     reference_doc: Mapped[Optional[str]] = mapped_column(String(200))
     notes: Mapped[Optional[str]] = mapped_column(Text)
@@ -279,6 +292,10 @@ class Receivable(Base):
     created_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    @property
+    def remaining_amount(self) -> Decimal:
+        return self.total_amount - self.received_amount
 
 
 # ─── Transfer ─────────────────────────────────────────────────
@@ -288,7 +305,7 @@ class Transfer(Base):
     id: Mapped[str] = mapped_column(PG_UUID(as_uuid=False), primary_key=True, server_default=func.uuid_generate_v4())
     transfer_date: Mapped[date] = mapped_column(Date, nullable=False)
     transfer_type: Mapped[TransferType] = mapped_column(
-        Enum(TransferType, name="transfer_type", create_type=False), default=TransferType.account_to_account
+        Enum(TransferType, name="transfer_type", create_type=False, values_callable=enum_values), default=TransferType.account_to_account
     )
     from_account_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("wallet_accounts.id"))
     from_holder_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("holders.id"))
@@ -298,7 +315,7 @@ class Transfer(Base):
     fee: Mapped[Decimal] = mapped_column(Numeric(15, 2), default=0)
     reason: Mapped[Optional[str]] = mapped_column(Text)
     status: Mapped[EntryStatus] = mapped_column(
-        Enum(EntryStatus, name="entry_status", create_type=False), default=EntryStatus.completed
+        Enum(EntryStatus, name="entry_status", create_type=False, values_callable=enum_values), default=EntryStatus.completed
     )
     notes: Mapped[Optional[str]] = mapped_column(Text)
     company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id"), nullable=False, default=1)
@@ -313,7 +330,7 @@ class Document(Base):
 
     id: Mapped[str] = mapped_column(PG_UUID(as_uuid=False), primary_key=True, server_default=func.uuid_generate_v4())
     reference_type: Mapped[str] = mapped_column(String(50), nullable=False)
-    reference_id: Mapped[str] = mapped_column(PG_UUID(as_uuid=False), nullable=False)
+    reference_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     file_name: Mapped[str] = mapped_column(String(500), nullable=False)
     file_path: Mapped[str] = mapped_column(String(1000), nullable=False)
     file_type: Mapped[Optional[str]] = mapped_column(String(50))
@@ -332,7 +349,7 @@ class CashTransaction(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     transaction_date: Mapped[date] = mapped_column(Date, nullable=False)
     direction: Mapped[CashDirection] = mapped_column(
-        Enum(CashDirection, name="cash_direction", create_type=False)
+        Enum(CashDirection, name="cash_direction", create_type=False, values_callable=enum_values)
     )
     reference_type: Mapped[str] = mapped_column(String(50), nullable=False)
     reference_id: Mapped[Optional[str]] = mapped_column(PG_UUID(as_uuid=False))

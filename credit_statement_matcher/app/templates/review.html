@@ -1,0 +1,372 @@
+{% extends "base.html" %}
+{% block title %}จับคู่ & ตรวจ Statement{% endblock %}
+{% block heading %}จับคู่ & ตรวจ Statement{% endblock %}
+{% block content %}
+  {% if uploaded %}
+    <div class="alert success"><strong>นำเข้าสำเร็จ</strong><span>Statement พร้อมตรวจแล้ว</span></div>
+  {% endif %}
+
+  {% set total_rows     = totals.total or 0 %}
+  {% set unmatched_rows = totals.unmatched or 0 %}
+  {% set matched_rows   = totals.matched or 0 %}
+  {% set duplicate_rows = totals.duplicates or 0 %}
+  {% set missing_docs   = totals.missing_attachments or 0 %}
+  {% set ref_waiting    = ref_stats.unmatched or 0 %}
+  {% set done_percent   = ((matched_rows / total_rows) * 100)|round(0) if total_rows else 0 %}
+
+  {# ── Next action + progress ──────────────────────────────────────────────── #}
+  <section class="review-home">
+    <div class="card next-card">
+      {% if not total_rows %}
+        <p class="eyebrow">ขั้นตอนที่ 1</p>
+        <h2>ยังไม่มี Statement — เริ่มจากอัปโหลดก่อน</h2>
+        <div class="next-actions"><a class="button primary" href="{{ root_path }}/upload">← ไปหน้าอัปโหลด</a></div>
+      {% elif not (ref_stats.total or 0) %}
+        <p class="eyebrow">ขั้นตอนที่ 2</p>
+        <h2>ยังไม่มีข้อมูล Ads</h2>
+        <div class="next-actions"><a class="button primary" href="{{ root_path }}/upload">← อัปโหลดรูป Ads</a></div>
+      {% elif unmatched_rows %}
+        <p class="eyebrow">ขั้นตอนที่ 3 — พร้อมจับคู่</p>
+        <h2>กด Auto Match เพื่อชนยอดอัตโนมัติ</h2>
+        <p class="muted">Statement {{ total_rows }} รายการ · Ads {{ ref_stats.total or 0 }} รายการ</p>
+        <div class="next-actions">
+          <form method="post" action="{{ root_path }}/matches/auto">
+            {% if selected_statement_id %}<input type="hidden" name="statement_id" value="{{ selected_statement_id }}">{% endif %}
+            <button class="button primary" type="submit">🔍 Auto Match</button>
+          </form>
+        </div>
+      {% elif duplicate_rows or missing_docs %}
+        <p class="eyebrow">เกือบครบ</p>
+        <h2>มีรายการที่ควรตรวจเพิ่ม</h2>
+        <div class="next-actions">
+          {% if duplicate_rows %}<a class="button secondary" href="{{ root_path }}/review?issue=duplicates">ซ้ำ ({{ duplicate_rows }})</a>{% endif %}
+          {% if missing_docs %}<a class="button secondary" href="{{ root_path }}/review?issue=missing-attachments">เอกสารขาด ({{ missing_docs }})</a>{% endif %}
+        </div>
+      {% else %}
+        <p class="eyebrow">✅ เสร็จสิ้น</p>
+        <h2>จับคู่ครบแล้ว</h2>
+        <div class="next-actions">
+          <a class="button primary" href="{{ root_path }}/summary">ดูรายงานสรุป →</a>
+          <a class="button secondary" href="{{ root_path }}/export/report.xlsx">Export Excel</a>
+        </div>
+      {% endif %}
+    </div>
+
+    <div class="card progress-card">
+      <div class="progress-head"><span>ความคืบหน้า</span><strong>{{ done_percent }}%</strong></div>
+      <div class="progress-bar"><span style="width:{{ done_percent }}%"></span></div>
+      <div class="simple-stats">
+        <a href="{{ root_path }}/review?issue=matched"><strong>{{ matched_rows }}</strong><span>จับคู่แล้ว</span></a>
+        <a href="{{ root_path }}/review?issue=unmatched"><strong>{{ unmatched_rows }}</strong><span>รอตรวจ</span></a>
+        <a href="{{ root_path }}/review?issue=duplicates"><strong>{{ duplicate_rows }}</strong><span>ซ้ำ</span></a>
+        <a href="{{ root_path }}/review?issue=missing-attachments"><strong>{{ missing_docs }}</strong><span>เอกสารขาด</span></a>
+      </div>
+    </div>
+  </section>
+
+  {# ── Filters ─────────────────────────────────────────────────────────────── #}
+  <form class="review-filter" method="get" action="{{ root_path }}/review">
+    <label>Statement
+      <select name="statement_id" onchange="this.form.submit()">
+        <option value="">ทั้งหมด</option>
+        {% for s in statements %}
+          <option value="{{ s.id }}" {{ 'selected' if selected_statement_id == s.id else '' }}>{{ s.original_filename }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="filter-pills">
+      <a class="{{ 'active' if not issue else '' }}" href="{{ root_path }}/review?statement_id={{ selected_statement_id or '' }}">ทั้งหมด</a>
+      <a class="{{ 'active' if issue == 'unmatched' else '' }}" href="{{ root_path }}/review?statement_id={{ selected_statement_id or '' }}&issue=unmatched">รอตรวจ</a>
+      <a class="{{ 'active' if issue == 'matched' else '' }}" href="{{ root_path }}/review?statement_id={{ selected_statement_id or '' }}&issue=matched">จับคู่แล้ว</a>
+      <a class="{{ 'active' if issue == 'duplicates' else '' }}" href="{{ root_path }}/review?statement_id={{ selected_statement_id or '' }}&issue=duplicates">ซ้ำ</a>
+    </div>
+    <a class="button secondary" href="{{ root_path }}/references">Ads Refs {{ ref_waiting }} รายการ</a>
+  </form>
+
+  {# ── Main table ──────────────────────────────────────────────────────────── #}
+  {% if rows %}
+    <div class="table-wrap rv-table-wrap">
+      <table class="rv-table">
+        <thead>
+          <tr>
+            <th style="width:52px">สถานะ</th>
+            <th style="width:106px">วันที่</th>
+            <th style="width:120px" class="number">ยอดเงิน</th>
+            <th>รายการ (Statement)</th>
+            <th style="width:80px">บัตร</th>
+            <th style="min-width:200px">จับคู่กับ Ads</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tx in rows %}
+            {% set candidates = candidates_by_tx.get(tx.id, []) %}
+            <tr class="rv-tr rv-tr-{{ tx.match_status }}{{ ' rv-tr-dup' if tx.is_duplicate else '' }}">
+
+              {# Status #}
+              <td class="rv-status-cell">
+                {% if tx.match_status == 'matched' %}
+                  <span class="rv-badge rv-badge-matched">✓</span>
+                {% elif tx.match_status == 'ignored' %}
+                  <span class="rv-badge rv-badge-ignored">—</span>
+                {% else %}
+                  <span class="rv-badge rv-badge-unmatched">?</span>
+                {% endif %}
+              </td>
+
+              {# Date #}
+              <td class="nowrap rv-date-cell">{{ tx.transaction_date or "—" }}</td>
+
+              {# Amount #}
+              <td class="number rv-money-cell">฿{{ tx.amount|money }}</td>
+
+              {# Description #}
+              <td class="rv-desc-cell">
+                <strong>{{ tx.description|clean_desc }}</strong>
+                {% if tx.is_duplicate %}<span class="badge-dup">ซ้ำ</span>{% endif %}
+              </td>
+
+              {# Card #}
+              <td class="nowrap muted" style="font-size:13px">
+                {{ ('••' ~ tx.card_last4) if tx.card_last4 else '—' }}
+              </td>
+
+              {# TikTok match / candidates #}
+              <td class="rv-ref-cell">
+                {% if tx.match_status == 'matched' %}
+                  {# ── Matched: show ref + expand for evidence + unmatch button ── #}
+                  {% set ocr_ref = tx.ref_ocr_reference or "" %}
+                  {% set tgt_ref = tx.target_reference or "" %}
+                  {% set ref_differs = ocr_ref and ocr_ref != tgt_ref %}
+                  <details class="rv-details">
+                    <summary class="rv-details-summary">
+                      <span class="rv-ref-code{{ ' rv-ref-mismatch' if ref_differs else '' }}">{{ tgt_ref or "—" }}</span>
+                      {% if ref_differs %}<span class="rv-ocr-warn" title="OCR อ่านได้: {{ ocr_ref }}">⚠ OCR ต่างกัน</span>{% endif %}
+                      <span class="rv-details-hint">หลักฐาน ▾</span>
+                    </summary>
+                    <div class="rv-details-body">
+
+                      {# Reference comparison — most important #}
+                      <div class="rv-evidence-block">
+                        <div class="rv-evidence-row">
+                          <span class="rv-evidence-label">Target ref</span>
+                          <code class="rv-ref-val">{{ tgt_ref or "—" }}</code>
+                        </div>
+                        <div class="rv-evidence-row">
+                          <span class="rv-evidence-label">OCR อ่านได้</span>
+                          <code class="rv-ref-val {{ 'rv-ref-diff' if ref_differs else 'rv-ref-same' }}">{{ ocr_ref or "—" }}</code>
+                          {% if ref_differs %}<span class="rv-diff-note">ต่างกัน (fuzzy matched)</span>{% else %}<span class="rv-same-note">ตรงกัน ✓</span>{% endif %}
+                        </div>
+                      </div>
+
+                      {# File + date #}
+                      <div class="rv-detail-row">
+                        <span class="rv-detail-label">ไฟล์ Ads</span>
+                        <span class="rv-detail-val">{{ tx.ref_source_filename or "—" }}</span>
+                      </div>
+                      {% if tx.ref_date %}
+                      <div class="rv-detail-row">
+                        <span class="rv-detail-label">วันที่ Ads</span>
+                        <span class="rv-detail-val">{{ tx.ref_date }}</span>
+                      </div>
+                      {% endif %}
+                      {% if tx.ref_party_name %}
+                      <div class="rv-detail-row">
+                        <span class="rv-detail-label">Invoice / ชื่อ</span>
+                        <span class="rv-detail-val">{{ tx.ref_party_name }}</span>
+                      </div>
+                      {% endif %}
+
+                      {# Match notes / score reason #}
+                      {% if tx.match_notes %}
+                      <div class="rv-detail-row rv-notes-row">
+                        <span class="rv-detail-label">เหตุผล</span>
+                        <span class="rv-detail-val rv-notes-val">{{ tx.match_notes }}</span>
+                      </div>
+                      {% endif %}
+
+                      <div class="rv-detail-row">
+                        <span class="rv-detail-label">วิธีจับคู่</span>
+                        <span class="rv-detail-val">{{ tx.match_method or "manual" }}</span>
+                      </div>
+                      <div class="rv-detail-row">
+                        <span class="rv-detail-label">Match #</span>
+                        <span class="rv-detail-val">{{ tx.match_group_id }}</span>
+                      </div>
+
+                      {# Unmatch button #}
+                      <form method="post" action="{{ root_path }}/matches/{{ tx.match_group_id }}/remove"
+                            onsubmit="return confirm('ยกเลิกการจับคู่รายการนี้?')">
+                        <button class="button danger rv-unmatch-btn" type="submit">✕ ยกเลิกการจับคู่</button>
+                      </form>
+                    </div>
+                  </details>
+
+                {% elif tx.match_status == 'unmatched' %}
+                  {# ── Unmatched: compact row + tooltip on hover ── #}
+                  {% if candidates %}
+                    <div class="rv-cand-list">
+                      {% for c in candidates %}
+                        <div class="rv-cand-row">
+
+                          {# Always visible: score + ref + จับคู่ button #}
+                          <div class="rv-cand-summary">
+                            <span class="score-pill {{ 'good' if c.match_score >= 82 else 'soft' }}">{{ c.match_score }}</span>
+                            <code class="rv-cand-refcode">{{ c.reference }}</code>
+                            <form method="post" action="{{ root_path }}/matches/reference" class="rv-cand-form">
+                              <input type="hidden" name="transaction_ids" value="{{ tx.id }}">
+                              <input type="hidden" name="reference_item_id" value="{{ c.id }}">
+                              <input type="hidden" name="next_url" class="js-next-url" value="">
+                              <button class="button primary rv-cand-btn js-confirm-match" type="button">จับคู่</button>
+                            </form>
+                          </div>
+
+                          {# Tooltip content — cloned into floating overlay on hover #}
+                          <div class="rv-cand-tooltip-content" hidden>
+                            <div class="rv-compare-head">
+                              <span class="score-pill {{ 'good' if c.match_score >= 82 else 'soft' }}">{{ c.match_score }}</span>
+                              <span class="rv-cmp-file">{{ c.source_filename or "—" }}</span>
+                            </div>
+                            <div class="rv-compare-panels">
+                              <div class="rv-cmp-panel rv-cmp-stmt">
+                                <div class="rv-cmp-tag">📄 Statement</div>
+                                <div class="rv-cmp-amount">฿{{ tx.amount|money }}</div>
+                                <div class="rv-cmp-row"><span>วันที่</span>{{ tx.transaction_date or "—" }}</div>
+                                {% if tx.transaction_time and tx.transaction_time[:5] != '00:00' %}<div class="rv-cmp-row"><span>เวลา</span>{{ tx.transaction_time[:5] }}</div>{% endif %}
+                                <div class="rv-cmp-row"><span>รายการ</span><strong>{{ tx.description|clean_desc }}</strong></div>
+                                {% if tx.tr_code %}<div class="rv-cmp-row rv-cmp-highlight"><span>Ref</span><code>{{ tx.tr_code }}</code></div>{% endif %}
+                                {% if tx.channel %}<div class="rv-cmp-row"><span>สถานที่</span>{{ tx.channel }}</div>{% endif %}
+                                {% if tx.card_last4 %}<div class="rv-cmp-row"><span>บัตร</span>••{{ tx.card_last4 }}</div>{% endif %}
+                                <div class="rv-cmp-row rv-cmp-muted"><span>ไฟล์</span>{{ tx.original_filename }}</div>
+                              </div>
+                              <div class="rv-cmp-divider">↔</div>
+                              <div class="rv-cmp-panel rv-cmp-ref">
+                                <div class="rv-cmp-tag">📱 Ads</div>
+                                <div class="rv-cmp-amount">฿{{ c.amount|money }}</div>
+                                <div class="rv-cmp-row rv-cmp-match">
+                                  <span>วันที่</span>{{ c.transaction_date or "—" }}<i class="rv-tick">✓</i>
+                                </div>
+                                {% if c.transaction_time %}<div class="rv-cmp-row"><span>เวลา</span>{{ c.transaction_time }}</div>{% endif %}
+                                <div class="rv-cmp-row rv-cmp-highlight"><span>Ref</span><code>{{ c.reference }}</code></div>
+                                {% if c.party_name %}<div class="rv-cmp-row"><span>Invoice</span>{{ c.party_name }}</div>{% endif %}
+                                <div class="rv-cmp-row rv-cmp-muted"><span>ไฟล์</span>{{ c.source_filename or "—" }}</div>
+                              </div>
+                            </div>
+                            {% if c.match_reason %}
+                              <div class="rv-compare-reason">{{ c.match_reason }}</div>
+                            {% endif %}
+                          </div>
+
+                        </div>
+                      {% endfor %}
+                    </div>
+                  {% else %}
+                    <span class="rv-no-cand">ไม่พบยอดที่ตรงกัน</span>
+                  {% endif %}
+
+                {% else %}
+                  <span class="muted" style="font-size:12px">ไม่นับ</span>
+                {% endif %}
+              </td>
+
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="empty">ยังไม่มีรายการตามตัวกรองนี้</div>
+  {% endif %}
+
+  {# ── Confirm match dialog (shared, populated by JS) ── #}
+  <dialog id="cmd" class="sheet-dialog cmd-dialog">
+    <div class="dialog-head">
+      <div>
+        <p class="eyebrow">ยืนยันการจับคู่</p>
+        <h2 style="font-size:17px;margin:0">ชนยอดรายการนี้ใช่ไหม?</h2>
+      </div>
+      <button class="icon-button" id="cmd-close" type="button" aria-label="ปิด">×</button>
+    </div>
+    <div id="cmd-body"></div>
+    <div class="cmd-actions">
+      <button class="button secondary" id="cmd-cancel" type="button">ยกเลิก</button>
+      <button class="button primary"   id="cmd-confirm" type="button">✓ ยืนยัน จับคู่</button>
+    </div>
+  </dialog>
+
+  <script>
+    (function () {
+      const tip = document.createElement("div");
+      tip.className = "rv-hover-tooltip";
+      tip.hidden = true;
+      document.body.appendChild(tip);
+      let src = null;
+
+      function place(row) {
+        const r = row.getBoundingClientRect();
+        const W = 560, vw = window.innerWidth;
+        let left = r.right + 10;
+        if (left + W > vw - 12) left = Math.max(8, r.left - W - 10);
+        const top = r.top;
+        tip.style.left = left + "px";
+        tip.style.top  = top + "px";
+        tip.style.maxHeight = (window.innerHeight - top - 12) + "px";
+      }
+
+      function show(row) {
+        const c = row.querySelector(".rv-cand-tooltip-content");
+        if (!c) return;
+        tip.innerHTML = c.innerHTML;
+        tip.hidden = false;
+        place(row);
+        src = row;
+      }
+
+      function hide(e) {
+        if (tip.contains(e.relatedTarget) || (src && src.contains(e.relatedTarget))) return;
+        tip.hidden = true;
+        src = null;
+      }
+
+      document.querySelectorAll(".rv-cand-row").forEach((row) => {
+        row.addEventListener("mouseenter", () => show(row));
+        row.addEventListener("mouseleave", hide);
+      });
+      tip.addEventListener("mouseleave", hide);
+      window.addEventListener("scroll", () => { if (src && !tip.hidden) place(src); }, { passive: true });
+    })();
+
+    // ── Confirm-match dialog ──────────────────────────────────────────────────
+    (function () {
+      const dialog  = document.getElementById("cmd");
+      const body    = document.getElementById("cmd-body");
+      const btnConf = document.getElementById("cmd-confirm");
+      const btnCncl = document.getElementById("cmd-cancel");
+      const btnX    = document.getElementById("cmd-close");
+      let pending   = null;
+
+      const currentUrl = window.location.pathname + window.location.search;
+
+      // fill next_url + wire button
+      document.querySelectorAll(".js-confirm-match").forEach((btn) => {
+        const form = btn.closest("form");
+        form.querySelector(".js-next-url").value = currentUrl;
+
+        btn.addEventListener("click", () => {
+          pending = form;
+          // clone tooltip content into dialog body
+          const row     = form.closest(".rv-cand-row");
+          const tooltip = row && row.querySelector(".rv-cand-tooltip-content");
+          body.innerHTML = tooltip ? tooltip.innerHTML : "";
+          dialog.showModal();
+        });
+      });
+
+      function close() { dialog.close(); pending = null; }
+      btnConf.addEventListener("click", () => { dialog.close(); if (pending) pending.submit(); pending = null; });
+      btnCncl.addEventListener("click", close);
+      btnX.addEventListener("click", close);
+      dialog.addEventListener("click", (e) => { if (e.target === dialog) close(); });
+    })();
+  </script>
+
+{% endblock %}

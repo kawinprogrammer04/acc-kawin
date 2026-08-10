@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { dashboardApi } from "@/api/cashflow";
-import { formatCurrency, formatDate, today, isOverdue } from "@/lib/format";
+import { formatCurrency, formatDate, today, isOverdue, localDateInput } from "@/lib/format";
 
 export function SchedulePage() {
   const [data, setData] = useState<any>(null);
@@ -13,7 +13,7 @@ export function SchedulePage() {
   const [endDate, setEndDate] = useState(() => {
     const d = new Date();
     d.setDate(d.getDate() + 30);
-    return d.toISOString().split("T")[0];
+    return localDateInput(d);
   });
 
   useEffect(() => {

@@ -13,8 +13,8 @@ from typing import Any
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.account import Account
+from app.models.company import Company
 from app.models.fiscal import AccountingPeriod
 from app.models.invoice import Invoice
 from app.models.journal import Journal, JournalLine
@@ -78,11 +78,20 @@ class PP30Data:
     net_vat_type: str         = "นำส่ง"   # นำส่ง | ขอคืน
 
 
-async def query_pp30(db: AsyncSession, year: int, month: int) -> PP30Data:
+async def query_pp30(
+    db: AsyncSession,
+    year: int,
+    month: int,
+    company: Company,
+) -> PP30Data:
     """Fetch all VAT records for a given CE year+month."""
     result = await db.execute(
         select(VatRecord)
-        .where(VatRecord.period_year == year, VatRecord.period_month == month)
+        .where(
+            VatRecord.period_year == year,
+            VatRecord.period_month == month,
+            VatRecord.company_id == company.id,
+        )
         .order_by(VatRecord.record_type, VatRecord.tax_invoice_date)
     )
     records = result.scalars().all()
@@ -118,8 +127,8 @@ async def query_pp30(db: AsyncSession, year: int, month: int) -> PP30Data:
     net = (out_vat - in_vat).quantize(TWO, ROUND_HALF_UP)
 
     return PP30Data(
-        company_name=settings.COMPANY_NAME,
-        company_tax_id=_format_tax_id(settings.COMPANY_TAX_ID),
+        company_name=company.name_th,
+        company_tax_id=_format_tax_id(company.tax_id),
         period_month_name=_thai_month(month),
         period_year_be=year + 543,
         generated_at=_thai_date(date.today()),
@@ -182,10 +191,19 @@ _WHT_LABELS = {
 }
 
 
-async def query_wht50(db: AsyncSession, year: int, month: int) -> WHT50Data:
+async def query_wht50(
+    db: AsyncSession,
+    year: int,
+    month: int,
+    company: Company,
+) -> WHT50Data:
     result = await db.execute(
         select(WhtRecord)
-        .where(WhtRecord.period_year == year, WhtRecord.period_month == month)
+        .where(
+            WhtRecord.period_year == year,
+            WhtRecord.period_month == month,
+            WhtRecord.company_id == company.id,
+        )
         .order_by(WhtRecord.wht_type, WhtRecord.transaction_date)
     )
     records = result.scalars().all()
@@ -233,8 +251,8 @@ async def query_wht50(db: AsyncSession, year: int, month: int) -> WHT50Data:
     ]
 
     return WHT50Data(
-        company_name=settings.COMPANY_NAME,
-        company_tax_id=_format_tax_id(settings.COMPANY_TAX_ID),
+        company_name=company.name_th,
+        company_tax_id=_format_tax_id(company.tax_id),
         period_month_name=_thai_month(month),
         period_year_be=year + 543,
         generated_at=_thai_date(date.today()),
@@ -287,6 +305,7 @@ async def query_income_expense(
     fiscal_year_id: int,
     period_from: int,
     period_to: int,
+    company: Company,
 ) -> IncExpData:
     # Pull posted journal lines for the period range
     rows = await db.execute(
@@ -299,6 +318,8 @@ async def query_income_expense(
         .join(AccountingPeriod, AccountingPeriod.id == Journal.period_id)
         .where(
             Journal.status == "posted",
+            Journal.company_id == company.id,
+            AccountingPeriod.company_id == company.id,
             AccountingPeriod.fiscal_year_id == fiscal_year_id,
             AccountingPeriod.period_number.between(period_from, period_to),
         )
@@ -311,7 +332,11 @@ async def query_income_expense(
 
     accounts_result = await db.execute(
         select(Account)
-        .where(Account.account_type.in_(["revenue", "expense"]), Account.is_header == False)  # noqa: E712
+        .where(
+            Account.company_id == company.id,
+            Account.account_type.in_(["revenue", "expense"]),
+            Account.is_header == False,
+        )  # noqa: E712
         .order_by(Account.code)
     )
     accounts = accounts_result.scalars().all()
@@ -352,8 +377,8 @@ async def query_income_expense(
              if period_from != period_to else f"งวด {months[period_from]}")
 
     return IncExpData(
-        company_name=settings.COMPANY_NAME,
-        company_tax_id=_format_tax_id(settings.COMPANY_TAX_ID),
+        company_name=company.name_th,
+        company_tax_id=_format_tax_id(company.tax_id),
         fiscal_year_id=fiscal_year_id,
         period_from=period_from,
         period_to=period_to,

@@ -5,14 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.account import Account
+from app.models.fiscal import AccountingPeriod
 from app.models.journal import Journal, JournalLine
+from app.models.party import Party
 from app.schemas.journal import JournalCreate
 
 
-async def _next_entry_number(db: AsyncSession, entry_date: datetime) -> str:
+async def _next_entry_number(db: AsyncSession, entry_date: datetime, company_id: int) -> str:
     year = entry_date.year
     result = await db.execute(
         select(func.count()).select_from(Journal).where(
+            Journal.company_id == company_id,
             text(f"EXTRACT(YEAR FROM entry_date) = {year}")
         )
     )
@@ -20,10 +23,20 @@ async def _next_entry_number(db: AsyncSession, entry_date: datetime) -> str:
     return f"JV{year}-{seq:05d}"
 
 
-async def create_journal(db: AsyncSession, payload: JournalCreate, user_id: int) -> Journal:
+async def create_journal(
+    db: AsyncSession,
+    payload: JournalCreate,
+    user_id: int,
+    company_id: int,
+) -> Journal:
     # Validate all accounts exist and are postable
     account_ids = {ln.account_id for ln in payload.lines}
-    result = await db.execute(select(Account).where(Account.id.in_(account_ids)))
+    result = await db.execute(
+        select(Account).where(
+            Account.id.in_(account_ids),
+            Account.company_id == company_id,
+        )
+    )
     accounts = {a.id: a for a in result.scalars().all()}
 
     for line in payload.lines:
@@ -35,10 +48,31 @@ async def create_journal(db: AsyncSession, payload: JournalCreate, user_id: int)
         if not acc.is_active:
             raise ValueError(f"บัญชี {acc.code} {acc.name_th} ถูกปิดใช้งานแล้ว")
 
-    entry_number = await _next_entry_number(db, payload.entry_date)
+    period = (await db.execute(
+        select(AccountingPeriod).where(
+            AccountingPeriod.id == payload.period_id,
+            AccountingPeriod.company_id == company_id,
+        )
+    )).scalar_one_or_none()
+    if not period:
+        raise ValueError("ไม่พบงวดบัญชีในบริษัทนี้")
+
+    party_ids = {line.party_id for line in payload.lines if line.party_id}
+    if party_ids:
+        parties = (await db.execute(
+            select(Party.id).where(
+                Party.id.in_(party_ids),
+                Party.company_id == company_id,
+            )
+        )).scalars().all()
+        if len(parties) != len(party_ids):
+            raise ValueError("พบลูกค้า/ผู้ขายที่ไม่ได้อยู่ในบริษัทนี้")
+
+    entry_number = await _next_entry_number(db, payload.entry_date, company_id)
 
     journal = Journal(
         entry_number=entry_number,
+        company_id=company_id,
         entry_date=payload.entry_date,
         period_id=payload.period_id,
         description=payload.description,
@@ -66,9 +100,17 @@ async def create_journal(db: AsyncSession, payload: JournalCreate, user_id: int)
     return journal
 
 
-async def post_journal(db: AsyncSession, journal_id: str, user_id: int) -> Journal:
+async def post_journal(
+    db: AsyncSession,
+    journal_id: str,
+    user_id: int,
+    company_id: int,
+) -> Journal:
     result = await db.execute(
-        select(Journal).options(selectinload(Journal.lines)).where(Journal.id == journal_id)
+        select(Journal).options(selectinload(Journal.lines)).where(
+            Journal.id == journal_id,
+            Journal.company_id == company_id,
+        )
     )
     journal = result.scalar_one_or_none()
     if not journal:
@@ -94,9 +136,18 @@ async def post_journal(db: AsyncSession, journal_id: str, user_id: int) -> Journ
     return journal
 
 
-async def void_journal(db: AsyncSession, journal_id: str, reason: str, user_id: int) -> Journal:
+async def void_journal(
+    db: AsyncSession,
+    journal_id: str,
+    reason: str,
+    user_id: int,
+    company_id: int,
+) -> Journal:
     result = await db.execute(
-        select(Journal).options(selectinload(Journal.lines)).where(Journal.id == journal_id)
+        select(Journal).options(selectinload(Journal.lines)).where(
+            Journal.id == journal_id,
+            Journal.company_id == company_id,
+        )
     )
     journal = result.scalar_one_or_none()
     if not journal:

@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}กำลังอ่าน Statement{% endblock %}
+{% block heading %}กำลังอ่าน Statement{% endblock %}
+{% block content %}
+  <section class="card upload-card processing-page">
+    <div id="upload-processing" class="upload-processing" aria-live="polite" aria-busy="true">
+      <div id="processing-spinner" class="processing-spinner" aria-hidden="true"></div>
+      <p class="eyebrow">Background OCR</p>
+      <h2 id="processing-title">รับไฟล์แล้ว กำลังรอเริ่มอ่าน</h2>
+      <p class="processing-file">{{ original_name }}</p>
+      <div id="processing-progress" class="processing-progress" aria-hidden="true"><span></span></div>
+      <ol class="processing-steps">
+        <li class="active">รับไฟล์และเข้าคิวประมวลผล</li>
+        <li>อ่าน text layer และโครงสร้างคอลัมน์</li>
+        <li>แปลงภาพและทำ OCR ไทย + อังกฤษ</li>
+        <li>เตรียมตาราง Preview และตรวจยอด</li>
+      </ol>
+      <p class="processing-note">
+        ทำงานแล้ว <strong id="processing-seconds">0</strong> วินาที
+      </p>
+      <small id="processing-detail">ระบบตรวจสถานะอัตโนมัติ โดยไม่มี request ยาวที่เสี่ยงเกิด 504</small>
+      <div id="processing-error" class="processing-error" hidden>
+        <strong>อ่าน Statement ไม่สำเร็จ</strong>
+        <span id="processing-error-message"></span>
+        <a class="button primary" href="{{ root_path }}/upload">กลับไปอัปโหลดใหม่</a>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    const jobToken = {{ job_token|tojson }};
+    const rootPath = {{ root_path|tojson }};
+    const statusUrl = `${rootPath}/upload/jobs/${jobToken}`;
+    const processingTitle = document.getElementById("processing-title");
+    const processingSeconds = document.getElementById("processing-seconds");
+    const processingDetail = document.getElementById("processing-detail");
+    const processingSteps = Array.from(document.querySelectorAll(".processing-steps li"));
+    const processingSpinner = document.getElementById("processing-spinner");
+    const processingProgress = document.getElementById("processing-progress");
+    const processingError = document.getElementById("processing-error");
+    const processingErrorMessage = document.getElementById("processing-error-message");
+    let polling = true;
+    let consecutiveNetworkErrors = 0;
+
+    function showStep(activeStep) {
+      processingSteps.forEach((step, index) => {
+        step.classList.toggle("active", index === activeStep);
+        step.classList.toggle("done", index < activeStep);
+      });
+    }
+
+    function showError(message) {
+      polling = false;
+      processingTitle.textContent = "ประมวลผลไม่สำเร็จ";
+      processingDetail.hidden = true;
+      processingSpinner.hidden = true;
+      processingProgress.hidden = true;
+      processingErrorMessage.textContent = message;
+      processingError.hidden = false;
+      document.getElementById("upload-processing").setAttribute("aria-busy", "false");
+    }
+
+    async function checkStatus() {
+      if (!polling) return;
+      try {
+        const response = await fetch(statusUrl, {
+          cache: "no-store",
+          headers: { "Accept": "application/json" }
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "ตรวจสถานะไม่สำเร็จ");
+        consecutiveNetworkErrors = 0;
+        processingSeconds.textContent = Number(result.elapsed_seconds || 0).toLocaleString("th-TH");
+        processingTitle.textContent = result.message;
+        showStep(Number(result.step || 0));
+        if (result.status === "complete" && result.redirect_url) {
+          polling = false;
+          window.location.replace(result.redirect_url);
+          return;
+        }
+        if (result.status === "failed") {
+          showError(result.error || "ไม่สามารถอ่าน Statement ได้");
+          return;
+        }
+      } catch (error) {
+        consecutiveNetworkErrors += 1;
+        processingDetail.textContent = "การเชื่อมต่อสะดุด ระบบกำลังลองตรวจสถานะใหม่...";
+        if (consecutiveNetworkErrors >= 15) {
+          showError("ติดต่อระบบตรวจสถานะไม่ได้ กรุณารีเฟรชหน้านี้เพื่อลองอีกครั้ง");
+          return;
+        }
+      }
+      window.setTimeout(checkStatus, 2000);
+    }
+
+    checkStatus();
+  </script>
+{% endblock %}

@@ -1,0 +1,188 @@
+{% extends "base.html" %}
+{% block title %}รายการ Statement{% endblock %}
+{% block heading %}รายการจาก Statement{% endblock %}
+{% block content %}
+  {% if uploaded %}
+    <div class="alert success"><strong>นำเข้าสำเร็จ</strong><span>ระบบอ่านรายการและจัดหมวดหมู่เบื้องต้นแล้ว</span></div>
+  {% endif %}
+
+  <form class="filters card" method="get" action="{{ root_path }}/transactions">
+    <label>Statement
+      <select name="statement_id">
+        <option value="">ทั้งหมด</option>
+        {% for statement in statements %}
+          <option value="{{ statement.id }}" {{ 'selected' if filters.statement_id == statement.id else '' }}>{{ statement.original_filename }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>สถานะ
+      <select name="status">
+        <option value="">ทั้งหมด</option>
+        <option value="unmatched" {{ 'selected' if filters.status == 'unmatched' else '' }}>รอตรวจ</option>
+        <option value="matched" {{ 'selected' if filters.status == 'matched' else '' }}>จับคู่แล้ว</option>
+        <option value="ignored" {{ 'selected' if filters.status == 'ignored' else '' }}>ไม่นับ</option>
+      </select>
+    </label>
+    <label>บัตร
+      <select name="card">
+        <option value="">ทั้งหมด</option>
+        {% for card in cards %}
+          <option value="{{ card.last4 }}" {{ 'selected' if filters.card == card.last4 else '' }}>{{ card.name }} •••• {{ card.last4 }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="grow">ค้นหา
+      <input name="q" value="{{ filters.q or '' }}" placeholder="ร้านค้า, reference หรือหมายเหตุ">
+    </label>
+    <button class="button primary" type="submit">กรอง</button>
+  </form>
+
+  <div class="section-heading">
+    <div><p class="eyebrow">Saved statement data</p><h2>รายการที่บันทึกแล้ว</h2></div>
+    <a class="button secondary" href="{{ root_path }}/manual-edit">ไปหน้าตรวจและจับคู่</a>
+  </div>
+
+  {% if transactions %}
+    <section class="preview-table-panel card" aria-label="เครื่องมือจัดรายการ Statement">
+      <div class="preview-table-toolbar saved-table-toolbar">
+        <label>จัดกลุ่ม
+          <select id="saved-group-by">
+            <option value="none">ไม่จัดกลุ่ม</option>
+            <option value="day">วัน</option>
+            <option value="month">เดือน</option>
+            <option value="year">ปี</option>
+            <option value="direction">เงินเข้า / เงินออก</option>
+            <option value="status">สถานะ</option>
+            <option value="card">บัตร</option>
+            <option value="category">หมวดหมู่</option>
+          </select>
+        </label>
+        <label>แสดงรายการ
+          <select id="saved-direction-filter">
+            <option value="all">ทั้งหมด</option>
+            <option value="in">เงินเข้า</option>
+            <option value="out">เงินออก</option>
+          </select>
+        </label>
+        <label>เรียงตาม
+          <select id="saved-sort">
+            <option value="date-desc">วันที่ใหม่ → เก่า</option>
+            <option value="date-asc">วันที่เก่า → ใหม่</option>
+            <option value="amount-desc">ยอดสูง → ต่ำ</option>
+            <option value="amount-asc">ยอดต่ำ → สูง</option>
+            <option value="original">ลำดับเดิม</option>
+          </select>
+        </label>
+        <label>ต่อหน้า
+          <select id="saved-page-size">
+            <option value="25">25 รายการ</option>
+            <option value="50" selected>50 รายการ</option>
+            <option value="100">100 รายการ</option>
+            <option value="0">ทั้งหมด</option>
+          </select>
+        </label>
+        <label class="preview-search">ค้นหาในผลลัพธ์
+          <input id="saved-search" type="search" placeholder="ร้านค้า วันที่ รหัส สถานที่ หรือหมวดหมู่">
+        </label>
+        <button id="saved-reset" class="button ghost table-reset-button" type="button">ล้างการจัดมุมมอง</button>
+      </div>
+
+      <div class="preview-live-summary" aria-live="polite">
+        <div>
+          <span>ผลลัพธ์</span>
+          <strong id="saved-visible-count">{{ transactions|length }}</strong>
+        </div>
+        <div class="summary-in">
+          <span>เงินเข้า</span>
+          <strong id="saved-visible-in">฿0.00</strong>
+        </div>
+        <div class="summary-out">
+          <span>เงินออก</span>
+          <strong id="saved-visible-out">฿0.00</strong>
+        </div>
+        <div class="summary-net">
+          <span>สุทธิ</span>
+          <strong id="saved-visible-net">฿0.00</strong>
+        </div>
+      </div>
+    </section>
+
+    <div class="table-wrap preview-table-wrap saved-table-wrap">
+      <table class="saved-data-table" id="saved-data-table">
+        <thead>
+          <tr>
+            <th class="row-number-col">#</th>
+            <th>วันที่</th>
+            <th>รายการ / ร้านค้า</th>
+            <th class="number money-in-heading">เงินเข้า</th>
+            <th class="number money-out-heading">เงินออก</th>
+            <th>บัตร</th>
+            <th>หมวดหมู่</th>
+            <th>สถานะ</th>
+          </tr>
+        </thead>
+        <tbody id="saved-table-body">
+        {% for tx in transactions %}
+          <tr
+            class="saved-transaction-row"
+            data-original-order="{{ loop.index0 }}"
+            data-date="{{ tx.transaction_date or '' }}"
+            data-amount="{{ tx.amount }}"
+            data-status="{{ tx.match_status }}"
+            data-status-label="{{ {'unmatched':'รอตรวจ','matched':'จับคู่แล้ว','ignored':'ไม่นับ'}[tx.match_status] }}"
+            data-card="{{ tx.card_last4 or '' }}"
+            data-category="{{ tx.category or 'ไม่ระบุหมวดหมู่' }}"
+          >
+            <td class="row-number-col"><span class="saved-row-number">{{ loop.index }}</span></td>
+            <td class="nowrap">
+              {{ tx.transaction_date }}
+              {% if tx.transaction_time %}<br><small>{{ tx.transaction_time[:5] }}</small>{% endif %}
+            </td>
+            <td class="saved-description-cell">
+              <strong>{{ tx.description }}</strong>
+              <div class="transaction-meta saved-transaction-meta">
+                <span><strong>ไฟล์:</strong>&nbsp;{{ tx.original_filename }}</span>
+                {% if tx.tr_code %}
+                  <span><strong>รหัสอ้างอิง:</strong>&nbsp;{{ tx.tr_code }}</span>
+                {% endif %}
+                {% if tx.channel %}
+                  <span>
+                    <strong>{{ "สถานที่:" if tx.issuer == "American Express" else "ช่องทาง:" }}</strong>
+                    &nbsp;{{ tx.channel }}
+                  </span>
+                {% endif %}
+                {% if tx.reference or tx.target_reference %}
+                  <span><strong>รายการที่จับคู่:</strong>&nbsp;{{ tx.reference or tx.target_reference }}</span>
+                {% endif %}
+                {% if tx.match_group_id %}<span>Match #{{ tx.match_group_id }}</span>{% endif %}
+                {% if tx.is_duplicate %}<span class="table-warning">รายการซ้ำ</span>{% endif %}
+                {% if tx.match_status == 'matched' and not tx.has_attachment %}
+                  <span class="table-warning">ไม่มีเอกสารแนบ</span>
+                {% endif %}
+              </div>
+            </td>
+            <td class="number saved-money-in">{% if tx.amount >= 0 %}{{ tx.amount|money }}{% else %}—{% endif %}</td>
+            <td class="number saved-money-out">{% if tx.amount < 0 %}{{ (-tx.amount)|money }}{% else %}—{% endif %}</td>
+            <td class="nowrap">
+              {% if tx.card_last4 %}•••• {{ tx.card_last4 }}{% else %}—{% endif %}
+              {% if tx.card_name %}<small>{{ tx.card_name }}</small>{% endif %}
+            </td>
+            <td>{{ tx.category }}</td>
+            <td><span class="status {{ tx.match_status }}">{{ {"unmatched":"รอตรวจ","matched":"จับคู่แล้ว","ignored":"ไม่นับ"}[tx.match_status] }}</span></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <nav class="saved-pagination card" aria-label="เปลี่ยนหน้ารายการ">
+      <button id="saved-prev-page" class="button secondary" type="button">← ก่อนหน้า</button>
+      <span id="saved-page-info">หน้า 1 / 1</span>
+      <button id="saved-next-page" class="button secondary" type="button">ถัดไป →</button>
+    </nav>
+
+    <script src="{{ root_path }}/static/transactions-table.js"></script>
+  {% else %}
+    <div class="empty">ไม่พบรายการตามเงื่อนไข</div>
+  {% endif %}
+{% endblock %}

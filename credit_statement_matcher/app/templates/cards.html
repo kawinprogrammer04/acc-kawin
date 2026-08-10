@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}จัดการบัตรเครดิต{% endblock %}
+{% block heading %}บัตรเครดิต{% endblock %}
+{% block content %}
+  <section class="split cards-layout">
+    <form class="card form-card" action="{{ root_path }}/cards" method="post">
+      <p class="eyebrow">เพิ่มหรืออัปเดตบัตร</p>
+      <h2>ข้อมูลบัตร</h2>
+      <label>ชื่อเรียกบัตร<input name="name" placeholder="เช่น KBank Corporate" required></label>
+      <label>เลขท้าย 4 หลัก<input name="last4" inputmode="numeric" minlength="4" maxlength="4" pattern="\d{4}" placeholder="1234" required></label>
+      <label>ชื่อผู้ถือบัตร<input name="holder_name" placeholder="ไม่บังคับ"></label>
+      <label>ธนาคาร<input name="bank_name" placeholder="ไม่บังคับ"></label>
+      <button class="button primary" type="submit">บันทึกบัตร</button>
+    </form>
+
+    <div>
+      <div class="section-heading"><div><p class="eyebrow">Card registry</p><h2>บัตรในระบบ</h2></div></div>
+      <div class="card-list">
+      {% for card in cards %}
+        <article class="credit-card">
+          <div><small>{{ card.bank_name or 'CREDIT CARD' }}</small><strong>{{ card.name }}</strong></div>
+          <p>•••• &nbsp;•••• &nbsp;•••• &nbsp;{{ card.last4 }}</p>
+          <div><span>{{ card.holder_name or 'ไม่ระบุผู้ถือบัตร' }}</span><span>{{ card.transaction_count }} รายการ · {{ card.total|money }} บาท</span></div>
+          <form action="{{ root_path }}/cards/{{ card.id }}/delete" method="post" onsubmit="return confirm('ลบบัตรนี้? รายการเดิมจะยังอยู่')">
+            <button class="card-delete" type="submit" aria-label="ลบบัตร">×</button>
+          </form>
+        </article>
+      {% else %}
+        <div class="empty">ยังไม่ได้เพิ่มบัตร</div>
+      {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  {% if unknown_cards %}
+  <section class="section">
+    <div class="section-heading"><div><p class="eyebrow">ตรวจพบจาก Statement</p><h2>บัตรที่ยังไม่ลงทะเบียน</h2></div></div>
+    <div class="unknown-cards">
+      {% for card in unknown_cards %}
+        <span>•••• {{ card.card_last4 }} <small>{{ card.transaction_count }} รายการ</small></span>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+{% endblock %}
+

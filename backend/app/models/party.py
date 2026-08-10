@@ -1,6 +1,6 @@
 from datetime import datetime
 from uuid import uuid4
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -11,9 +11,10 @@ class Party(Base):
     __tablename__ = "parties"
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid4()))
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id"), nullable=False)
     # customer | vendor | both
     party_type: Mapped[str] = mapped_column(String(10), nullable=False)
-    code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    code: Mapped[str] = mapped_column(String(20), nullable=False)
     name_th: Mapped[str] = mapped_column(String(300), nullable=False)
     name_en: Mapped[str | None] = mapped_column(String(300))
     tax_id: Mapped[str | None] = mapped_column(String(13))
@@ -38,3 +39,7 @@ class Party(Base):
     ar_account: Mapped["Account | None"] = relationship("Account", foreign_keys=[ar_account_id])  # noqa: F821
     ap_account: Mapped["Account | None"] = relationship("Account", foreign_keys=[ap_account_id])  # noqa: F821
     invoices: Mapped[list["Invoice"]] = relationship("Invoice", back_populates="party")  # noqa: F821
+
+    __table_args__ = (
+        UniqueConstraint("company_id", "code", name="uq_party_company_code"),
+    )
