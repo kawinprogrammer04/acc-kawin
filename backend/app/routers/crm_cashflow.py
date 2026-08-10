@@ -20,7 +20,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Alignment, Font, PatternFill
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -56,7 +56,7 @@ DOCUMENT_TYPE_LABELS: dict[str, str] = {
     "cash_bill": "บิลเงินสด",
     "other": "อื่นๆ",
 }
-LEGACY_INVOICE_LABELS = {None: "ไม่มีใบกำกับ", 0: "รอใบกำกับ", 1: "ได้รับแล้ว"}
+LEGACY_INVOICE_LABELS = {None: "", 0: "รอใบกำกับ", 1: "ได้รับแล้ว"}
 
 
 # ── Request schemas ──────────────────────────────────────────────────────────
@@ -1088,6 +1088,13 @@ REPORT_EXPORT_HEADERS = [
     "#", "แผนก", "วันที่", "หัวข้อ", "แหล่งที่มา", "รายละเอียด",
     "ใบกำกับภาษี", "คำนวณต้นทุน", "รายรับ", "รายจ่าย",
 ]
+DEFAULT_IMPORT_SOURCE_NAME = "ไม่ระบุ"
+IMPORT_TEMPLATE_SAMPLE = [
+    [date(2025, 2, 27), "รายรับ", "ยอดขายออนไลน์", "รายได้จากการขายสินค้าออนไลน์", "", "0", 15000, 0, "", "ฝ่ายขาย"],
+    [date(2025, 2, 27), "รายรับ", "ยอดขายหน้าร้าน", "รายได้จากการขายสินค้าหน้าร้าน", "", "0", 8500, 0, "", "ฝ่ายขาย"],
+    [date(2025, 2, 27), "รายจ่าย", "ค่าเช่า", "ค่าเช่าสำนักงานประจำเดือน", "", "0", 0, 12000, "", "ฝ่ายบัญชี"],
+    [date(2025, 2, 27), "รายจ่าย", "", "ตัวอย่างรายการที่ไม่ระบุแหล่งที่มา", "", "0", 0, 1200, "", "ฝ่ายบัญชี"],
+]
 
 
 def _text(value: Any) -> str:
@@ -1156,31 +1163,6 @@ def _parse_money(value: Any) -> Decimal:
         raise ValueError(f"จำนวนเงินไม่ใช่ตัวเลข: {_text(value)}") from exc
 
 
-def _parse_invoice(value: Any) -> Optional[int]:
-    normalized = _text(value).lower()
-    if normalized in ("1", "ได้รับแล้ว"):
-        return 1
-    if normalized in ("0", "รอใบกำกับ", "รอใบกำกับภาษี"):
-        return 0
-    if normalized in ("", "null", "none", "ไม่มีใบกำกับ", "ไม่มีใบกำกับภาษี"):
-        return None
-    raise ValueError(f"ค่าใบกำกับภาษีไม่ถูกต้อง: {_text(value)}")
-
-
-def _parse_legacy_receipt_flag(value: Any) -> Optional[int]:
-    """Maps the legacy 8-column "ใบเสร็จ" flag (0=ไม่มีใบเสร็จ, 1=มีใบเสร็จ)
-    onto the 3-state cfstate_invoice tracking status. A receipt existing at
-    import time only means the row is queued for review — "ได้รับแล้ว" (1)
-    is reserved for the explicit ตรวจสอบแล้ว step and is never set by import.
-    """
-    normalized = _text(value).lower()
-    if normalized in ("0", "ไม่มี", "ไม่มีใบเสร็จ"):
-        return None
-    if normalized in ("1", "มี", "มีใบเสร็จ"):
-        return 0
-    raise ValueError(f"ค่าใบเสร็จไม่ถูกต้อง: {_text(value)}")
-
-
 def _parse_refrain(value: Any) -> int:
     normalized = _text(value).lower()
     if normalized in ("1", "on", "คำนวณต้นทุน"):
@@ -1216,7 +1198,9 @@ def _normalize_import_row(
             "category": _text(padded[1]),
             "source": _text(padded[2]),
             "detail": _text(padded[4]),
-            "invoice": _parse_legacy_receipt_flag(padded[5]),
+            # Imported rows always start with an unassigned document status.
+            # Accounting staff classify the document during invoice review.
+            "invoice": None,
             "refrain": _parse_refrain(padded[6]),
             "income": income,
             "expense": expense,
@@ -1230,7 +1214,7 @@ def _normalize_import_row(
             "category": _text(padded[3]),
             "source": _text(padded[4]),
             "detail": _text(padded[5]),
-            "invoice": _parse_invoice(padded[6]),
+            "invoice": None,
             "refrain": _parse_refrain(padded[7]),
             "income": income,
             "expense": expense,
@@ -1243,7 +1227,7 @@ def _normalize_import_row(
         "category": _text(padded[1]),
         "source": _text(padded[2]),
         "detail": _text(padded[3]),
-        "invoice": _parse_invoice(padded[4]),
+        "invoice": None,
         "refrain": _parse_refrain(padded[5]),
         "income": income,
         "expense": expense,
@@ -1275,8 +1259,6 @@ def _prepare_import_rows(rows: list[list[Any]], has_header: bool):
             )
             if not normalized["category"]:
                 errors.append("ไม่ระบุหัวข้อ")
-            if not normalized["source"]:
-                errors.append("ไม่ระบุแหล่งที่มา")
         except ValueError as exc:
             errors.append(str(exc))
         prepared.append(
@@ -1334,7 +1316,8 @@ async def _find_import_duplicate(
     category = categories.get(data["category"].casefold())
     if category is None:
         return None
-    source = sources.get((data["source"].casefold(), category.cfcat_id))
+    source_name = data["source"] or DEFAULT_IMPORT_SOURCE_NAME
+    source = sources.get((source_name.casefold(), category.cfcat_id))
     if source is None:
         return None
     cfstate_dep_id = None
@@ -1388,7 +1371,10 @@ async def preview_import(
             if category is None:
                 item["errors"].append(f'ไม่พบหัวข้อ: {data["category"]}')
                 continue
-            if (data["source"].casefold(), category.cfcat_id) not in sources:
+            if (
+                data["source"]
+                and (data["source"].casefold(), category.cfcat_id) not in sources
+            ):
                 item["errors"].append(f'ไม่พบแหล่งที่มา: {data["source"]}')
             if data["department"] and data["department"].casefold() not in departments:
                 item["errors"].append(f'ไม่พบแผนก: {data["department"]}')
@@ -1474,13 +1460,14 @@ async def import_statements(
                 await db.flush()
                 categories[data["category"].casefold()] = category
 
-            source_key = (data["source"].casefold(), category.cfcat_id)
+            source_name = data["source"] or DEFAULT_IMPORT_SOURCE_NAME
+            source_key = (source_name.casefold(), category.cfcat_id)
             source = sources.get(source_key)
             if source is None:
-                if use_existing_data:
+                if use_existing_data and data["source"]:
                     raise ValueError(f'ไม่พบแหล่งที่มา: {data["source"]}')
                 source = CrmCashflowList(
-                    cflist_name=data["source"], cfcat_id=category.cfcat_id,
+                    cflist_name=source_name, cfcat_id=category.cfcat_id,
                     cflist_status=1, comp_id=company.id,
                 )
                 db.add(source)
@@ -1532,6 +1519,8 @@ async def import_statements(
                 cfstate_amount=data["income"] + data["expense"],
                 cfstate_refrain=data["refrain"],
                 cfstate_invoice=data["invoice"],
+                cfstate_document_type=None,
+                cfstate_verified=0,
                 cfstate_detail=data["detail"] or None,
                 cfstate_status=1,
                 cfstate_dep_id=department.cfstate_dep_id if department else None,
@@ -1556,23 +1545,11 @@ async def import_statements(
 
 @router.get("/import/template", dependencies=[Depends(require_viewer)])
 async def download_import_template(format: str = Query("xlsx", pattern="^(xlsx|csv)$")):
-    sample = [
-        ["2025-02-27", "รายรับ", "ยอดขายออนไลน์", "15000", "รายได้จากการขายสินค้าออนไลน์", "0", "0", "ฝ่ายขาย"],
-        ["2025-02-27", "รายรับ", "ยอดขายหน้าร้าน", "8500", "รายได้จากการขายสินค้าหน้าร้าน", "0", "0", "ฝ่ายขาย"],
-        ["2025-02-27", "รายจ่าย", "ค่าเช่า", "-12000", "ค่าเช่าสำนักงานประจำเดือน", "1", "0", "ฝ่ายบัญชี"],
-        ["2025-02-27", "รายจ่าย", "ค่าน้ำ", "-1200", "ค่าน้ำประจำเดือน", "1", "0", "ฝ่ายบัญชี"],
-        ["2025-02-27", "รายจ่าย", "ค่าไฟฟ้า", "-3500", "ค่าไฟฟ้าประจำเดือน", "1", "0", "ฝ่ายบัญชี"],
-        ["2025-02-27", "รายจ่าย", "เงินเดือนพนักงาน", "-85000", "เงินเดือนพนักงานประจำเดือน", "0", "0", "ฝ่ายบุคคล"],
-        ["2025-02-27", "รายจ่าย", "วัสดุสำนักงาน", "-2500", "ซื้อกระดาษและอุปกรณ์สำนักงาน", "1", "0", "ฝ่ายจัดซื้อ"],
-        ["2025-02-27", "รายจ่าย", "อุปกรณ์คอมพิวเตอร์", "-15000", "ซื้อเครื่องปริ้นเตอร์ใหม่", "1", "1", "ฝ่ายจัดซื้อ"],
-        ["2025-02-27", "รายจ่าย", "ค่าโฆษณา", "-5000", "ค่าโฆษณา Facebook Ads", "1", "0", "ฝ่ายการตลาด"],
-        ["2025-02-27", "รายจ่าย", "ค่าโฆษณา", "-3000", "ค่าโฆษณา Google Ads", "1", "0", "ฝ่ายการตลาด"],
-    ]
     if format == "csv":
         text_buffer = io.StringIO()
         writer = csv.writer(text_buffer)
-        writer.writerow(IMPORT_HEADERS_8)
-        writer.writerows(sample)
+        writer.writerow(IMPORT_HEADERS_10)
+        writer.writerows(IMPORT_TEMPLATE_SAMPLE)
         content = io.BytesIO(text_buffer.getvalue().encode("utf-8-sig"))
         return StreamingResponse(
             content,
@@ -1582,11 +1559,28 @@ async def download_import_template(format: str = Query("xlsx", pattern="^(xlsx|c
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Cashflow Import"
-    sheet.append(IMPORT_HEADERS_8)
+    sheet.append(IMPORT_HEADERS_10)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:J{len(IMPORT_TEMPLATE_SAMPLE) + 1}"
+    sheet.sheet_view.showGridLines = False
+    header_fill = PatternFill("solid", fgColor="1F4E78")
     for cell in sheet[1]:
-        cell.font = Font(bold=True)
-    for row in sample:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    sheet.row_dimensions[1].height = 26
+    for row in IMPORT_TEMPLATE_SAMPLE:
         sheet.append(row)
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        row[0].number_format = "yyyy-mm-dd"
+        row[3].alignment = Alignment(wrap_text=True, vertical="top")
+        row[6].number_format = "#,##0.00"
+        row[7].number_format = "#,##0.00"
+    for column, width in {
+        "A": 14, "B": 16, "C": 24, "D": 38, "E": 18,
+        "F": 18, "G": 14, "H": 14, "I": 18, "J": 18,
+    }.items():
+        sheet.column_dimensions[column].width = width
     buffer = io.BytesIO()
     workbook.save(buffer)
     buffer.seek(0)
