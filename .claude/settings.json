@@ -15,7 +15,15 @@
       "Bash(echo \"started PID $!\")",
       "Bash(sleep 2; cat /tmp/vite-dev.log)",
       "Read(//private/tmp/**)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(git fetch *)",
+      "Bash(docker inspect *)",
+      "Bash(git merge-tree *)",
+      "Bash(git checkout *)",
+      "Bash(git reset *)",
+      "Bash(git merge *)"
     ]
   }
 }

@@ -18,6 +18,13 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_API_PROXY_TARGET || "http://localhost:8080",
           changeOrigin: true,
         },
+        // Credit Statement Matcher iframe (StatementPage.tsx) — the matcher
+        // container only publishes its port inside the Docker network, so
+        // this must go through Nginx too, not straight to the container.
+        "/statement": {
+          target: env.VITE_API_PROXY_TARGET || "http://localhost:8080",
+          changeOrigin: true,
+        },
       },
     },
   };
