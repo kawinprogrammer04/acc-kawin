@@ -34,6 +34,7 @@ frontend/dist/
 
 # DB backups (local only)
 *_backup_*.sql
+pre-deploy-backup-*.dump
 
 # Generated local exports / scratch files
 output/

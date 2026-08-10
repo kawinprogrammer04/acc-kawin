@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [Production]
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    # This job intentionally lives in the same workflow file that receives the
+    # push event, instead of a separate deploy.yml triggered by `workflow_run`.
+    # `workflow_run` always reads the *default branch's* copy of the triggered
+    # workflow file, not the branch that produced the event - so a fix landed
+    # only on Production could silently never take effect. See kawin-ffm's
+    # ci.yml / deploy history for the incident this avoids.
+    if: github.ref == 'refs/heads/Production'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to acc.kawinbrothers.com
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.ACC_DEPLOY_HOST }}
+          username: ${{ secrets.ACC_DEPLOY_USER }}
+          key: ${{ secrets.ACC_DEPLOY_SSH_KEY }}
+          # Login user (gha_deploy_acc) has no shell privileges of its own -
+          # /etc/sudoers.d/gha-deploy-acc on the server allows it to run
+          # exactly one fixed, argument-less, root-owned script
+          # (/usr/local/bin/deploy-acc-kawin.sh) and nothing else. That script
+          # hardcodes the acc-kawin project path, so this grant cannot reach
+          # any other tenant/domain on the shared host. The script itself:
+          # git reset --hard origin/Production, pg_dump backup, docker compose
+          # build + up (backend's entrypoint runs `alembic upgrade head`
+          # automatically before Uvicorn starts), then polls /api/health and
+          # fails the job (non-zero exit) if it never turns healthy.
+          script: sudo /usr/local/bin/deploy-acc-kawin.sh
