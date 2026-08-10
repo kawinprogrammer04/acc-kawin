@@ -489,7 +489,7 @@ export function CrmCashflowStatementPage() {
               placeholder="ทั้งหมด"
               options={[
                 { value: "", label: "ทั้งหมด" },
-                { value: "none", label: "ไม่มีใบกำกับ" },
+                { value: "none", label: "ยังไม่ระบุ" },
                 { value: "pending", label: "รอใบกำกับ" },
                 { value: "received", label: "ได้รับแล้ว" },
                 { value: "tax_invoice", label: "ใบกำกับภาษี" },
@@ -566,7 +566,7 @@ export function CrmCashflowStatementPage() {
             className="mt-1 h-9"
             value={entryForm.cfstate_invoice == null ? "null" : String(entryForm.cfstate_invoice)}
             onChange={(value) => setEntryForm({ ...entryForm, cfstate_invoice: value === "null" ? null : Number(value) as 0 | 1 })}
-            options={[{ value: "null", label: "ไม่มีใบกำกับ" }, { value: "0", label: "รอใบกำกับ" }, { value: "1", label: "ได้รับแล้ว" }]}
+            options={[{ value: "null", label: "ยังไม่ระบุ" }, { value: "0", label: "รอใบกำกับ" }, { value: "1", label: "ได้รับแล้ว" }]}
           /></div>
           <div>คำนวณต้นทุน<Combobox
             className="mt-1 h-9"
@@ -626,7 +626,9 @@ export function CrmCashflowStatementPage() {
         <div className="space-y-4 p-6">
           <div className="space-y-1 rounded-md bg-blue-50 p-3 text-sm text-blue-800">
             <p>คอลัมน์มาตรฐาน: วันที่, หัวข้อ, แหล่งที่มา, รายละเอียด, ใบกำกับภาษี, คำนวณต้นทุน, รายรับ, รายจ่าย, Ref, แผนก</p>
-            <p className="font-medium">กรอกจำนวนเงินเพียงด้านเดียว: รายรับ 15,000 / รายจ่าย 0 หรือ รายรับ 0 / รายจ่าย -12,000</p>
+            <p className="font-medium">กรอกจำนวนเงินเพียงด้านเดียว: รายรับ 15,000 / รายจ่าย 0 หรือ รายรับ 0 / รายจ่าย 12,000 — ไม่ต้องใส่เครื่องหมายลบ</p>
+            <p>เว้นแหล่งที่มาได้ ระบบจะบันทึกเป็น “ไม่ระบุ” ให้อัตโนมัติ</p>
+            <p>รายการที่นำเข้าจะเว้นคอลัมน์ใบกำกับภาษีไว้ก่อน เพื่อรอตรวจสอบและเลือกประเภทเอกสารภายหลัง</p>
           </div>
           <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => crmCashflowApi.downloadTemplate("xlsx")}><Download className="h-4 w-4" />Template XLSX</Button><Button variant="outline" onClick={() => crmCashflowApi.downloadTemplate("csv")}><Download className="h-4 w-4" />Template CSV</Button></div>
           <Input type="file" accept=".csv,.xlsx,.xls" onChange={(e) => {
@@ -640,7 +642,7 @@ export function CrmCashflowStatementPage() {
             <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={!useExistingData} onChange={(e) => { setUseExistingData(!e.target.checked); setImportPreview(null); }} />สร้างหัวข้อ แหล่งที่มา และแผนกที่ยังไม่มีให้อัตโนมัติ</label>
             <p className="mt-1 pl-5 text-xs text-muted-foreground">เปิดไว้สำหรับการนำเข้าครั้งแรก ระบบจะใช้ข้อมูลเดิมเมื่อชื่อซ้ำและสร้างเฉพาะรายการที่ยังไม่มี</p>
           </div>
-          {importPreview && <div className="space-y-2"><p className="text-sm">ทั้งหมด {importPreview.total_rows} แถว / พบปัญหา {importPreview.error_count} แถว{importPreview.duplicate_count > 0 && ` / พบรายการซ้ำ ${importPreview.duplicate_count} แถว`}</p><div className="max-h-[50vh] overflow-auto rounded-md border"><table className="w-full min-w-[900px] text-xs"><thead><tr className="sticky top-0 z-10 bg-muted">{importPreview.headers.map((head) => <th key={head} className="p-2 text-left">{head}</th>)}<th>ผลตรวจ</th></tr></thead><tbody>{importPreview.preview.map((item) => <tr key={item.row_number} className="border-t"><td className="p-2">{item.data?.cfstate_date ? formatDate(item.data.cfstate_date) : ""}</td><td>{item.data?.category}</td><td>{item.data?.source}</td><td>{item.data?.detail}</td><td>{item.data?.invoice == null ? "ไม่มี" : item.data.invoice ? "ได้รับแล้ว" : "รอ"}</td><td>{item.data?.refrain ? "ON" : "OFF"}</td><td>{item.data?.income}</td><td>{item.data?.expense}</td><td>{item.data?.ref}</td><td>{item.data?.department}</td><td className={item.errors.length ? "text-red-600" : item.duplicate_id ? "text-amber-600" : "text-emerald-600"}>{item.errors.length ? item.errors.join(", ") : item.duplicate_id ? <label className="flex flex-col items-center gap-0.5"><span>ซ้ำกับ #{item.duplicate_id}</span><input type="checkbox" title="ข้ามแถวนี้" checked={importSkipRows.includes(item.row_number)} onChange={(e) => toggleImportSkipRow(item.row_number, e.target.checked)} /></label> : "ผ่าน"}</td></tr>)}</tbody></table></div>{importPreview.error_count > 0 && <Button variant="destructive" onClick={() => crmCashflowApi.downloadErrors(importPreview.error_rows, importPreview.error_details)}><Download className="h-4 w-4" />ดาวน์โหลดแถวผิดพลาด</Button>}
+          {importPreview && <div className="space-y-2"><p className="text-sm">ทั้งหมด {importPreview.total_rows} แถว / พบปัญหา {importPreview.error_count} แถว{importPreview.duplicate_count > 0 && ` / พบรายการซ้ำ ${importPreview.duplicate_count} แถว`}</p><div className="max-h-[50vh] overflow-auto rounded-md border"><table className="w-full min-w-[900px] text-xs"><thead><tr className="sticky top-0 z-10 bg-muted">{importPreview.headers.map((head) => <th key={head} className="p-2 text-left">{head}</th>)}<th>ผลตรวจ</th></tr></thead><tbody>{importPreview.preview.map((item) => <tr key={item.row_number} className="border-t"><td className="p-2">{item.data?.cfstate_date ? formatDate(item.data.cfstate_date) : ""}</td><td>{item.data?.category}</td><td>{item.data?.source}</td><td>{item.data?.detail}</td><td>{item.data?.invoice == null ? "" : item.data.invoice ? "ได้รับแล้ว" : "รอ"}</td><td>{item.data?.refrain ? "ON" : "OFF"}</td><td>{item.data?.income}</td><td>{item.data?.expense}</td><td>{item.data?.ref}</td><td>{item.data?.department}</td><td className={item.errors.length ? "text-red-600" : item.duplicate_id ? "text-amber-600" : "text-emerald-600"}>{item.errors.length ? item.errors.join(", ") : item.duplicate_id ? <label className="flex flex-col items-center gap-0.5"><span>ซ้ำกับ #{item.duplicate_id}</span><input type="checkbox" title="ข้ามแถวนี้" checked={importSkipRows.includes(item.row_number)} onChange={(e) => toggleImportSkipRow(item.row_number, e.target.checked)} /></label> : "ผ่าน"}</td></tr>)}</tbody></table></div>{importPreview.error_count > 0 && <Button variant="destructive" onClick={() => crmCashflowApi.downloadErrors(importPreview.error_rows, importPreview.error_details)}><Download className="h-4 w-4" />ดาวน์โหลดแถวผิดพลาด</Button>}
             {importPreview.duplicate_count > 0 && <div className="space-y-1 text-sm text-amber-800">
               <p>ติ๊กในคอลัมน์ "ผลตรวจ" = ข้ามแถวนั้น</p>
               <div className="flex flex-wrap items-center gap-2">แถวซ้ำที่ไม่ได้ติ๊ก:

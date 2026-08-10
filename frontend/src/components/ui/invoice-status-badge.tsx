@@ -13,7 +13,7 @@ export function InvoiceStatusBadge({
   if (documentType === "tax_invoice") return <Badge variant="success">ใบกำกับภาษี</Badge>;
   if (documentType === "cash_bill") return <Badge variant="info">บิลเงินสด</Badge>;
   if (documentType === "other") return <Badge variant="secondary">อื่นๆ</Badge>;
-  if (invoice == null) return <Badge variant="outline">ไม่มีใบกำกับ</Badge>;
+  if (invoice == null) return null;
   return invoice === 1
     ? <Badge variant="success">ได้รับแล้ว</Badge>
     : <Badge variant="warning">รอใบกำกับ</Badge>;

@@ -152,7 +152,7 @@ class InvoiceStatusLabelTests(unittest.TestCase):
         self.assertEqual(_invoice_status_label(None, "other"), "อื่นๆ")
 
     def test_legacy_status_is_used_without_document_type(self):
-        self.assertEqual(_invoice_status_label(None, None), "ไม่มีใบกำกับ")
+        self.assertEqual(_invoice_status_label(None, None), "")
         self.assertEqual(_invoice_status_label(0, None), "รอใบกำกับ")
         self.assertEqual(_invoice_status_label(1, None), "ได้รับแล้ว")
 
