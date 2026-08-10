@@ -35,6 +35,7 @@ services:
       - ./db/03_views_and_functions.sql:/docker-entrypoint-initdb.d/03_views.sql:ro
       - ./db/05_cashflow_tables.sql:/docker-entrypoint-initdb.d/05_cashflow.sql:ro
       - ./db/06_multi_company.sql:/docker-entrypoint-initdb.d/06_multi_company.sql:ro
+      - ./db/07_runtime_fixes.sql:/docker-entrypoint-initdb.d/07_runtime_fixes.sql:ro
       - ./scripts/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
     command: >
       postgres
@@ -70,40 +71,129 @@ services:
     container_name: acc_backend
     restart: unless-stopped
     logging: *default-logging
+    extra_hosts:
+      - "dev.crm-kawin.test:host-gateway"
+      # Lets the container reach Ollama running natively on this host — on
+      # Linux (this Plesk host) the mapping must be explicit.
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
+      tax_invoice_renderer:
+        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-accounting_app}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-accounting_db}
-      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
-      ALGORITHM: ${ALGORITHM:-HS256}
+      APP_ENV:                    ${APP_ENV:-production}
+      DATABASE_URL:               ${DATABASE_URL:-}
+      MIGRATION_DATABASE_URL:     ${MIGRATION_DATABASE_URL:-}
+      DATABASE_HOST:              ${DATABASE_HOST:-db}
+      POSTGRES_DB:                ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER:              ${POSTGRES_USER:-accounting_app}
+      POSTGRES_PASSWORD:          ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SECRET_KEY:                 ${SECRET_KEY:?Set SECRET_KEY in .env}
+      ALGORITHM:                  ${ALGORITHM:-HS256}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
-      COMPANY_NAME: ${COMPANY_NAME:-บริษัท ของคุณ จำกัด}
-      COMPANY_TAX_ID: ${COMPANY_TAX_ID:-}
-      VAT_RATE: ${VAT_RATE:-7.0}
-      XDG_CACHE_HOME: /tmp/.cache
+      COMPANY_NAME:               ${COMPANY_NAME:-บริษัท ของคุณ จำกัด}
+      COMPANY_TAX_ID:             ${COMPANY_TAX_ID:-}
+      VAT_RATE:                   ${VAT_RATE:-7.0}
+      DEBUG:                      ${DEBUG:-false}
+      CRM_KAWIN_BASE_URL:         ${CRM_KAWIN_BASE_URL:-}
+      CRM_KAWIN_ORDERS_PATH:      ${CRM_KAWIN_ORDERS_PATH:-/api/accounting/get_list_order.php}
+      CRM_KAWIN_API_KEY:          ${CRM_KAWIN_API_KEY:-}
+      CRM_KAWIN_TIMEOUT_SECONDS:  ${CRM_KAWIN_TIMEOUT_SECONDS:-15}
+      TAX_INVOICE_SOFFICE_PATH:   ${TAX_INVOICE_SOFFICE_PATH:-}
+      TAX_INVOICE_PDF_TIMEOUT_SECONDS: ${TAX_INVOICE_PDF_TIMEOUT_SECONDS:-60}
+      DOMPDF_RENDERER_URL:        ${DOMPDF_RENDERER_URL:-http://tax_invoice_renderer:8090}
+      DOMPDF_TIMEOUT_SECONDS:     ${DOMPDF_TIMEOUT_SECONDS:-30}
+      XDG_CACHE_HOME:             /tmp/.cache
+      OLLAMA_URL:                 ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_VISION_MODEL:        ${OLLAMA_VISION_MODEL:-qwen2.5vl:7b}
     volumes:
       - uploads:/app/uploads
     expose:
       - "8000"
+    # The image's own CMD (/app/entrypoint.sh) already runs `alembic upgrade
+    # head` before starting Uvicorn — do not override it with a bare uvicorn
+    # command, or schema migrations silently stop running on every deploy.
+    # --proxy-headers/--forwarded-allow-ips is required here (unlike the
+    # default entrypoint) because Plesk's Apache/nginx sits in front of this
+    # container and forwards X-Forwarded-* headers.
     command:
-      - uvicorn
-      - app.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8000"
-      - --workers
-      - "2"
-      - --no-access-log
-      - --proxy-headers
-      - --forwarded-allow-ips=*
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        exec uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --workers ${WEB_CONCURRENCY:-2}
+        --no-access-log
+        --proxy-headers
+        --forwarded-allow-ips=*
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
+    networks:
+      - backend_net
+
+  # ── Tax Invoice PDF Renderer (PHP + Dompdf) ───────────────────────────────
+  tax_invoice_renderer:
+    build:
+      context: ./backend
+      dockerfile: dompdf_renderer/Dockerfile
+    image: finn-accounting-tax-invoice-renderer:production
+    container_name: acc_tax_invoice_renderer
+    restart: unless-stopped
+    logging: *default-logging
+    expose:
+      - "8090"
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8090/health') === 'ok' ? 0 : 1);"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - backend_net
+
+  # ── Credit Statement Matcher (embedded under /statement) ───────────────────
+  # Source lives in ./credit_statement_matcher — built here so the same
+  # `docker compose -f docker-compose.plesk.yml up` brings it online behind
+  # this stack's Nginx, reachable at https://${DOMAIN}/statement/
+  statement:
+    build:
+      context: ./credit_statement_matcher
+      dockerfile: Dockerfile
+    image: finn-accounting-statement:production
+    container_name: acc_statement
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      # Served behind Nginx under a sub-path → prefix every generated link
+      ROOT_PATH: /statement
+      PORT: 8010
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER: ${POSTGRES_USER:-accounting_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      STATEMENT_DATABASE_URL: ${STATEMENT_DATABASE_URL:-}
+      UPLOAD_DIR: /tmp/statement_uploads
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    # Not exposed externally — only Nginx (frontend) reaches it on backend_net
+    expose:
+      - "8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8010/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     networks:
       - backend_net
 
@@ -118,6 +208,8 @@ services:
     logging: *default-logging
     depends_on:
       backend:
+        condition: service_healthy
+      statement:
         condition: service_healthy
     # Only reachable from localhost — Plesk's nginx reverse-proxies to this port.
     ports:
