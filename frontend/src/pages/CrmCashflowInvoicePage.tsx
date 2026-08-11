@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Camera, Eye, Paperclip, RefreshCw, Trash2, Upload, X } from "lucide-react";
 
 import {
@@ -6,6 +6,7 @@ import {
   type CrmCashflowAttachment,
   type CrmCashflowCategory,
   type CrmCashflowDocumentType,
+  type CrmCashflowInvoiceStatus,
   type CrmCashflowStatement,
 } from "@/api/crmCashflow";
 import { Can } from "@/components/auth/RequirePermission";
@@ -17,8 +18,9 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { DatePicker } from "@/components/ui/date-picker";
+import { Input } from "@/components/ui/input";
 import { InvoiceStatusBadge } from "@/components/ui/invoice-status-badge";
-import { formatDate } from "@/lib/format";
+import { formatDate, localDateInput } from "@/lib/format";
 
 const MENU_KEY = "crm_cashflow_invoice";
 const money = (value: number) => new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
@@ -28,6 +30,35 @@ const DOCUMENT_TYPES: { value: CrmCashflowDocumentType; label: string }[] = [
   { value: "cash_bill", label: "บิลเงินสด" },
   { value: "other", label: "อื่นๆ" },
 ];
+const INVOICE_STATUS_OPTIONS: { value: CrmCashflowInvoiceStatus; label: string }[] = [
+  { value: "none", label: "ยังไม่ระบุ" },
+  { value: "pending", label: "รอใบกำกับ" },
+  { value: "received", label: "ได้รับแล้ว" },
+  { value: "tax_invoice", label: "ใบกำกับภาษี" },
+  { value: "cash_bill", label: "บิลเงินสด" },
+  { value: "other", label: "อื่นๆ" },
+];
+type DatePreset = "custom" | "today" | "yesterday" | "last7" | "last30" | "this_month" | "last_month";
+const DATE_PRESETS: { value: DatePreset; label: string }[] = [
+  { value: "custom", label: "กำหนดเอง" },
+  { value: "today", label: "วันนี้" },
+  { value: "yesterday", label: "เมื่อวาน" },
+  { value: "last7", label: "7 วันล่าสุด" },
+  { value: "last30", label: "30 วันล่าสุด" },
+  { value: "this_month", label: "เดือนนี้" },
+  { value: "last_month", label: "เดือนที่แล้ว" },
+];
+const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
+const addDays = (base: Date, delta: number) => {
+  const next = new Date(base);
+  next.setDate(next.getDate() + delta);
+  return next;
+};
+function effectiveInvoiceStatus(row: CrmCashflowStatement): CrmCashflowInvoiceStatus {
+  if (row.cfstate_document_type) return row.cfstate_document_type;
+  if (row.cfstate_invoice == null) return "none";
+  return row.cfstate_invoice === 1 ? "received" : "pending";
+}
 type VerificationDialog =
   | { type: "blocked"; reason: string }
   | { type: "confirm"; statementId: number };
@@ -38,9 +69,18 @@ export function CrmCashflowInvoicePage() {
   const [rows, setRows] = useState<CrmCashflowStatement[]>([]);
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
+  const [datePreset, setDatePreset] = useState<DatePreset>("custom");
   const [categoryId, setCategoryId] = useState("");
+  const [sourceId, setSourceId] = useState("");
+  const [detailQuery, setDetailQuery] = useState("");
+  const [incomeMin, setIncomeMin] = useState("");
+  const [incomeMax, setIncomeMax] = useState("");
+  const [expenseMin, setExpenseMin] = useState("");
+  const [expenseMax, setExpenseMax] = useState("");
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<"" | CrmCashflowInvoiceStatus>("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [loading, setLoading] = useState(false);
-  const [checkingVerificationId, setCheckingVerificationId] = useState<number | null>(null);
   const [savingVerification, setSavingVerification] = useState(false);
   const [verificationDialog, setVerificationDialog] = useState<VerificationDialog | null>(null);
 
@@ -56,6 +96,14 @@ export function CrmCashflowInvoicePage() {
   const [updatingDocumentType, setUpdatingDocumentType] = useState(false);
   const [previewAttachment, setPreviewAttachment] = useState<{ name: string; contentType: string; url: string } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+
+  // Tracks changes made during the current attachment-dialog session so an
+  // accidental close (X button / click outside) can offer to discard them —
+  // newly uploaded files get deleted again and the document-type tick reverts.
+  const [initialDocumentType, setInitialDocumentType] = useState<CrmCashflowDocumentType | null>(null);
+  const [sessionUploadedIds, setSessionUploadedIds] = useState<string[]>([]);
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
+  const [discardingExit, setDiscardingExit] = useState(false);
 
   // Camera state
   const [cameraOpen, setCameraOpen] = useState(false);
@@ -99,23 +147,91 @@ export function CrmCashflowInvoicePage() {
   }, []);
   useEffect(() => { loadRows(); }, [loadRows]);
 
-  const requestVerification = async (id: number) => {
-    setCheckingVerificationId(id);
-    try {
-      const currentAttachments = await crmCashflowApi.attachments(id);
-      if (currentAttachments.length === 0) {
-        setVerificationDialog({
-          type: "blocked",
-          reason: "รายการนี้ยังไม่มีไฟล์แนบ กรุณาแนบเอกสารอย่างน้อย 1 ไฟล์ก่อนกด “ตรวจสอบแล้ว”",
-        });
-        return;
-      }
-      setVerificationDialog({ type: "confirm", statementId: id });
-    } catch (requestError) {
-      showError(String(message(requestError)));
-    } finally {
-      setCheckingVerificationId(null);
+  // ── Filters & pagination ─────────────────────────────────────────────────
+  const changeDateStart = (value: string) => { setDateStart(value); setDatePreset("custom"); };
+  const changeDateEnd = (value: string) => { setDateEnd(value); setDatePreset("custom"); };
+
+  const applyDatePreset = (preset: DatePreset) => {
+    setDatePreset(preset);
+    if (preset === "custom") return;
+    const now = new Date();
+    let start = now;
+    let end = now;
+    if (preset === "yesterday") { start = addDays(now, -1); end = start; }
+    else if (preset === "last7") { start = addDays(now, -6); end = now; }
+    else if (preset === "last30") { start = addDays(now, -29); end = now; }
+    else if (preset === "this_month") { start = new Date(now.getFullYear(), now.getMonth(), 1); end = now; }
+    else if (preset === "last_month") {
+      start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      end = new Date(now.getFullYear(), now.getMonth(), 0);
     }
+    setDateStart(localDateInput(start));
+    setDateEnd(localDateInput(end));
+  };
+
+  const resetFilters = () => {
+    setDatePreset("custom");
+    setDateStart(""); setDateEnd("");
+    setCategoryId("");
+    setSourceId(""); setDetailQuery("");
+    setIncomeMin(""); setIncomeMax("");
+    setExpenseMin(""); setExpenseMax("");
+    setInvoiceStatusFilter("");
+  };
+
+  const sourceOptions = useMemo(() => {
+    const byId = new Map<number, string>();
+    rows.forEach((row) => byId.set(row.cflist_id, row.cflist_name));
+    return Array.from(byId.entries())
+      .map(([id, name]) => ({ value: String(id), label: name }))
+      .sort((a, b) => a.label.localeCompare(b.label, "th"));
+  }, [rows]);
+
+  const filteredRows = useMemo(() => {
+    const detail = detailQuery.trim().toLowerCase();
+    const incomeMinNum = incomeMin === "" ? null : Number(incomeMin);
+    const incomeMaxNum = incomeMax === "" ? null : Number(incomeMax);
+    const expenseMinNum = expenseMin === "" ? null : Number(expenseMin);
+    const expenseMaxNum = expenseMax === "" ? null : Number(expenseMax);
+    return rows.filter((row) => {
+      if (sourceId && String(row.cflist_id) !== sourceId) return false;
+      if (detail && !(row.cfstate_detail || "").toLowerCase().includes(detail)) return false;
+      if (incomeMinNum !== null || incomeMaxNum !== null) {
+        if (row.cfstate_amount <= 0) return false;
+        if (incomeMinNum !== null && row.cfstate_amount < incomeMinNum) return false;
+        if (incomeMaxNum !== null && row.cfstate_amount > incomeMaxNum) return false;
+      }
+      if (expenseMinNum !== null || expenseMaxNum !== null) {
+        if (row.cfstate_amount >= 0) return false;
+        const absAmount = Math.abs(row.cfstate_amount);
+        if (expenseMinNum !== null && absAmount < expenseMinNum) return false;
+        if (expenseMaxNum !== null && absAmount > expenseMaxNum) return false;
+      }
+      if (invoiceStatusFilter && effectiveInvoiceStatus(row) !== invoiceStatusFilter) return false;
+      return true;
+    });
+  }, [rows, sourceId, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [rows, sourceId, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter, pageSize]);
+
+  const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filteredRows.length / pageSize)) : 1;
+  const currentPage = Math.min(page, totalPages);
+  const rowNumberOffset = pageSize > 0 ? (currentPage - 1) * pageSize : 0;
+  const pagedRows = pageSize > 0
+    ? filteredRows.slice(rowNumberOffset, rowNumberOffset + pageSize)
+    : filteredRows;
+
+  const requestVerification = (id: number) => {
+    if (attachments.length === 0 || !attachmentStatement?.cfstate_document_type) {
+      setVerificationDialog({
+        type: "blocked",
+        reason: "รายการนี้ต้องมีไฟล์แนบและระบุประเภทเอกสาร ก่อนจึงจะกด “ตรวจสอบแล้ว” ได้",
+      });
+      return;
+    }
+    setVerificationDialog({ type: "confirm", statementId: id });
   };
 
   const confirmVerification = async () => {
@@ -125,6 +241,7 @@ export function CrmCashflowInvoicePage() {
       await crmCashflowApi.updateStatement(verificationDialog.statementId, { cfstate_verified: 1 });
       setVerificationDialog(null);
       showNotice("บันทึกว่าตรวจสอบแล้ว");
+      closeAttachmentsDialog();
       await loadRows();
     } catch (requestError: any) {
       const reason = String(message(requestError));
@@ -148,6 +265,9 @@ export function CrmCashflowInvoicePage() {
     setAttachmentStatement(statement);
     setAttachments([]);
     setUpdatingDocumentType(false);
+    setInitialDocumentType(statement.cfstate_document_type ?? null);
+    setSessionUploadedIds([]);
+    setExitConfirmOpen(false);
     setAttachmentsLoading(true);
     try {
       const currentAttachments = await crmCashflowApi.attachments(statement.cfstate_id);
@@ -163,6 +283,51 @@ export function CrmCashflowInvoicePage() {
       showError(message(requestError));
     } finally {
       setAttachmentsLoading(false);
+    }
+  };
+
+  const closeAttachmentsDialog = () => {
+    setAttachmentStatement(null);
+    setAttachments([]);
+    setInitialDocumentType(null);
+    setSessionUploadedIds([]);
+    setExitConfirmOpen(false);
+  };
+
+  // Guards every way the dialog can be dismissed (X button, Escape, clicking
+  // the overlay outside the card) — if anything changed this session, ask
+  // for confirmation instead of closing straight away.
+  const attemptCloseAttachments = () => {
+    const documentTypeChanged = (attachmentStatement?.cfstate_document_type ?? null) !== initialDocumentType;
+    if (sessionUploadedIds.length > 0 || documentTypeChanged) {
+      setExitConfirmOpen(true);
+      return;
+    }
+    closeAttachmentsDialog();
+  };
+
+  const discardAndCloseAttachments = async () => {
+    if (!attachmentStatement) { closeAttachmentsDialog(); return; }
+    setDiscardingExit(true);
+    try {
+      for (const attachmentId of sessionUploadedIds) {
+        await crmCashflowApi.deleteAttachment(attachmentStatement.cfstate_id, attachmentId);
+      }
+      if (attachmentStatement.cfstate_document_type !== initialDocumentType) {
+        await crmCashflowApi.updateStatement(attachmentStatement.cfstate_id, {
+          cfstate_document_type: initialDocumentType,
+        });
+      }
+      const remainingCount = Math.max(0, attachments.length - sessionUploadedIds.length);
+      setRows((current) => current.map((row) => row.cfstate_id === attachmentStatement.cfstate_id
+        ? { ...row, attachment_count: remainingCount, cfstate_document_type: initialDocumentType }
+        : row));
+      showNotice("ยกเลิกการเปลี่ยนแปลงแล้ว");
+    } catch (requestError) {
+      showError(message(requestError));
+    } finally {
+      setDiscardingExit(false);
+      closeAttachmentsDialog();
     }
   };
 
@@ -197,7 +362,8 @@ export function CrmCashflowInvoicePage() {
     }
     setUploadingAttachment(true);
     try {
-      await crmCashflowApi.uploadAttachment(attachmentStatement.cfstate_id, file);
+      const uploaded = await crmCashflowApi.uploadAttachment(attachmentStatement.cfstate_id, file);
+      setSessionUploadedIds((ids) => [...ids, uploaded.id]);
       const currentAttachments = await crmCashflowApi.attachments(attachmentStatement.cfstate_id);
       setAttachments(currentAttachments);
       setRows((current) => current.map((row) => row.cfstate_id === attachmentStatement.cfstate_id
@@ -234,6 +400,10 @@ export function CrmCashflowInvoicePage() {
     if (!window.confirm("ยืนยันการลบไฟล์แนบนี้?")) return;
     try {
       await crmCashflowApi.deleteAttachment(attachmentStatement.cfstate_id, attachmentId);
+      // A file removed explicitly (with the confirm above) is gone for good —
+      // if it was uploaded this session, drop it from the revert-on-exit list
+      // too so discarding later doesn't try to delete it a second time.
+      setSessionUploadedIds((ids) => ids.filter((id) => id !== attachmentId));
       const currentAttachments = await crmCashflowApi.attachments(attachmentStatement.cfstate_id);
       setAttachments(currentAttachments);
       setRows((current) => current.map((row) => row.cfstate_id === attachmentStatement.cfstate_id
@@ -332,21 +502,46 @@ export function CrmCashflowInvoicePage() {
 
     <div className="flex-1 space-y-4 overflow-auto p-6">
       <Card><CardContent className="flex flex-wrap items-end gap-3 pt-6">
-        <div className="space-y-1 text-xs">วันที่เริ่มต้น<DatePicker value={dateStart} onChange={setDateStart} /></div>
-        <div className="space-y-1 text-xs">วันที่สิ้นสุด<DatePicker value={dateEnd} onChange={setDateEnd} /></div>
+        <label className="min-w-36 space-y-1 text-xs">ช่วงวันที่
+          <select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={datePreset} onChange={(event) => applyDatePreset(event.target.value as DatePreset)}>
+            {DATE_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
+          </select>
+        </label>
+        <div className="space-y-1 text-xs">วันที่เริ่มต้น<DatePicker value={dateStart} onChange={changeDateStart} /></div>
+        <div className="space-y-1 text-xs">วันที่สิ้นสุด<DatePicker value={dateEnd} onChange={changeDateEnd} /></div>
         <label className="min-w-56 space-y-1 text-xs">หัวข้อ<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">ทั้งหมด</option>{categories.map((item) => <option key={item.cfcat_id} value={item.cfcat_id}>{item.cfcat_name}</option>)}</select></label>
+        <label className="min-w-48 space-y-1 text-xs">แหล่งที่มา<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">ทั้งหมด</option>{sourceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+        <label className="min-w-48 space-y-1 text-xs">รายละเอียด<Input className="h-9" value={detailQuery} onChange={(event) => setDetailQuery(event.target.value)} placeholder="ค้นหารายละเอียด" /></label>
+        <div className="space-y-1 text-xs hidden">ยอดรับ (ต่ำสุด–สูงสุด)
+          <div className="flex gap-1">
+            <Input className="h-9 w-24" type="number" value={incomeMin} onChange={(event) => setIncomeMin(event.target.value)} placeholder="ต่ำสุด" />
+            <Input className="h-9 w-24" type="number" value={incomeMax} onChange={(event) => setIncomeMax(event.target.value)} placeholder="สูงสุด" />
+          </div>
+        </div>
+        <div className="space-y-1 text-xs">ยอดจ่าย (ต่ำสุด–สูงสุด)
+          <div className="flex gap-1">
+            <Input className="h-9 w-24" type="number" value={expenseMin} onChange={(event) => setExpenseMin(event.target.value)} placeholder="ต่ำสุด" />
+            <Input className="h-9 w-24" type="number" value={expenseMax} onChange={(event) => setExpenseMax(event.target.value)} placeholder="สูงสุด" />
+          </div>
+        </div>
+        <label className="min-w-48 space-y-1 text-xs">ใบกำกับภาษี
+          <select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={invoiceStatusFilter} onChange={(event) => setInvoiceStatusFilter(event.target.value as "" | CrmCashflowInvoiceStatus)}>
+            <option value="">ทั้งหมด</option>
+            {INVOICE_STATUS_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+        </label>
         <Button variant="outline" onClick={loadRows}><RefreshCw className="h-4 w-4" />ดูรายงาน</Button>
+        <Button variant="ghost" onClick={resetFilters}>ล้างตัวกรอง</Button>
       </CardContent></Card>
       <Card><CardContent className="overflow-x-auto pt-6"><table className="w-full min-w-[1140px] text-sm">
-        <thead><tr className="border-b bg-muted/40 text-left text-xs">{['#','วันที่','หัวข้อ','แหล่งที่มา','รายละเอียด','ยอดรับ','ยอดจ่าย','ใบกำกับภาษี','ผู้บันทึก','ตรวจสอบแล้ว','จัดการ'].map((head) => <th key={head} className="px-3 py-2">{head}</th>)}</tr></thead>
-        <tbody>{rows.map((row, index) => <tr key={row.cfstate_id} className="border-b">
-          <td className="px-3 py-2">{index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td><td className="px-3 py-2">{row.cfcat_name}</td><td className="px-3 py-2">{row.cflist_name}</td><td className="max-w-60 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td>
+        <thead><tr className="border-b bg-muted/40 text-left text-xs">{['#','วันที่','หัวข้อ','รายละเอียด','แหล่งที่มา','ยอดรับ','ยอดจ่าย','ใบกำกับภาษี','ผู้บันทึก','จัดการ'].map((head) => <th key={head} className="px-3 py-2">{head}</th>)}</tr></thead>
+        <tbody>{pagedRows.map((row, index) => <tr key={row.cfstate_id} className="border-b">
+          <td className="px-3 py-2">{rowNumberOffset + index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td><td className="px-3 py-2">{row.cfcat_name}</td><td className="max-w-60 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td><td className="px-3 py-2">{row.cflist_name}</td>
           <td className="px-3 py-2 text-right text-emerald-700">{row.cfstate_amount > 0 ? money(row.cfstate_amount) : "0.00"}</td><td className="px-3 py-2 text-right text-red-700">{row.cfstate_amount < 0 ? money(row.cfstate_amount) : "0.00"}</td>
           <td className="px-3 py-2"><InvoiceStatusBadge invoice={row.cfstate_invoice} documentType={row.cfstate_document_type} /></td><td className="px-3 py-2">{row.user_name}</td>
-          <td className="px-3 py-2"><Can menuKey={MENU_KEY} action="update"><div className="space-y-1 text-center"><span className="inline-block" title={row.attachment_count === 0 ? "กรุณาแนบเอกสารอย่างน้อย 1 ไฟล์ก่อน" : undefined}><Button size="sm" variant="outline" disabled={row.attachment_count === 0 || checkingVerificationId === row.cfstate_id} onClick={() => requestVerification(row.cfstate_id)}>{checkingVerificationId === row.cfstate_id ? "กำลังตรวจ..." : "ตรวจสอบแล้ว"}</Button></span>{row.attachment_count === 0 && <p className="text-[11px] text-amber-700">ต้องแนบไฟล์ก่อน</p>}</div></Can></td>
           <td className="px-3 py-2">
             <div className="flex items-center gap-1">
-              <Button size="icon" variant="ghost" title="แนบไฟล์" onClick={() => openAttachments(row)}>
+              <Button size="icon" variant="ghost" title="แนบไฟล์ / ตรวจสอบแล้ว" onClick={() => openAttachments(row)}>
                 <Paperclip className="h-4 w-4" />
               </Button>
               <Can menuKey={MENU_KEY} action="delete">
@@ -355,7 +550,31 @@ export function CrmCashflowInvoicePage() {
             </div>
           </td>
         </tr>)}</tbody>
-      </table>{loading && <p className="py-8 text-center text-sm text-muted-foreground">กำลังโหลด...</p>}{!loading && rows.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">ไม่มีรายการที่ต้องตรวจสอบ</p>}</CardContent></Card>
+      </table>{loading && <p className="py-8 text-center text-sm text-muted-foreground">กำลังโหลด...</p>}{!loading && filteredRows.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">ไม่มีรายการที่ต้องตรวจสอบ</p>}
+      {!loading && filteredRows.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3 text-sm">
+          <p className="text-muted-foreground">
+            ทั้งหมด {filteredRows.length} รายการ{filteredRows.length !== rows.length ? ` (จาก ${rows.length} รายการ)` : ""}
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-1 text-xs text-muted-foreground">แสดง
+              <select className="h-8 rounded-md border bg-white px-2 text-sm" value={pageSize} onChange={(event) => setPageSize(Number(event.target.value))}>
+                {PAGE_SIZE_OPTIONS.map((size) => <option key={size} value={size}>{size}</option>)}
+                <option value={0}>ทั้งหมด</option>
+              </select>
+              แถว/หน้า
+            </label>
+            {pageSize > 0 && (
+              <div className="flex items-center gap-1">
+                <Button size="sm" variant="outline" disabled={currentPage <= 1} onClick={() => setPage((current) => Math.max(1, current - 1))}>ก่อนหน้า</Button>
+                <span className="px-2 text-xs text-muted-foreground">หน้า {currentPage} / {totalPages}</span>
+                <Button size="sm" variant="outline" disabled={currentPage >= totalPages} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>ถัดไป</Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      </CardContent></Card>
     </div>
 
     <Dialog open={!!verificationDialog} onOpenChange={(open) => !open && setVerificationDialog(null)}>
@@ -383,7 +602,25 @@ export function CrmCashflowInvoicePage() {
       </DialogContent>
     </Dialog>
 
-    <Dialog open={!!attachmentStatement} onOpenChange={(open) => !open && setAttachmentStatement(null)}>
+    <Dialog open={exitConfirmOpen} onOpenChange={(open) => !open && !discardingExit && setExitConfirmOpen(false)}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>ยืนยันการออกจากหน้าเอกสารแนบ</DialogTitle>
+          <DialogDescription>
+            คุณมีการอัปโหลดไฟล์หรือติ๊กประเภทเอกสารที่ยังไม่ได้ยืนยัน “ตรวจสอบแล้ว” — ถ้าออกตอนนี้
+            ไฟล์ที่เพิ่งแนบในรอบนี้จะถูกลบ และประเภทเอกสารที่ติ๊กไว้จะไม่ถูกบันทึก ต้องการออกหรือไม่?
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" disabled={discardingExit} onClick={() => setExitConfirmOpen(false)}>อยู่ต่อ</Button>
+          <Button variant="destructive" disabled={discardingExit} onClick={discardAndCloseAttachments}>
+            {discardingExit ? "กำลังยกเลิก..." : "ออกและลบข้อมูล"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <Dialog open={!!attachmentStatement} onOpenChange={(open) => { if (!open) attemptCloseAttachments(); }}>
       <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>เอกสารแนบ</DialogTitle>
@@ -484,9 +721,22 @@ export function CrmCashflowInvoicePage() {
               <p className="text-xs text-muted-foreground">ดูได้อย่างเดียว — ไม่มีสิทธิ์แก้ไขประเภทเอกสาร</p>
             )}
           </div>
+          {can(MENU_KEY, "update") && (attachments.length === 0 || !attachmentStatement?.cfstate_document_type) && (
+            <p className="text-center text-xs text-amber-700">
+              ต้องแนบไฟล์อย่างน้อย 1 ไฟล์ และเลือกประเภทเอกสาร ก่อนกด “ตรวจสอบแล้ว”
+            </p>
+          )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => setAttachmentStatement(null)}>ปิด</Button>
+          <Button variant="outline" disabled={discardingExit} onClick={attemptCloseAttachments}>ปิด</Button>
+          <Can menuKey={MENU_KEY} action="update">
+            <Button
+              disabled={attachments.length === 0 || !attachmentStatement?.cfstate_document_type}
+              onClick={() => attachmentStatement && requestVerification(attachmentStatement.cfstate_id)}
+            >
+              ตรวจสอบแล้ว
+            </Button>
+          </Can>
         </DialogFooter>
       </DialogContent>
     </Dialog>
