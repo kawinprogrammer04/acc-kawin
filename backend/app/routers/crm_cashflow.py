@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, Optional
@@ -21,6 +22,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse, StreamingResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import column_index_from_string, get_column_letter
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +39,7 @@ from app.core.config import settings
 from app.models.crm_cashflow import (
     CrmCashflowCategory,
     CrmCashflowDepartment,
+    CrmCashflowImportTemplate,
     CrmCashflowList,
     CrmCashflowStatement,
     CrmCashflowStatementAttachment,
@@ -57,6 +60,29 @@ DOCUMENT_TYPE_LABELS: dict[str, str] = {
     "other": "อื่นๆ",
 }
 LEGACY_INVOICE_LABELS = {None: "", 0: "รอใบกำกับ", 1: "ได้รับแล้ว"}
+
+# ── Import template field vocabulary ────────────────────────────────────────
+# A custom import template maps an Excel column reference in the uploaded file
+# to one of these keys.  Older saved templates without ``column`` remain
+# position-based for backwards compatibility.
+ImportFieldKey = Literal[
+    "date", "category", "source", "detail", "refrain",
+    "income", "expense", "amount", "ref", "department", "skip",
+]
+IMPORT_FIELD_LABELS: dict[str, str] = {
+    "date": "วันที่",
+    "category": "หัวข้อ",
+    "source": "แหล่งที่มา",
+    "detail": "รายละเอียด",
+    "refrain": "คำนวณต้นทุน",
+    "income": "รายรับ",
+    "expense": "รายจ่าย",
+    "amount": "จำนวนเงิน (+รับ / -จ่าย)",
+    "ref": "Ref",
+    "department": "แผนก",
+    "skip": "ข้าม (ไม่ใช้คอลัมน์นี้)",
+}
+IMPORT_REQUIRED_FIELDS = {"date"}
 
 
 # ── Request schemas ──────────────────────────────────────────────────────────
@@ -210,6 +236,99 @@ class StatementFlagsUpdate(BaseModel):
 class ErrorWorkbookPayload(BaseModel):
     error_rows: list[list[Any]]
     error_details: list[str]
+
+
+class ImportTemplateColumn(BaseModel):
+    field: ImportFieldKey
+    label: str = Field(min_length=1, max_length=100)
+    column: Optional[str] = None
+
+    @field_validator("label")
+    @classmethod
+    def clean_label(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("column")
+    @classmethod
+    def clean_column(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip().upper()
+        if not normalized:
+            return None
+        if not re.fullmatch(r"[A-Z]+", normalized):
+            raise ValueError("ชื่อคอลัมน์ต้องเป็นตัวอักษร เช่น A, J หรือ AO")
+        try:
+            column_index = column_index_from_string(normalized)
+        except ValueError as exc:
+            raise ValueError("ชื่อคอลัมน์ต้องอยู่ระหว่าง A ถึง XFD") from exc
+        if column_index > 16_384:
+            raise ValueError("ชื่อคอลัมน์ต้องอยู่ระหว่าง A ถึง XFD")
+        return normalized
+
+
+def _validate_import_template_columns(columns: list[ImportTemplateColumn]) -> None:
+    # Legacy templates did not store ``column`` and are positional. New
+    # templates always store the key; a null value explicitly means that the
+    # field is not mapped and must remain blank during import.
+    fields = [
+        column.field for column in columns
+        if column.field != "skip" and (
+            "column" not in column.model_fields_set or column.column is not None
+        )
+    ]
+    missing = IMPORT_REQUIRED_FIELDS - set(fields)
+    if missing:
+        names = "', '".join(IMPORT_FIELD_LABELS[key] for key in missing)
+        raise ValueError(f"เทมเพลตต้องมีคอลัมน์ '{names}'")
+    if len(fields) != len(set(fields)):
+        raise ValueError("แต่ละประเภทข้อมูลกำหนดได้เพียงคอลัมน์เดียว (ยกเว้นคอลัมน์ที่ข้าม)")
+    mapped_columns = [column.column for column in columns if column.field != "skip" and column.column]
+    if len(mapped_columns) != len(set(mapped_columns)):
+        raise ValueError("แต่ละชื่อคอลัมน์ในไฟล์กำหนดได้เพียงครั้งเดียว")
+    has_split_amount = "income" in fields or "expense" in fields
+    if "amount" not in fields and not has_split_amount:
+        raise ValueError(
+            "เทมเพลตต้องมีคอลัมน์จำนวนเงินอย่างน้อยหนึ่งแบบ (รายรับ/รายจ่าย หรือ จำนวนเงินรวม)"
+        )
+    if "amount" in fields and has_split_amount:
+        raise ValueError(
+            "เลือกได้อย่างใดอย่างหนึ่ง: แยกรายรับ/รายจ่าย หรือ จำนวนเงินรวม ไม่ใช่ทั้งสองแบบ"
+        )
+
+
+class ImportTemplateCreate(BaseModel):
+    cfimptpl_name: str = Field(min_length=1, max_length=255)
+    cfimptpl_header_row: bool = True
+    cfimptpl_columns: list[ImportTemplateColumn] = Field(min_length=1)
+
+    @field_validator("cfimptpl_name")
+    @classmethod
+    def clean_name(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def validate_columns(self):
+        _validate_import_template_columns(self.cfimptpl_columns)
+        return self
+
+
+class ImportTemplateUpdate(BaseModel):
+    cfimptpl_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    cfimptpl_header_row: Optional[bool] = None
+    cfimptpl_columns: Optional[list[ImportTemplateColumn]] = Field(default=None, min_length=1)
+    cfimptpl_status: Optional[int] = None
+
+    @field_validator("cfimptpl_name")
+    @classmethod
+    def clean_name(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() if value is not None else value
+
+    @model_validator(mode="after")
+    def validate_columns(self):
+        if self.cfimptpl_columns is not None:
+            _validate_import_template_columns(self.cfimptpl_columns)
+        return self
 
 
 # ── Shared query/helpers ─────────────────────────────────────────────────────
@@ -831,6 +950,112 @@ async def delete_department(
     return {"status": 1}
 
 
+# ── Master data: import templates ───────────────────────────────────────────
+def _serialize_import_template(row: CrmCashflowImportTemplate) -> dict[str, Any]:
+    return {
+        "cfimptpl_id": row.cfimptpl_id,
+        "cfimptpl_name": row.cfimptpl_name,
+        "cfimptpl_header_row": bool(row.cfimptpl_header_row),
+        "cfimptpl_columns": row.cfimptpl_columns,
+        "cfimptpl_status": row.cfimptpl_status,
+        "comp_id": row.comp_id,
+    }
+
+
+@router.get("/import-templates", dependencies=[Depends(require_viewer)])
+async def list_import_templates(
+    include_inactive: bool = False,
+    db: AsyncSession = Depends(get_db),
+    company: Company = Depends(get_current_company),
+):
+    stmt = select(CrmCashflowImportTemplate).where(CrmCashflowImportTemplate.comp_id == company.id)
+    if not include_inactive:
+        stmt = stmt.where(CrmCashflowImportTemplate.cfimptpl_status == 1)
+    rows = (
+        await db.execute(stmt.order_by(CrmCashflowImportTemplate.cfimptpl_id))
+    ).scalars().all()
+    return [_serialize_import_template(row) for row in rows]
+
+
+@router.post("/import-templates", dependencies=[Depends(require_accountant)])
+async def create_import_template(
+    payload: ImportTemplateCreate,
+    db: AsyncSession = Depends(get_db),
+    company: Company = Depends(get_current_company),
+):
+    existing = (
+        await db.execute(
+            select(CrmCashflowImportTemplate.cfimptpl_id).where(
+                CrmCashflowImportTemplate.comp_id == company.id,
+                func.lower(CrmCashflowImportTemplate.cfimptpl_name) == payload.cfimptpl_name.lower(),
+                CrmCashflowImportTemplate.cfimptpl_status == 1,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(409, "มีชื่อเทมเพลตนี้อยู่แล้ว")
+    row = CrmCashflowImportTemplate(
+        comp_id=company.id,
+        cfimptpl_name=payload.cfimptpl_name,
+        cfimptpl_header_row=1 if payload.cfimptpl_header_row else 0,
+        cfimptpl_columns=[column.model_dump() for column in payload.cfimptpl_columns],
+        cfimptpl_status=1,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return _serialize_import_template(row)
+
+
+@router.patch("/import-templates/{template_id}", dependencies=[Depends(require_accountant)])
+async def update_import_template(
+    template_id: int,
+    payload: ImportTemplateUpdate,
+    db: AsyncSession = Depends(get_db),
+    company: Company = Depends(get_current_company),
+):
+    row = await _owned_row(
+        db, CrmCashflowImportTemplate, CrmCashflowImportTemplate.cfimptpl_id,
+        template_id, company.id, "ไม่พบเทมเพลต",
+    )
+    if payload.cfimptpl_name is not None and payload.cfimptpl_name.lower() != row.cfimptpl_name.lower():
+        duplicate = (
+            await db.execute(
+                select(CrmCashflowImportTemplate.cfimptpl_id).where(
+                    CrmCashflowImportTemplate.comp_id == company.id,
+                    func.lower(CrmCashflowImportTemplate.cfimptpl_name) == payload.cfimptpl_name.lower(),
+                    CrmCashflowImportTemplate.cfimptpl_id != template_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if duplicate:
+            raise HTTPException(409, "มีชื่อเทมเพลตนี้อยู่แล้ว")
+        row.cfimptpl_name = payload.cfimptpl_name
+    if payload.cfimptpl_header_row is not None:
+        row.cfimptpl_header_row = 1 if payload.cfimptpl_header_row else 0
+    if payload.cfimptpl_columns is not None:
+        row.cfimptpl_columns = [column.model_dump() for column in payload.cfimptpl_columns]
+    if payload.cfimptpl_status is not None:
+        row.cfimptpl_status = payload.cfimptpl_status
+    await db.commit()
+    return _serialize_import_template(row)
+
+
+@router.delete("/import-templates/{template_id}", dependencies=[Depends(require_accountant)])
+async def delete_import_template(
+    template_id: int,
+    db: AsyncSession = Depends(get_db),
+    company: Company = Depends(get_current_company),
+):
+    row = await _owned_row(
+        db, CrmCashflowImportTemplate, CrmCashflowImportTemplate.cfimptpl_id,
+        template_id, company.id, "ไม่พบเทมเพลต",
+    )
+    await db.delete(row)
+    await db.commit()
+    return {"status": 1}
+
+
 # ── Statements and invoice tracking ─────────────────────────────────────────
 @router.get("/statements", dependencies=[Depends(require_viewer)])
 async def list_statements(
@@ -1185,6 +1410,24 @@ def _split_amounts(income_value: Any, expense_value: Any) -> tuple[Decimal, Deci
     return income, expense
 
 
+def _category_from_amounts(category: Any, income: Decimal, expense: Decimal) -> str:
+    """Use an explicit category when supplied; otherwise infer cash direction.
+
+    Split amount files commonly contain no category column at all.  A positive
+    income value is income, while any populated expense value (normalised to a
+    negative number by ``_split_amounts``) is expense.  A combined amount uses
+    its sign in exactly the same way.
+    """
+    explicit = _text(category)
+    if explicit:
+        return explicit
+    if income > 0:
+        return "รายรับ"
+    if expense < 0:
+        return "รายจ่าย"
+    return ""
+
+
 def _normalize_import_row(
     row: list[Any], legacy_eight_columns: bool, report_export_columns: bool = False
 ) -> dict[str, Any]:
@@ -1195,7 +1438,7 @@ def _normalize_import_row(
         expense = amount if amount < 0 else Decimal("0")
         return {
             "cfstate_date": _parse_date(padded[0]),
-            "category": _text(padded[1]),
+            "category": _category_from_amounts(padded[1], income, expense),
             "source": _text(padded[2]),
             "detail": _text(padded[4]),
             # Imported rows always start with an unassigned document status.
@@ -1211,7 +1454,7 @@ def _normalize_import_row(
         income, expense = _split_amounts(padded[8], padded[9])
         return {
             "cfstate_date": _parse_date(padded[2]),
-            "category": _text(padded[3]),
+            "category": _category_from_amounts(padded[3], income, expense),
             "source": _text(padded[4]),
             "detail": _text(padded[5]),
             "invoice": None,
@@ -1224,7 +1467,7 @@ def _normalize_import_row(
     income, expense = _split_amounts(padded[6], padded[7])
     return {
         "cfstate_date": _parse_date(padded[0]),
-        "category": _text(padded[1]),
+        "category": _category_from_amounts(padded[1], income, expense),
         "source": _text(padded[2]),
         "detail": _text(padded[3]),
         "invoice": None,
@@ -1236,15 +1479,70 @@ def _normalize_import_row(
     }
 
 
-def _prepare_import_rows(rows: list[list[Any]], has_header: bool):
+def _normalize_import_row_with_template(
+    row: list[Any], columns: list[dict[str, str]]
+) -> dict[str, Any]:
+    """Normalize a row using a user-defined Excel-column mapping.
+
+    ``column`` is an A1-style column name (A, J, AO, ...).  Templates saved by
+    the previous positional editor have no ``column`` key, so their list index
+    remains the fallback position.
+    """
+    values: dict[str, Any] = {}
+    for index, column in enumerate(columns):
+        if column["field"] == "skip":
+            continue
+        if "column" in column and not column["column"]:
+            values[column["field"]] = None
+            continue
+        column_name = column.get("column")
+        source_index = column_index_from_string(column_name) - 1 if column_name else index
+        values[column["field"]] = row[source_index] if source_index < len(row) else None
+
+    if values.get("amount") is not None:
+        amount = _parse_money(values.get("amount"))
+        income = amount if amount > 0 else Decimal("0")
+        expense = amount if amount < 0 else Decimal("0")
+    else:
+        income, expense = _split_amounts(values.get("income"), values.get("expense"))
+
+    return {
+        "cfstate_date": _parse_date(values.get("date")),
+        "category": _category_from_amounts(values.get("category"), income, expense),
+        "source": _text(values.get("source")),
+        "detail": _text(values.get("detail")),
+        # Imported rows always start with an unassigned document status.
+        # Accounting staff classify the document during invoice review.
+        "invoice": None,
+        "refrain": _parse_refrain(values.get("refrain")),
+        "income": income,
+        "expense": expense,
+        "ref": _text(values.get("ref")),
+        "department": _text(values.get("department")),
+    }
+
+
+def _prepare_import_rows(
+    rows: list[list[Any]],
+    has_header: bool,
+    template_columns: Optional[list[dict[str, str]]] = None,
+):
     if not rows:
         raise HTTPException(400, "ไฟล์ไม่มีข้อมูล")
-    header = [_text(value) for value in rows[0]] if has_header else []
-    report_export_columns = header[:10] == REPORT_EXPORT_HEADERS
-    legacy_eight_columns = (
-        "จำนวนเงิน" in header
-        or (not has_header and len(rows[0]) < 10)
-    )
+    if template_columns is not None:
+        def normalize(row: list[Any]) -> dict[str, Any]:
+            return _normalize_import_row_with_template(row, template_columns)
+    else:
+        header = [_text(value) for value in rows[0]] if has_header else []
+        report_export_columns = header[:10] == REPORT_EXPORT_HEADERS
+        legacy_eight_columns = (
+            "จำนวนเงิน" in header
+            or (not has_header and len(rows[0]) < 10)
+        )
+
+        def normalize(row: list[Any]) -> dict[str, Any]:
+            return _normalize_import_row(row, legacy_eight_columns, report_export_columns)
+
     data_rows = rows[1:] if has_header else rows
     prepared = []
     for row_number, row in enumerate(data_rows, start=2 if has_header else 1):
@@ -1254,9 +1552,7 @@ def _prepare_import_rows(rows: list[list[Any]], has_header: bool):
         errors: list[str] = []
         normalized = None
         try:
-            normalized = _normalize_import_row(
-                row, legacy_eight_columns, report_export_columns
-            )
+            normalized = normalize(row)
             if not normalized["category"]:
                 errors.append("ไม่ระบุหัวข้อ")
         except ValueError as exc:
@@ -1348,16 +1644,30 @@ def _parse_row_numbers(value: Optional[str]) -> set[int]:
     return {int(part) for part in text_value.split(",") if part.strip()}
 
 
+async def _resolve_import_template_columns(
+    db: AsyncSession, company: Company, template_id: Optional[int]
+) -> Optional[list[dict[str, str]]]:
+    if template_id is None:
+        return None
+    template = await _owned_row(
+        db, CrmCashflowImportTemplate, CrmCashflowImportTemplate.cfimptpl_id,
+        template_id, company.id, "ไม่พบเทมเพลต",
+    )
+    return template.cfimptpl_columns
+
+
 @router.post("/import/preview", dependencies=[Depends(require_accountant)])
 async def preview_import(
     file: UploadFile = File(...),
     header_row: bool = Form(True),
     use_existing_data: bool = Form(False),
+    template_id: Optional[int] = Form(None),
     db: AsyncSession = Depends(get_db),
     company: Company = Depends(get_current_company),
 ):
+    template_columns = await _resolve_import_template_columns(db, company, template_id)
     prepared = _prepare_import_rows(
-        _read_spreadsheet(file.filename or "", await file.read()), header_row
+        _read_spreadsheet(file.filename or "", await file.read()), header_row, template_columns
     )
     categories, sources, departments = await _master_maps(db, company.id)
     duplicates: list[dict[str, Any]] = []
@@ -1425,12 +1735,14 @@ async def import_statements(
     use_existing_data: bool = Form(False),
     duplicate_action: str = Form("skip", pattern="^(skip|update|create)$"),
     skip_rows: Optional[str] = Form(None),
+    template_id: Optional[int] = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
+    template_columns = await _resolve_import_template_columns(db, company, template_id)
     prepared = _prepare_import_rows(
-        _read_spreadsheet(file.filename or "", await file.read()), header_row
+        _read_spreadsheet(file.filename or "", await file.read()), header_row, template_columns
     )
     categories, sources, departments = await _master_maps(db, company.id)
     skip_row_numbers = _parse_row_numbers(skip_rows)
@@ -1588,6 +1900,113 @@ async def download_import_template(format: str = Query("xlsx", pattern="^(xlsx|c
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="cashflow_import_template.xlsx"'},
+    )
+
+
+def _sample_value_for_import_field(field: str, row_index: int) -> Any:
+    """A plausible example value for a template column, so the downloaded
+    file isn't just bare headers — mirrors IMPORT_TEMPLATE_SAMPLE's spirit
+    but works for any field a custom template chooses to include."""
+    if field == "date":
+        return date(2025, 2, 27) if row_index == 0 else date(2025, 2, 28)
+    if field == "category":
+        return "รายรับ" if row_index == 0 else "รายจ่าย"
+    if field == "source":
+        return "ยอดขายออนไลน์" if row_index == 0 else "ค่าเช่า"
+    if field == "detail":
+        return "รายได้จากการขายสินค้าออนไลน์" if row_index == 0 else "ค่าเช่าสำนักงานประจำเดือน"
+    if field == "refrain":
+        return "0"
+    if field == "income":
+        return 15000 if row_index == 0 else 0
+    if field == "expense":
+        return 0 if row_index == 0 else 12000
+    if field == "amount":
+        return 15000 if row_index == 0 else -12000
+    if field == "department":
+        return "ฝ่ายขาย" if row_index == 0 else "ฝ่ายบัญชี"
+    return ""  # ref, skip
+
+
+@router.get("/import-templates/{template_id}/download", dependencies=[Depends(require_viewer)])
+async def download_custom_import_template(
+    template_id: int,
+    format: str = Query("xlsx", pattern="^(xlsx|csv)$"),
+    db: AsyncSession = Depends(get_db),
+    company: Company = Depends(get_current_company),
+):
+    """Download a blank file laid out at the template's Excel columns."""
+    template = await _owned_row(
+        db, CrmCashflowImportTemplate, CrmCashflowImportTemplate.cfimptpl_id,
+        template_id, company.id, "ไม่พบเทมเพลต",
+    )
+    columns = template.cfimptpl_columns
+    positioned_columns = []
+    for index, column in enumerate(columns):
+        if "column" in column and not column["column"]:
+            continue
+        position = column_index_from_string(column["column"]) if column.get("column") else index + 1
+        positioned_columns.append((position, column))
+    max_column = max((position for position, _ in positioned_columns), default=1)
+    headers = [""] * max_column
+    sample_rows = [[""] * max_column for _ in range(2)]
+    for position, column in positioned_columns:
+        headers[position - 1] = column["label"]
+        for row_index in range(2):
+            sample_rows[row_index][position - 1] = _sample_value_for_import_field(
+                column["field"], row_index
+            )
+    # Content-Disposition must be latin-1 encodable — cfimptpl_name is
+    # typically Thai, so strip to ASCII word characters only (plain \w would
+    # keep Thai letters, since Python regex treats them as "word" chars too).
+    safe_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", template.cfimptpl_name).strip("_") or "import_template"
+
+    if format == "csv":
+        text_buffer = io.StringIO()
+        writer = csv.writer(text_buffer)
+        writer.writerow(headers)
+        writer.writerows(sample_rows)
+        content = io.BytesIO(text_buffer.getvalue().encode("utf-8-sig"))
+        return StreamingResponse(
+            content,
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}.csv"'},
+        )
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Import Template"
+    sheet.append(headers)
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(sample_rows) + 1}"
+    sheet.sheet_view.showGridLines = False
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    sheet.row_dimensions[1].height = 26
+    for row in sample_rows:
+        sheet.append(row)
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        for position, column in positioned_columns:
+            cell = row[position - 1]
+            if column["field"] == "date":
+                cell.number_format = "yyyy-mm-dd"
+            elif column["field"] in ("income", "expense", "amount"):
+                cell.number_format = "#,##0.00"
+            elif column["field"] == "detail":
+                cell.alignment = Alignment(wrap_text=True, vertical="top")
+    for index, column in positioned_columns:
+        width = 38 if column["field"] == "detail" else 18
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.xlsx"'},
     )
 
 

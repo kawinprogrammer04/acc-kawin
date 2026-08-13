@@ -101,6 +101,49 @@ export interface CrmCashflowAttachment {
   uploaded_by?: string;
 }
 
+// ── Import templates ─────────────────────────────────────────────────────────
+// A template maps an Excel column name (A, J, AO, ...) in an uploaded file to
+// one of these keys. "skip" marks a column the parser should ignore. Kept in
+// sync with ImportFieldKey in backend/app/routers/crm_cashflow.py.
+export type ImportFieldKey =
+  | "date" | "category" | "source" | "detail" | "refrain"
+  | "income" | "expense" | "amount" | "ref" | "department" | "skip";
+
+export const IMPORT_FIELD_LABELS: Record<ImportFieldKey, string> = {
+  date: "วันที่",
+  category: "หัวข้อ",
+  source: "note",
+  detail: "Description",
+  refrain: "คำนวณต้นทุน",
+  income: "รายรับ",
+  expense: "รายจ่าย",
+  amount: "จำนวนเงิน (+รับ / -จ่าย)",
+  ref: "Ref",
+  department: "แผนก",
+  skip: "ข้าม (ไม่ใช้คอลัมน์นี้)",
+};
+
+export interface ImportTemplateColumn {
+  field: ImportFieldKey;
+  label: string;
+  column?: string | null;
+}
+
+export interface CrmCashflowImportTemplate {
+  cfimptpl_id: number;
+  cfimptpl_name: string;
+  cfimptpl_header_row: boolean;
+  cfimptpl_columns: ImportTemplateColumn[];
+  cfimptpl_status: 0 | 1;
+  comp_id: number;
+}
+
+export interface ImportTemplateInput {
+  cfimptpl_name: string;
+  cfimptpl_header_row: boolean;
+  cfimptpl_columns: ImportTemplateColumn[];
+}
+
 export interface ImportPreviewRow {
   row_number: number;
   raw: string[];
@@ -165,6 +208,7 @@ function importForm(
   useExistingData: boolean,
   duplicateAction?: DuplicateAction,
   skipRows?: number[],
+  templateId?: number,
 ) {
   const form = new FormData();
   form.append("file", file);
@@ -172,6 +216,7 @@ function importForm(
   form.append("use_existing_data", String(useExistingData));
   if (duplicateAction) form.append("duplicate_action", duplicateAction);
   if (skipRows && skipRows.length) form.append("skip_rows", JSON.stringify(skipRows));
+  if (templateId != null) form.append("template_id", String(templateId));
   return form;
 }
 
@@ -243,26 +288,49 @@ export const crmCashflowApi = {
     downloadBlob(response.data, `cashflow_statement_${new Date().toISOString().slice(0, 10)}.xlsx`);
   },
 
-  previewImport: (file: File, headerRow: boolean, useExistingData: boolean) =>
-    api.post<ImportPreview>("/crm-cashflow/import/preview", importForm(file, headerRow, useExistingData), {
-      headers: { "Content-Type": "multipart/form-data" },
-    }).then((response) => response.data),
+  previewImport: (file: File, headerRow: boolean, useExistingData: boolean, templateId?: number) =>
+    api.post<ImportPreview>(
+      "/crm-cashflow/import/preview",
+      importForm(file, headerRow, useExistingData, undefined, undefined, templateId),
+      { headers: { "Content-Type": "multipart/form-data" } },
+    ).then((response) => response.data),
   importFile: (
     file: File,
     headerRow: boolean,
     useExistingData: boolean,
     duplicateAction: DuplicateAction = "skip",
     skipRows: number[] = [],
+    templateId?: number,
   ) =>
     api.post<ImportResult>(
-      "/crm-cashflow/import", importForm(file, headerRow, useExistingData, duplicateAction, skipRows),
+      "/crm-cashflow/import",
+      importForm(file, headerRow, useExistingData, duplicateAction, skipRows, templateId),
       { headers: { "Content-Type": "multipart/form-data" } },
     ).then((response) => response.data),
+
+  // ── Import templates ─────────────────────────────────────────────────────
+  importTemplates: (includeInactive = false) =>
+    api.get<CrmCashflowImportTemplate[]>("/crm-cashflow/import-templates", {
+      params: { include_inactive: includeInactive },
+    }).then((response) => response.data),
+  createImportTemplate: (data: ImportTemplateInput) =>
+    api.post<CrmCashflowImportTemplate>("/crm-cashflow/import-templates", data)
+      .then((response) => response.data),
+  updateImportTemplate: (id: number, data: Partial<ImportTemplateInput & { cfimptpl_status: 0 | 1 }>) =>
+    api.patch<CrmCashflowImportTemplate>(`/crm-cashflow/import-templates/${id}`, data)
+      .then((response) => response.data),
+  deleteImportTemplate: (id: number) => api.delete(`/crm-cashflow/import-templates/${id}`),
   downloadTemplate: async (format: "xlsx" | "csv") => {
     const response = await api.get<Blob>("/crm-cashflow/import/template", {
       params: { format }, responseType: "blob",
     });
     downloadBlob(response.data, `cashflow_import_template.${format}`);
+  },
+  downloadImportTemplateFile: async (templateId: number, format: "xlsx" | "csv") => {
+    const response = await api.get<Blob>(`/crm-cashflow/import-templates/${templateId}/download`, {
+      params: { format }, responseType: "blob",
+    });
+    downloadBlob(response.data, `import_template_${templateId}.${format}`);
   },
   downloadErrors: async (error_rows: string[][], error_details: string[]) => {
     const response = await api.post<Blob>("/crm-cashflow/import/errors", {
