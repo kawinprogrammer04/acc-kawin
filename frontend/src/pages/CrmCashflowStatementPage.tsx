@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Check, Download, FileSpreadsheet, FileText, Import, Pencil, Plus, RefreshCw,
-  Save, Settings2, Trash2,
+  Check, Download, FileSpreadsheet, FileText, Import, Pencil, Plus,
+  RefreshCw, Save, Settings2, Trash2,
 } from "lucide-react";
 
 import {
   crmCashflowApi,
+  IMPORT_FIELD_LABELS,
   type CheckDuplicatesResult,
   type CrmCashflowAttachment,
   type CrmCashflowCategory,
   type CrmCashflowDepartment,
+  type CrmCashflowImportTemplate,
   type CrmCashflowInvoiceStatus,
   type CrmCashflowSource,
   type CrmCashflowStatement,
@@ -17,6 +19,7 @@ import {
   type CrmStatementInput,
   type DuplicateAction,
   type ImportPreview,
+  type ImportTemplateColumn,
 } from "@/api/crmCashflow";
 import { Can } from "@/components/auth/RequirePermission";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -31,18 +34,22 @@ import { Switch } from "@/components/ui/switch";
 import { Combobox } from "@/components/ui/combobox";
 import { DatePicker } from "@/components/ui/date-picker";
 import { formatDate } from "@/lib/format";
+import { cn } from "@/lib/utils";
 
 const MENU_KEY = "crm_cashflow_statement";
 const today = () => new Date().toISOString().slice(0, 10);
 const money = (value: number) => new Intl.NumberFormat("th-TH", {
   minimumFractionDigits: 2, maximumFractionDigits: 2,
 }).format(value);
+const displayCrmTerms = (value: string) => value
+  .replace(/รายละเอียด/g, "Description")
+  .replace(/แหล่งที่มา/g, "note");
 
 function errorMessage(error: any) {
   const detail = error?.response?.data?.detail;
-  if (typeof detail === "string") return detail;
-  if (Array.isArray(detail)) return detail.map((item) => item.msg).join(", ");
-  return error?.message || "เกิดข้อผิดพลาด";
+  if (typeof detail === "string") return displayCrmTerms(detail);
+  if (Array.isArray(detail)) return displayCrmTerms(detail.map((item) => item.msg).join(", "));
+  return displayCrmTerms(error?.message || "เกิดข้อผิดพลาด");
 }
 
 const emptyForm = (): CrmStatementInput => ({
@@ -56,6 +63,39 @@ const emptyForm = (): CrmStatementInput => ({
   cfstate_amount: 0,
   cfstate_ref: "",
 });
+
+// ── Import templates ─────────────────────────────────────────────────────────
+// Draft state for the template editor — mirrors ImportTemplateInput but keeps
+// the row's own id (null while creating) so save() knows create vs. update.
+interface TemplateDraft {
+  id: number | null;
+  name: string;
+  headerRow: boolean;
+  columns: ImportTemplateColumn[];
+}
+const DEFAULT_TEMPLATE_COLUMNS: ImportTemplateColumn[] = [
+  { field: "date", label: IMPORT_FIELD_LABELS.date, column: "" },
+  { field: "category", label: IMPORT_FIELD_LABELS.category, column: "" },
+  { field: "source", label: IMPORT_FIELD_LABELS.source, column: "" },
+  { field: "detail", label: IMPORT_FIELD_LABELS.detail, column: "" },
+  { field: "refrain", label: IMPORT_FIELD_LABELS.refrain, column: "" },
+  { field: "income", label: IMPORT_FIELD_LABELS.income, column: "" },
+  { field: "expense", label: IMPORT_FIELD_LABELS.expense, column: "" },
+  { field: "amount", label: IMPORT_FIELD_LABELS.amount, column: "" },
+  { field: "ref", label: IMPORT_FIELD_LABELS.ref, column: "" },
+  { field: "department", label: IMPORT_FIELD_LABELS.department, column: "" },
+];
+
+const excelColumnName = (position: number) => {
+  let value = position;
+  let result = "";
+  while (value > 0) {
+    value -= 1;
+    result = String.fromCharCode(65 + (value % 26)) + result;
+    value = Math.floor(value / 26);
+  }
+  return result;
+};
 
 export function CrmCashflowStatementPage() {
   const [categories, setCategories] = useState<CrmCashflowCategory[]>([]);
@@ -118,6 +158,11 @@ export function CrmCashflowStatementPage() {
   const [importing, setImporting] = useState(false);
   const [importDuplicateAction, setImportDuplicateAction] = useState<DuplicateAction>("skip");
   const [importSkipRows, setImportSkipRows] = useState<number[]>([]);
+  const [importTemplates, setImportTemplates] = useState<CrmCashflowImportTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [templateManagerOpen, setTemplateManagerOpen] = useState(false);
+  const [templateDraft, setTemplateDraft] = useState<TemplateDraft | null>(null);
+  const [savingTemplate, setSavingTemplate] = useState(false);
 
   // Details dialog (read-only view of attachments uploaded from
   // /crm-cashflow/invoices — attaching/removing files stays on that page).
@@ -140,6 +185,14 @@ export function CrmCashflowStatementPage() {
     setCategories(categoryData);
     setSources(sourceData);
     setDepartments(departmentData);
+  }, []);
+
+  const loadImportTemplates = useCallback(async () => {
+    try {
+      setImportTemplates(await crmCashflowApi.importTemplates());
+    } catch (requestError) {
+      showError(errorMessage(requestError));
+    }
   }, []);
 
   const loadRows = useCallback(async () => {
@@ -166,6 +219,7 @@ export function CrmCashflowStatementPage() {
     loadMasters().catch((requestError) => showError(errorMessage(requestError)));
   }, [loadMasters]);
   useEffect(() => { loadRows(); }, [loadRows]);
+  useEffect(() => { loadImportTemplates(); }, [loadImportTemplates]);
 
   const openEntry = () => {
     const categoryId = activeCategories[0]?.cfcat_id ?? 0;
@@ -188,7 +242,7 @@ export function CrmCashflowStatementPage() {
   const addDraft = () => {
     const amount = Number(entryAmount.replace(/,/g, ""));
     if (!entryForm.cfcat_id || !entryForm.cflist_id || !entryAmount || Number.isNaN(amount)) {
-      showError("กรุณาเลือกหัวข้อ แหล่งที่มา และระบุจำนวนเงินให้ถูกต้อง");
+      showError("กรุณาเลือกหัวข้อ note และระบุจำนวนเงินให้ถูกต้อง");
       return;
     }
     setDrafts((items) => [...items, { ...entryForm, cfstate_amount: amount }]);
@@ -311,13 +365,13 @@ export function CrmCashflowStatementPage() {
   const moveSource = async (source: CrmCashflowSource) => {
     const targetCategory = window.prompt("รหัสหัวข้อปลายทาง", String(source.cfcat_id));
     if (!targetCategory) return;
-    const targetSource = window.prompt("รหัสแหล่งที่มาปลายทาง (เว้นว่างเพื่อสร้างใหม่)", "");
+    const targetSource = window.prompt("รหัส note ปลายทาง (เว้นว่างเพื่อสร้างใหม่)", "");
     let payload: { new_cfcat_id: number; new_cflist_id?: number; new_list_name?: string } = {
       new_cfcat_id: Number(targetCategory),
     };
     if (targetSource) payload.new_cflist_id = Number(targetSource);
     else {
-      const newName = window.prompt("ชื่อแหล่งที่มาใหม่", source.cflist_name)?.trim();
+      const newName = window.prompt("ชื่อ note ใหม่", source.cflist_name)?.trim();
       if (!newName) return;
       payload.new_list_name = newName;
     }
@@ -357,7 +411,10 @@ export function CrmCashflowStatementPage() {
     setImporting(true);
     setImportDuplicateAction("skip");
     try {
-      const result = await crmCashflowApi.previewImport(importFile, headerRow, useExistingData);
+      const result = await crmCashflowApi.previewImport(
+        importFile, headerRow, useExistingData,
+        selectedTemplateId ? Number(selectedTemplateId) : undefined,
+      );
       setImportPreview(result);
       // Default action is "skip", so tick every duplicate row upfront to match.
       setImportSkipRows(result.preview.filter((item) => item.duplicate_id).map((item) => item.row_number));
@@ -389,6 +446,7 @@ export function CrmCashflowStatementPage() {
     try {
       const result = await crmCashflowApi.importFile(
         importFile, headerRow, useExistingData, importDuplicateAction, importSkipRows,
+        selectedTemplateId ? Number(selectedTemplateId) : undefined,
       );
       showNotice(
         `นำเข้าสำเร็จ ${result.imported} รายการ`
@@ -407,6 +465,114 @@ export function CrmCashflowStatementPage() {
       await Promise.all([loadMasters(), loadRows()]);
     } catch (requestError) { showError(errorMessage(requestError)); }
     finally { setImporting(false); }
+  };
+
+  // ── Import template handlers ──────────────────────────────────────────────
+  const selectImportTemplate = (value: string) => {
+    setSelectedTemplateId(value);
+    setImportPreview(null);
+    const template = importTemplates.find((item) => String(item.cfimptpl_id) === value);
+    if (template) setHeaderRow(template.cfimptpl_header_row);
+  };
+
+  // Downloads a blank file laid out like whichever template is currently
+  // selected — the standard 10-column layout when none is picked.
+  const downloadCurrentTemplate = async (format: "xlsx" | "csv") => {
+    try {
+      if (selectedTemplateId) {
+        await crmCashflowApi.downloadImportTemplateFile(Number(selectedTemplateId), format);
+      } else {
+        await crmCashflowApi.downloadTemplate(format);
+      }
+    } catch (requestError) {
+      showError(errorMessage(requestError));
+    }
+  };
+
+  const downloadTemplateDraft = async (format: "xlsx" | "csv") => {
+    if (!templateDraft?.id) return;
+    try {
+      await crmCashflowApi.downloadImportTemplateFile(templateDraft.id, format);
+    } catch (requestError) {
+      showError(errorMessage(requestError));
+    }
+  };
+
+  const startNewTemplate = () => {
+    setTemplateDraft({
+      id: null, name: "", headerRow: true,
+      columns: DEFAULT_TEMPLATE_COLUMNS.map((column) => ({ ...column })),
+    });
+  };
+
+  const loadTemplateIntoEditor = (template: CrmCashflowImportTemplate) => {
+    const mappedColumns = new Map(template.cfimptpl_columns.map((column, index) => [
+      column.field,
+      Object.prototype.hasOwnProperty.call(column, "column")
+        ? column.column || ""
+        : excelColumnName(index + 1),
+    ]));
+    setTemplateDraft({
+      id: template.cfimptpl_id,
+      name: template.cfimptpl_name,
+      headerRow: template.cfimptpl_header_row,
+      columns: DEFAULT_TEMPLATE_COLUMNS.map((column) => ({
+        ...column, column: mappedColumns.get(column.field) || "",
+      })),
+    });
+  };
+
+  const updateTemplateColumn = (index: number, patch: Partial<ImportTemplateColumn>) => {
+    setTemplateDraft((current) => current ? {
+      ...current,
+      columns: current.columns.map((column, columnIndex) => (
+        columnIndex === index ? { ...column, ...patch } : column
+      )),
+    } : current);
+  };
+
+  const saveTemplate = async () => {
+    if (!templateDraft) return;
+    if (!templateDraft.name.trim()) { showError("กรุณาระบุชื่อเทมเพลต"); return; }
+    if (!templateDraft.columns.length) { showError("กรุณาเพิ่มอย่างน้อย 1 คอลัมน์"); return; }
+    setSavingTemplate(true);
+    try {
+      const payload = {
+        cfimptpl_name: templateDraft.name.trim(),
+        cfimptpl_header_row: templateDraft.headerRow,
+        cfimptpl_columns: templateDraft.columns.map((column) => ({
+          field: column.field,
+          label: IMPORT_FIELD_LABELS[column.field],
+          column: column.column?.trim().toUpperCase() || null,
+        })),
+      };
+      const saved = templateDraft.id
+        ? await crmCashflowApi.updateImportTemplate(templateDraft.id, payload)
+        : await crmCashflowApi.createImportTemplate(payload);
+      await loadImportTemplates();
+      setTemplateDraft(null);
+      setSelectedTemplateId(String(saved.cfimptpl_id));
+      setHeaderRow(saved.cfimptpl_header_row);
+      showNotice("บันทึกเทมเพลตแล้ว");
+    } catch (requestError) {
+      showError(errorMessage(requestError));
+    } finally {
+      setSavingTemplate(false);
+    }
+  };
+
+  const deleteTemplateDraft = async () => {
+    if (!templateDraft?.id) return;
+    if (!window.confirm("ยืนยันการลบเทมเพลตนี้?")) return;
+    try {
+      await crmCashflowApi.deleteImportTemplate(templateDraft.id);
+      await loadImportTemplates();
+      if (selectedTemplateId === String(templateDraft.id)) setSelectedTemplateId("");
+      setTemplateDraft(null);
+      showNotice("ลบเทมเพลตแล้ว");
+    } catch (requestError) {
+      showError(errorMessage(requestError));
+    }
   };
 
   // ── Attachment handlers ──────────────────────────────────────────────────
@@ -507,12 +673,13 @@ export function CrmCashflowStatementPage() {
         <Card><CardContent className="overflow-x-auto pt-6">
           <table className="w-full min-w-[1180px] text-sm">
             <thead><tr className="border-b bg-muted/40 text-left text-xs">
-              {['#','วันที่','หัวข้อ','แหล่งที่มา','รายละเอียด','ใบกำกับภาษี','ตรวจสอบแล้ว','คำนวณต้นทุน','ยอดรับ','ยอดจ่าย','แผนก','ผู้บันทึก','จัดการ'].map((head) => <th key={head} className="px-3 py-2">{head}</th>)}
+              {['#','วันที่','หัวข้อ','Description','note','ใบกำกับภาษี','ตรวจสอบแล้ว','คำนวณต้นทุน','ยอดรับ','ยอดจ่าย','แผนก','ผู้บันทึก','จัดการ'].map((head) => <th key={head} className="px-3 py-2">{head}</th>)}
             </tr></thead>
             <tbody>{rows.map((row, index) => <tr key={row.cfstate_id} className="border-b align-top">
               <td className="px-3 py-2">{index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td>
-              <td className="px-3 py-2">{row.cfcat_name}</td><td className="px-3 py-2">{row.cflist_name}</td>
+              <td className="px-3 py-2">{row.cfcat_name}</td>
               <td className="max-w-56 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td>
+              <td className="px-3 py-2">{row.cflist_name}</td>
               <td className="px-3 py-2"><InvoiceStatusBadge invoice={row.cfstate_invoice} documentType={row.cfstate_document_type} /></td>
               <td className="px-3 py-2 text-center">{row.cfstate_verified === 1 && <Check className="mx-auto h-4 w-4 text-emerald-600" />}</td>
               <td className="px-3 py-2"><Switch checked={row.cfstate_refrain === 1} onCheckedChange={(checked) => updateFlag(row.cfstate_id, { cfstate_refrain: checked ? 1 : 0 })} /></td>
@@ -521,7 +688,7 @@ export function CrmCashflowStatementPage() {
               <td className="px-3 py-2">{row.cfstate_dep_name || "-"}</td><td className="px-3 py-2">{row.user_name}</td>
               <td className="px-3 py-2">
                 <div className="flex items-center gap-1">
-                  <Button size="icon" variant="ghost" title="รายละเอียด" onClick={() => openDetails(row)}>
+                  <Button size="icon" variant="ghost" title="Description" onClick={() => openDetails(row)}>
                     <FileText className="h-4 w-4" />
                   </Button>
                   <Can menuKey={MENU_KEY} action="delete">
@@ -555,12 +722,12 @@ export function CrmCashflowStatementPage() {
             placeholder="เลือกหัวข้อ"
             options={[{ value: "", label: "เลือกหัวข้อ" }, ...activeCategories.map((item) => ({ value: String(item.cfcat_id), label: item.cfcat_name }))]}
           /></div>
-          <div><span className="flex items-center gap-1">แหล่งที่มา<button type="button" onClick={() => openMasterTab("source")} className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="จัดการแหล่งที่มา"><Pencil className="h-3 w-3" /></button></span><Combobox
+          <div><span className="flex items-center gap-1">note<button type="button" onClick={() => openMasterTab("source")} className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground" title="จัดการ note"><Pencil className="h-3 w-3" /></button></span><Combobox
             className="mt-1 h-9"
             value={entryForm.cflist_id ? String(entryForm.cflist_id) : ""}
             onChange={(value) => setEntryForm({ ...entryForm, cflist_id: Number(value) })}
-            placeholder="เลือกแหล่งที่มา"
-            options={[{ value: "", label: "เลือกแหล่งที่มา" }, ...formSources.map((item) => ({ value: String(item.cflist_id), label: item.cflist_name }))]}
+            placeholder="เลือก note"
+            options={[{ value: "", label: "เลือก note" }, ...formSources.map((item) => ({ value: String(item.cflist_id), label: item.cflist_name }))]}
           /></div>
           <div>ใบกำกับภาษี<Combobox
             className="mt-1 h-9"
@@ -576,19 +743,19 @@ export function CrmCashflowStatementPage() {
           /></div>
           <label>จำนวนเงิน (+รับ / -จ่าย)<Input value={entryAmount} onChange={(e) => setEntryAmount(e.target.value)} placeholder="-1500.00" /></label>
           <label className="hidden">Ref<Input value={entryForm.cfstate_ref || ""} onChange={(e) => setEntryForm({ ...entryForm, cfstate_ref: e.target.value })} /></label>
-          <label className="col-span-2 md:col-span-4">รายละเอียด<textarea className="mt-1 min-h-20 w-full rounded-md border px-3 py-2" value={entryForm.cfstate_detail || ""} onChange={(e) => setEntryForm({ ...entryForm, cfstate_detail: e.target.value })} /></label>
+          <label className="col-span-2 md:col-span-4">Description<textarea className="mt-1 min-h-20 w-full rounded-md border px-3 py-2" value={entryForm.cfstate_detail || ""} onChange={(e) => setEntryForm({ ...entryForm, cfstate_detail: e.target.value })} /></label>
           <Button className="col-span-2 md:col-span-4" variant="outline" onClick={addDraft}><Plus className="h-4 w-4" />เพิ่มเข้าชุด</Button>
         </div>
-        {drafts.length > 0 && <div className="mx-6 overflow-x-auto rounded-md border"><table className="w-full text-xs"><thead><tr className="bg-muted"><th className="p-2">วันที่</th><th>หัวข้อ</th><th>แหล่งที่มา</th><th>รายละเอียด</th><th>จำนวนเงิน</th><th /></tr></thead><tbody>{drafts.map((item, index) => <tr key={index} className="border-t"><td className="p-2">{formatDate(item.cfstate_date)}</td><td>{categoryName.get(item.cfcat_id)}</td><td>{sources.find((source) => source.cflist_id === item.cflist_id)?.cflist_name}</td><td>{item.cfstate_detail}</td><td className="text-right">{money(item.cfstate_amount)}</td><td className="p-1"><Button size="icon" variant="ghost" onClick={() => setDrafts((current) => current.filter((_, draftIndex) => draftIndex !== index))}><Trash2 className="h-4 w-4" /></Button></td></tr>)}</tbody></table></div>}
+        {drafts.length > 0 && <div className="mx-6 overflow-x-auto rounded-md border"><table className="w-full text-xs"><thead><tr className="bg-muted"><th className="p-2">วันที่</th><th>หัวข้อ</th><th>note</th><th>Description</th><th>จำนวนเงิน</th><th /></tr></thead><tbody>{drafts.map((item, index) => <tr key={index} className="border-t"><td className="p-2">{formatDate(item.cfstate_date)}</td><td>{categoryName.get(item.cfcat_id)}</td><td>{sources.find((source) => source.cflist_id === item.cflist_id)?.cflist_name}</td><td>{item.cfstate_detail}</td><td className="text-right">{money(item.cfstate_amount)}</td><td className="p-1"><Button size="icon" variant="ghost" onClick={() => setDrafts((current) => current.filter((_, draftIndex) => draftIndex !== index))}><Trash2 className="h-4 w-4" /></Button></td></tr>)}</tbody></table></div>}
         <DialogFooter><Button variant="outline" onClick={() => setEntryOpen(false)}>ยกเลิก</Button><Button disabled={!drafts.length || checkingDuplicates} onClick={confirmSaveDrafts}><Save className="h-4 w-4" />{checkingDuplicates ? "กำลังตรวจสอบ..." : `บันทึก ${drafts.length} รายการ`}</Button></DialogFooter>
       </DialogContent></Dialog>
 
       <Dialog open={duplicateReviewOpen} onOpenChange={setDuplicateReviewOpen}><DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
-        <DialogHeader><DialogTitle>พบรายการซ้ำ {duplicateCheck?.duplicates.length || 0} รายการ</DialogTitle><DialogDescription>ข้อมูลตรงกับรายการที่มีอยู่แล้วทุกช่อง (วันที่ หัวข้อ แหล่งที่มา จำนวนเงิน ฯลฯ) เลือกวิธีจัดการรายการซ้ำเหล่านี้</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>พบรายการซ้ำ {duplicateCheck?.duplicates.length || 0} รายการ</DialogTitle><DialogDescription>ข้อมูลตรงกับรายการที่มีอยู่แล้วทุกช่อง (วันที่ หัวข้อ note จำนวนเงิน ฯลฯ) เลือกวิธีจัดการรายการซ้ำเหล่านี้</DialogDescription></DialogHeader>
         <div className="space-y-3 p-6">
           <div className="max-h-64 overflow-y-auto rounded-md border">
             <table className="w-full text-xs">
-              <thead><tr className="bg-muted"><th className="p-2 text-left">วันที่</th><th className="text-left">หัวข้อ</th><th className="text-left">รายละเอียด</th><th className="text-right">จำนวนเงิน</th></tr></thead>
+              <thead><tr className="bg-muted"><th className="p-2 text-left">วันที่</th><th className="text-left">หัวข้อ</th><th className="text-left">Description</th><th className="text-right">จำนวนเงิน</th></tr></thead>
               <tbody>{duplicateCheck?.duplicates.map((dup) => <tr key={dup.index} className="border-t"><td className="p-2">{formatDate(dup.item.cfstate_date)}</td><td>{categoryName.get(dup.item.cfcat_id)}</td><td>{dup.item.cfstate_detail}</td><td className="text-right">{money(dup.item.cfstate_amount)}</td></tr>)}</tbody>
             </table>
           </div>
@@ -603,20 +770,20 @@ export function CrmCashflowStatementPage() {
       </DialogContent></Dialog>
 
       <Dialog open={masterOpen} onOpenChange={setMasterOpen}><DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
-        <DialogHeader><DialogTitle>จัดการข้อมูลตั้งต้น</DialogTitle><DialogDescription>หัวข้อ แหล่งที่มา และแผนก ใช้ร่วมกับรายการทั้งหมด</DialogDescription></DialogHeader>
+        <DialogHeader><DialogTitle>จัดการข้อมูลตั้งต้น</DialogTitle><DialogDescription>หัวข้อ note และแผนก ใช้ร่วมกับรายการทั้งหมด</DialogDescription></DialogHeader>
         <div className="space-y-4 p-6">
-          <div className="flex gap-2">{([['category','หัวข้อ'],['source','แหล่งที่มา'],['department','แผนก']] as const).map(([key,label]) => <Button key={key} variant={masterTab === key ? "default" : "outline"} onClick={() => setMasterTab(key)}>{label}</Button>)}</div>
+          <div className="flex gap-2">{([['category','หัวข้อ'],['source','note'],['department','แผนก']] as const).map(([key,label]) => <Button key={key} variant={masterTab === key ? "default" : "outline"} onClick={() => setMasterTab(key)}>{label}</Button>)}</div>
           <div className="flex gap-2">{masterTab === "source" && <Combobox
             className="h-9 w-56"
             value={masterCategoryId}
             onChange={setMasterCategoryId}
             placeholder="เลือกหัวข้อ"
             options={[{ value: "", label: "เลือกหัวข้อ" }, ...activeCategories.map((item) => ({ value: String(item.cfcat_id), label: item.cfcat_name }))]}
-          />}<Input value={masterName} onChange={(e) => setMasterName(e.target.value)} placeholder={`เพิ่ม${masterTab === 'category' ? 'หัวข้อ' : masterTab === 'source' ? 'แหล่งที่มา' : 'แผนก'}`} /><Button onClick={addMaster}><Plus className="h-4 w-4" />เพิ่ม</Button></div>
+          />}<Input value={masterName} onChange={(e) => setMasterName(e.target.value)} placeholder={`เพิ่ม${masterTab === 'category' ? 'หัวข้อ' : masterTab === 'source' ? 'note' : 'แผนก'}`} /><Button onClick={addMaster}><Plus className="h-4 w-4" />เพิ่ม</Button></div>
           <div className="divide-y rounded-md border">
             {masterTab === "category" && categories.map((item) => <MasterRow key={item.cfcat_id} name={item.cfcat_name} active={item.cfcat_status} onEdit={() => editMaster("category", item.cfcat_id, item.cfcat_name)} onToggle={() => toggleMaster("category", item.cfcat_id, item.cfcat_status)} onDelete={() => deleteMaster("category", item.cfcat_id, "หัวข้อ")} />)}
             {masterTab === "department" && departments.map((item) => <MasterRow key={item.cfstate_dep_id} name={item.cfstate_dep_name} active={item.cfstate_dep_status} onEdit={() => editMaster("department", item.cfstate_dep_id, item.cfstate_dep_name)} onToggle={() => toggleMaster("department", item.cfstate_dep_id, item.cfstate_dep_status)} onDelete={() => deleteMaster("department", item.cfstate_dep_id, "แผนก")} />)}
-            {masterTab === "source" && sources.map((item) => <MasterRow key={item.cflist_id} name={`${item.cflist_name} — ${categoryName.get(item.cfcat_id) || ''}`} active={item.cflist_status} onEdit={() => editMaster("source", item.cflist_id, item.cflist_name)} onToggle={() => toggleMaster("source", item.cflist_id, item.cflist_status)} onMove={() => moveSource(item)} onDelete={() => deleteMaster("source", item.cflist_id, "แหล่งที่มา")} />)}
+            {masterTab === "source" && sources.map((item) => <MasterRow key={item.cflist_id} name={`${item.cflist_name} — ${categoryName.get(item.cfcat_id) || ''}`} active={item.cflist_status} onEdit={() => editMaster("source", item.cflist_id, item.cflist_name)} onToggle={() => toggleMaster("source", item.cflist_id, item.cflist_status)} onMove={() => moveSource(item)} onDelete={() => deleteMaster("source", item.cflist_id, "note")} />)}
           </div>
         </div>
       </DialogContent></Dialog>
@@ -625,12 +792,39 @@ export function CrmCashflowStatementPage() {
         <DialogHeader><DialogTitle>นำเข้ารายรับ/รายจ่าย</DialogTitle><DialogDescription>รองรับ CSV, XLSX, XLS ทั้งไฟล์เดิม 8 คอลัมน์และรูปแบบปัจจุบัน 10 คอลัมน์</DialogDescription></DialogHeader>
         <div className="space-y-4 p-6">
           <div className="space-y-1 rounded-md bg-blue-50 p-3 text-sm text-blue-800">
-            <p>คอลัมน์มาตรฐาน: วันที่, หัวข้อ, แหล่งที่มา, รายละเอียด, ใบกำกับภาษี, คำนวณต้นทุน, รายรับ, รายจ่าย, Ref, แผนก</p>
+            <p>คอลัมน์มาตรฐาน: วันที่, หัวข้อ, note, Description, ใบกำกับภาษี, คำนวณต้นทุน, รายรับ, รายจ่าย, Ref, แผนก</p>
             <p className="font-medium">กรอกจำนวนเงินเพียงด้านเดียว: รายรับ 15,000 / รายจ่าย 0 หรือ รายรับ 0 / รายจ่าย 12,000 — ไม่ต้องใส่เครื่องหมายลบ</p>
-            <p>เว้นแหล่งที่มาได้ ระบบจะบันทึกเป็น “ไม่ระบุ” ให้อัตโนมัติ</p>
+            <p>เว้น note ได้ ระบบจะบันทึกเป็น “ไม่ระบุ” ให้อัตโนมัติ</p>
             <p>รายการที่นำเข้าจะเว้นคอลัมน์ใบกำกับภาษีไว้ก่อน เพื่อรอตรวจสอบและเลือกประเภทเอกสารภายหลัง</p>
           </div>
-          <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => crmCashflowApi.downloadTemplate("xlsx")}><Download className="h-4 w-4" />Template XLSX</Button><Button variant="outline" onClick={() => crmCashflowApi.downloadTemplate("csv")}><Download className="h-4 w-4" />Template CSV</Button></div>
+          <div className="flex flex-wrap items-end gap-2 rounded-md border p-3">
+            <label className="min-w-56 flex-1 space-y-1 text-xs">รูปแบบเทมเพลต (คอลัมน์ในไฟล์)
+              <select
+                className="h-9 w-full rounded-md border bg-white px-3 text-sm"
+                value={selectedTemplateId}
+                onChange={(e) => selectImportTemplate(e.target.value)}
+              >
+                <option value="">มาตรฐาน (ตรวจจับอัตโนมัติ)</option>
+                {importTemplates.map((tpl) => (
+                  <option key={tpl.cfimptpl_id} value={tpl.cfimptpl_id}>{tpl.cfimptpl_name}</option>
+                ))}
+              </select>
+            </label>
+            <Button variant="outline" size="sm" onClick={() => downloadCurrentTemplate("xlsx")}>
+              <Download className="h-4 w-4" />ดาวน์โหลด XLSX
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => downloadCurrentTemplate("csv")}>
+              <Download className="h-4 w-4" />ดาวน์โหลด CSV
+            </Button>
+            <Can menuKey={MENU_KEY} action="update">
+              <Button
+                type="button" variant="outline" size="sm"
+                onClick={() => { setTemplateDraft(null); setTemplateManagerOpen(true); }}
+              >
+                <Settings2 className="h-4 w-4" />จัดการเทมเพลต
+              </Button>
+            </Can>
+          </div>
           <Input type="file" accept=".csv,.xlsx,.xls" onChange={(e) => {
             setImportFile(e.target.files?.[0] || null);
             setImportPreview(null);
@@ -639,10 +833,10 @@ export function CrmCashflowStatementPage() {
           }} />
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={headerRow} onChange={(e) => setHeaderRow(e.target.checked)} />ไฟล์มีแถวหัวตาราง</label>
           <div className="rounded-md border p-3">
-            <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={!useExistingData} onChange={(e) => { setUseExistingData(!e.target.checked); setImportPreview(null); }} />สร้างหัวข้อ แหล่งที่มา และแผนกที่ยังไม่มีให้อัตโนมัติ</label>
+            <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={!useExistingData} onChange={(e) => { setUseExistingData(!e.target.checked); setImportPreview(null); }} />สร้างหัวข้อ note และแผนกที่ยังไม่มีให้อัตโนมัติ</label>
             <p className="mt-1 pl-5 text-xs text-muted-foreground">เปิดไว้สำหรับการนำเข้าครั้งแรก ระบบจะใช้ข้อมูลเดิมเมื่อชื่อซ้ำและสร้างเฉพาะรายการที่ยังไม่มี</p>
           </div>
-          {importPreview && <div className="space-y-2"><p className="text-sm">ทั้งหมด {importPreview.total_rows} แถว / พบปัญหา {importPreview.error_count} แถว{importPreview.duplicate_count > 0 && ` / พบรายการซ้ำ ${importPreview.duplicate_count} แถว`}</p><div className="max-h-[50vh] overflow-auto rounded-md border"><table className="w-full min-w-[900px] text-xs"><thead><tr className="sticky top-0 z-10 bg-muted">{importPreview.headers.map((head) => <th key={head} className="p-2 text-left">{head}</th>)}<th>ผลตรวจ</th></tr></thead><tbody>{importPreview.preview.map((item) => <tr key={item.row_number} className="border-t"><td className="p-2">{item.data?.cfstate_date ? formatDate(item.data.cfstate_date) : ""}</td><td>{item.data?.category}</td><td>{item.data?.source}</td><td>{item.data?.detail}</td><td>{item.data?.invoice == null ? "" : item.data.invoice ? "ได้รับแล้ว" : "รอ"}</td><td>{item.data?.refrain ? "ON" : "OFF"}</td><td>{item.data?.income}</td><td>{item.data?.expense}</td><td>{item.data?.ref}</td><td>{item.data?.department}</td><td className={item.errors.length ? "text-red-600" : item.duplicate_id ? "text-amber-600" : "text-emerald-600"}>{item.errors.length ? item.errors.join(", ") : item.duplicate_id ? <label className="flex flex-col items-center gap-0.5"><span>ซ้ำกับ #{item.duplicate_id}</span><input type="checkbox" title="ข้ามแถวนี้" checked={importSkipRows.includes(item.row_number)} onChange={(e) => toggleImportSkipRow(item.row_number, e.target.checked)} /></label> : "ผ่าน"}</td></tr>)}</tbody></table></div>{importPreview.error_count > 0 && <Button variant="destructive" onClick={() => crmCashflowApi.downloadErrors(importPreview.error_rows, importPreview.error_details)}><Download className="h-4 w-4" />ดาวน์โหลดแถวผิดพลาด</Button>}
+          {importPreview && <div className="space-y-2"><p className="text-sm">ทั้งหมด {importPreview.total_rows} แถว / พบปัญหา {importPreview.error_count} แถว{importPreview.duplicate_count > 0 && ` / พบรายการซ้ำ ${importPreview.duplicate_count} แถว`}</p><div className="max-h-[50vh] overflow-auto rounded-md border"><table className="w-full min-w-[900px] text-xs"><thead><tr className="sticky top-0 z-10 bg-muted">{[importPreview.headers[0], importPreview.headers[1], importPreview.headers[3], importPreview.headers[2], ...importPreview.headers.slice(4)].map((head) => <th key={head} className="p-2 text-left">{displayCrmTerms(head)}</th>)}<th>ผลตรวจ</th></tr></thead><tbody>{importPreview.preview.map((item) => <tr key={item.row_number} className="border-t"><td className="p-2">{item.data?.cfstate_date ? formatDate(item.data.cfstate_date) : ""}</td><td>{item.data?.category}</td><td>{item.data?.detail}</td><td>{item.data?.source}</td><td>{item.data?.invoice == null ? "" : item.data.invoice ? "ได้รับแล้ว" : "รอ"}</td><td>{item.data?.refrain ? "ON" : "OFF"}</td><td>{item.data?.income}</td><td>{item.data?.expense}</td><td>{item.data?.ref}</td><td>{item.data?.department}</td><td className={item.errors.length ? "text-red-600" : item.duplicate_id ? "text-amber-600" : "text-emerald-600"}>{item.errors.length ? displayCrmTerms(item.errors.join(", ")) : item.duplicate_id ? <label className="flex flex-col items-center gap-0.5"><span>ซ้ำกับ #{item.duplicate_id}</span><input type="checkbox" title="ข้ามแถวนี้" checked={importSkipRows.includes(item.row_number)} onChange={(e) => toggleImportSkipRow(item.row_number, e.target.checked)} /></label> : "ผ่าน"}</td></tr>)}</tbody></table></div>{importPreview.error_count > 0 && <Button variant="destructive" onClick={() => crmCashflowApi.downloadErrors(importPreview.error_rows, importPreview.error_details)}><Download className="h-4 w-4" />ดาวน์โหลดแถวผิดพลาด</Button>}
             {importPreview.duplicate_count > 0 && <div className="space-y-1 text-sm text-amber-800">
               <p>ติ๊กในคอลัมน์ "ผลตรวจ" = ข้ามแถวนั้น</p>
               <div className="flex flex-wrap items-center gap-2">แถวซ้ำที่ไม่ได้ติ๊ก:
@@ -662,6 +856,110 @@ export function CrmCashflowStatementPage() {
         </div>
         <DialogFooter><Button variant="outline" disabled={!importFile || importing} onClick={previewFile}>แสดงตัวอย่าง</Button><Button disabled={!importFile || !importPreview || importing} onClick={importData}>{importing ? "กำลังทำงาน..." : "นำเข้าข้อมูล"}</Button></DialogFooter>
       </DialogContent></Dialog>
+
+      <Dialog open={templateManagerOpen} onOpenChange={setTemplateManagerOpen}>
+        <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>จัดการเทมเพลตนำเข้า</DialogTitle>
+            <DialogDescription>
+              ระบุชื่อคอลัมน์จากไฟล์จริงให้ข้อมูลแต่ละประเภท เช่น วันที่อยู่คอลัมน์ A รายรับอยู่คอลัมน์ J และ Description อยู่คอลัมน์ AO
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 p-6 md:grid-cols-[220px_1fr]">
+            <div className="space-y-2">
+              <Button size="sm" variant="outline" className="w-full" onClick={startNewTemplate}>
+                <Plus className="h-4 w-4" />เทมเพลตใหม่
+              </Button>
+              <div className="divide-y rounded-md border">
+                {importTemplates.map((tpl) => (
+                  <button
+                    key={tpl.cfimptpl_id}
+                    type="button"
+                    onClick={() => loadTemplateIntoEditor(tpl)}
+                    className={cn(
+                      "block w-full px-3 py-2 text-left text-sm hover:bg-muted",
+                      templateDraft?.id === tpl.cfimptpl_id && "bg-muted font-medium",
+                    )}
+                  >
+                    {tpl.cfimptpl_name}
+                  </button>
+                ))}
+                {importTemplates.length === 0 && (
+                  <p className="p-3 text-center text-xs text-muted-foreground">ยังไม่มีเทมเพลต</p>
+                )}
+              </div>
+            </div>
+
+            {templateDraft ? (
+              <div className="space-y-3">
+                <label className="block text-sm">ชื่อเทมเพลต
+                  <Input
+                    className="mt-1"
+                    value={templateDraft.name}
+                    onChange={(e) => setTemplateDraft((current) => current ? { ...current, name: e.target.value } : current)}
+                    placeholder="เช่น ไฟล์จากธนาคาร A"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={templateDraft.headerRow}
+                    onChange={(e) => setTemplateDraft((current) => current ? { ...current, headerRow: e.target.checked } : current)}
+                  />
+                  ไฟล์มีแถวหัวตาราง (ค่าเริ่มต้นเมื่อเลือกเทมเพลตนี้)
+                </label>
+                <div className="space-y-2">
+                  <div className="grid grid-cols-[1fr_160px] items-end gap-2 text-xs font-medium text-muted-foreground">
+                    <span>ข้อมูลในระบบ</span>
+                    <span>ชื่อคอลัมน์ในไฟล์</span>
+                  </div>
+                  {templateDraft.columns.map((column, index) => (
+                    <div key={column.field} className="grid grid-cols-[1fr_160px] items-center gap-2">
+                      <div className="flex h-9 items-center rounded-md border bg-muted/30 px-3 text-sm">
+                        {IMPORT_FIELD_LABELS[column.field]}
+                      </div>
+                      <Input
+                        className="h-9 uppercase"
+                        value={column.column || ""}
+                        onChange={(e) => updateTemplateColumn(index, { column: e.target.value.toUpperCase() })}
+                        placeholder="เว้นว่าง หรือ A, J, AO"
+                      />
+                    </div>
+                  ))}
+                  <p className="text-xs text-muted-foreground">ช่องที่ไม่กรอกชื่อคอลัมน์ในไฟล์จะเป็นค่าว่าง ต้องระบุ "วันที่" และจำนวนเงินอย่างน้อยหนึ่งแบบ (รายรับ/รายจ่าย หรือจำนวนเงินรวม) ส่วน "หัวข้อ" เว้นได้ ระบบจะกำหนดจากยอดเงินอัตโนมัติ</p>
+                </div>
+                {templateDraft.id && (
+                  <div className="flex flex-wrap items-center gap-2 rounded-md bg-muted/30 p-2">
+                    <span className="text-xs text-muted-foreground">ดาวน์โหลดไฟล์เปล่าตามรูปแบบเทมเพลตนี้:</span>
+                    <Button size="sm" variant="outline" onClick={() => downloadTemplateDraft("xlsx")}>
+                      <Download className="h-4 w-4" />XLSX
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => downloadTemplateDraft("csv")}>
+                      <Download className="h-4 w-4" />CSV
+                    </Button>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2 pt-2">
+                  {templateDraft.id ? (
+                    <Button variant="destructive" onClick={deleteTemplateDraft}><Trash2 className="h-4 w-4" />ลบเทมเพลต</Button>
+                  ) : <span />}
+                  <div className="flex gap-2">
+                    <Button variant="outline" onClick={() => setTemplateDraft(null)}>ยกเลิก</Button>
+                    <Button disabled={savingTemplate} onClick={saveTemplate}>
+                      <Save className="h-4 w-4" />{savingTemplate ? "กำลังบันทึก..." : "บันทึกเทมเพลต"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="flex items-center justify-center text-sm text-muted-foreground">
+                เลือกเทมเพลตทางซ้าย หรือกด "เทมเพลตใหม่" เพื่อสร้าง
+              </p>
+            )}
+          </div>
+          <DialogFooter><Button variant="outline" onClick={() => setTemplateManagerOpen(false)}>ปิด</Button></DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!detailStatement} onOpenChange={(open) => !open && closeDetails()}>
         <DialogContent className="max-w-2xl border-0 bg-transparent p-0 pt-8 text-white shadow-none [&>button]:bg-black/50 [&>button]:p-1 [&>button]:opacity-100 [&>button]:hover:bg-black/70">

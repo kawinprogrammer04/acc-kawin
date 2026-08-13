@@ -24,7 +24,12 @@ import { formatDate, localDateInput } from "@/lib/format";
 
 const MENU_KEY = "crm_cashflow_invoice";
 const money = (value: number) => new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
-const message = (error: any) => error?.response?.data?.detail || error?.message || "เกิดข้อผิดพลาด";
+const displayCrmTerms = (value: string) => value
+  .replace(/รายละเอียด/g, "Description")
+  .replace(/แหล่งที่มา/g, "note");
+const message = (error: any) => displayCrmTerms(
+  error?.response?.data?.detail || error?.message || "เกิดข้อผิดพลาด",
+);
 const DOCUMENT_TYPES: { value: CrmCashflowDocumentType; label: string }[] = [
   { value: "tax_invoice", label: "ใบกำกับภาษี" },
   { value: "cash_bill", label: "บิลเงินสด" },
@@ -510,8 +515,8 @@ export function CrmCashflowInvoicePage() {
         <div className="space-y-1 text-xs">วันที่เริ่มต้น<DatePicker value={dateStart} onChange={changeDateStart} /></div>
         <div className="space-y-1 text-xs">วันที่สิ้นสุด<DatePicker value={dateEnd} onChange={changeDateEnd} /></div>
         <label className="min-w-56 space-y-1 text-xs">หัวข้อ<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">ทั้งหมด</option>{categories.map((item) => <option key={item.cfcat_id} value={item.cfcat_id}>{item.cfcat_name}</option>)}</select></label>
-        <label className="min-w-48 space-y-1 text-xs">แหล่งที่มา<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">ทั้งหมด</option>{sourceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-        <label className="min-w-48 space-y-1 text-xs">รายละเอียด<Input className="h-9" value={detailQuery} onChange={(event) => setDetailQuery(event.target.value)} placeholder="ค้นหารายละเอียด" /></label>
+        <label className="min-w-48 space-y-1 text-xs">note<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">ทั้งหมด</option>{sourceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+        <label className="min-w-48 space-y-1 text-xs">Description<Input className="h-9" value={detailQuery} onChange={(event) => setDetailQuery(event.target.value)} placeholder="ค้นหา Description" /></label>
         <div className="space-y-1 text-xs hidden">ยอดรับ (ต่ำสุด–สูงสุด)
           <div className="flex gap-1">
             <Input className="h-9 w-24" type="number" value={incomeMin} onChange={(event) => setIncomeMin(event.target.value)} placeholder="ต่ำสุด" />
@@ -534,7 +539,7 @@ export function CrmCashflowInvoicePage() {
         <Button variant="ghost" onClick={resetFilters}>ล้างตัวกรอง</Button>
       </CardContent></Card>
       <Card><CardContent className="overflow-x-auto pt-6"><table className="w-full min-w-[1140px] text-sm">
-        <thead><tr className="border-b bg-muted/40 text-left text-xs">{['#','วันที่','หัวข้อ','รายละเอียด','แหล่งที่มา','ยอดรับ','ยอดจ่าย','ใบกำกับภาษี','ผู้บันทึก','จัดการ'].map((head) => <th key={head} className="px-3 py-2">{head}</th>)}</tr></thead>
+        <thead><tr className="border-b bg-muted/40 text-left text-xs">{['#','วันที่','หัวข้อ','Description','note','ยอดรับ','ยอดจ่าย','ใบกำกับภาษี','ผู้บันทึก','จัดการ'].map((head) => <th key={head} className="px-3 py-2">{head}</th>)}</tr></thead>
         <tbody>{pagedRows.map((row, index) => <tr key={row.cfstate_id} className="border-b">
           <td className="px-3 py-2">{rowNumberOffset + index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td><td className="px-3 py-2">{row.cfcat_name}</td><td className="max-w-60 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td><td className="px-3 py-2">{row.cflist_name}</td>
           <td className="px-3 py-2 text-right text-emerald-700">{row.cfstate_amount > 0 ? money(row.cfstate_amount) : "0.00"}</td><td className="px-3 py-2 text-right text-red-700">{row.cfstate_amount < 0 ? money(row.cfstate_amount) : "0.00"}</td>

@@ -10,6 +10,7 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 from sqlalchemy import Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -83,6 +84,30 @@ class CrmCashflowStatement(Base):
         Integer, ForeignKey("cashflow_statement_department.cfstate_dep_id")
     )
     cfstate_ref: Mapped[Optional[str]] = mapped_column(String(255))
+
+
+class CrmCashflowImportTemplate(Base):
+    """User-defined column mapping for the statement import wizard.
+
+    ``cfimptpl_columns`` is an ordered list of ``{"field": ..., "label": ...}``
+    objects — position in the list is position in the uploaded file, and
+    ``field`` is one of the keys the import parser understands (see
+    ``ImportFieldKey`` in the router). Kept as JSONB instead of a child table
+    since the list is always read/written as a whole with its template.
+    """
+    __tablename__ = "cashflow_import_template"
+
+    cfimptpl_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    comp_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False
+    )
+    cfimptpl_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    cfimptpl_header_row: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
+    cfimptpl_columns: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    cfimptpl_status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=datetime.utcnow
+    )
 
 
 class CrmCashflowStatementAttachment(Base):
