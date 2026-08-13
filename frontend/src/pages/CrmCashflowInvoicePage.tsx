@@ -76,7 +76,7 @@ export function CrmCashflowInvoicePage() {
   const [dateEnd, setDateEnd] = useState("");
   const [datePreset, setDatePreset] = useState<DatePreset>("custom");
   const [categoryId, setCategoryId] = useState("");
-  const [sourceId, setSourceId] = useState("");
+  const [noteQuery, setNoteQuery] = useState("");
   const [detailQuery, setDetailQuery] = useState("");
   const [incomeMin, setIncomeMin] = useState("");
   const [incomeMax, setIncomeMax] = useState("");
@@ -178,28 +178,21 @@ export function CrmCashflowInvoicePage() {
     setDatePreset("custom");
     setDateStart(""); setDateEnd("");
     setCategoryId("");
-    setSourceId(""); setDetailQuery("");
+    setNoteQuery(""); setDetailQuery("");
     setIncomeMin(""); setIncomeMax("");
     setExpenseMin(""); setExpenseMax("");
     setInvoiceStatusFilter("");
   };
 
-  const sourceOptions = useMemo(() => {
-    const byId = new Map<number, string>();
-    rows.forEach((row) => byId.set(row.cflist_id, row.cflist_name));
-    return Array.from(byId.entries())
-      .map(([id, name]) => ({ value: String(id), label: name }))
-      .sort((a, b) => a.label.localeCompare(b.label, "th"));
-  }, [rows]);
-
   const filteredRows = useMemo(() => {
+    const note = noteQuery.trim().toLowerCase();
     const detail = detailQuery.trim().toLowerCase();
     const incomeMinNum = incomeMin === "" ? null : Number(incomeMin);
     const incomeMaxNum = incomeMax === "" ? null : Number(incomeMax);
     const expenseMinNum = expenseMin === "" ? null : Number(expenseMin);
     const expenseMaxNum = expenseMax === "" ? null : Number(expenseMax);
     return rows.filter((row) => {
-      if (sourceId && String(row.cflist_id) !== sourceId) return false;
+      if (note && !(row.cflist_name || "").toLowerCase().includes(note)) return false;
       if (detail && !(row.cfstate_detail || "").toLowerCase().includes(detail)) return false;
       if (incomeMinNum !== null || incomeMaxNum !== null) {
         if (row.cfstate_amount <= 0) return false;
@@ -215,11 +208,11 @@ export function CrmCashflowInvoicePage() {
       if (invoiceStatusFilter && effectiveInvoiceStatus(row) !== invoiceStatusFilter) return false;
       return true;
     });
-  }, [rows, sourceId, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter]);
+  }, [rows, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter]);
 
   useEffect(() => {
     setPage(1);
-  }, [rows, sourceId, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter, pageSize]);
+  }, [rows, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter, pageSize]);
 
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filteredRows.length / pageSize)) : 1;
   const currentPage = Math.min(page, totalPages);
@@ -515,7 +508,7 @@ export function CrmCashflowInvoicePage() {
         <div className="space-y-1 text-xs">วันที่เริ่มต้น<DatePicker value={dateStart} onChange={changeDateStart} /></div>
         <div className="space-y-1 text-xs">วันที่สิ้นสุด<DatePicker value={dateEnd} onChange={changeDateEnd} /></div>
         <label className="min-w-56 space-y-1 text-xs">หัวข้อ<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">ทั้งหมด</option>{categories.map((item) => <option key={item.cfcat_id} value={item.cfcat_id}>{item.cfcat_name}</option>)}</select></label>
-        <label className="min-w-48 space-y-1 text-xs">note<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={sourceId} onChange={(event) => setSourceId(event.target.value)}><option value="">ทั้งหมด</option>{sourceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+        <label className="min-w-48 space-y-1 text-xs">note<Input className="h-9" value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="ค้นหา note" /></label>
         <label className="min-w-48 space-y-1 text-xs">Description<Input className="h-9" value={detailQuery} onChange={(event) => setDetailQuery(event.target.value)} placeholder="ค้นหา Description" /></label>
         <div className="space-y-1 text-xs hidden">ยอดรับ (ต่ำสุด–สูงสุด)
           <div className="flex gap-1">
