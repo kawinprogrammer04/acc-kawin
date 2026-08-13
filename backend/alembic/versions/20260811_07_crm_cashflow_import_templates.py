@@ -1,7 +1,7 @@
 """Add customizable column-mapping templates for CRM cashflow import.
 
 Revision ID: 20260811_07
-Revises: 20260811_06
+Revises: 20260810_01
 Create Date: 2026-08-11
 """
 from typing import Sequence, Union
@@ -9,7 +9,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = "20260811_07"
-down_revision: Union[str, None] = "20260811_06"
+down_revision: Union[str, None] = "20260810_01"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
