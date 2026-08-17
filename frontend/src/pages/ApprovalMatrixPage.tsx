@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Plus, Loader2, Trash2, ArrowUp, ArrowDown, CheckCircle2 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -7,10 +7,10 @@ import { api, getApiErrorMessage } from "@/api/client";
 import { useCompany } from "@/context/CompanyContext";
 import {
   positionsApi, expenseTypesApi, policyVersionsApi, rulesApi,
-  primaryApproversApi, delegationsApi, userPositionsApi,
+  primaryApproversApi, delegationsApi, userPositionsApi, expenseSettingsApi,
 } from "@/api/approvals";
 import type {
-  Position, ExpenseType, PolicyVersion, Rule, PrimaryApprover, Delegation, UserPositionRow,
+  Position, ExpenseType, PolicyVersion, Rule, PrimaryApprover, Delegation, UserPositionRow, Department,
 } from "@/api/approvals";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { UserPositionChecklist } from "@/components/UserPositionChecklist";
@@ -217,15 +217,31 @@ function ExpenseTypesTab({ types, onChanged }: { types: ExpenseType[]; onChanged
 }
 
 // ── Rules editor ──────────────────────────────────────────────────────────
-function RuleForm({ positions, types, versionId, onCreated }: {
-  positions: Position[]; types: ExpenseType[]; versionId: number; onCreated: () => void;
+function RuleForm({ positions, types, departments, versionId, onCreated }: {
+  positions: Position[]; types: ExpenseType[]; departments: Department[]; versionId: number; onCreated: () => void;
 }) {
+  const [requesterMode, setRequesterMode] = useState<"position" | "department">("position");
   const [requesterId, setRequesterId] = useState("");
+  const [deptId, setDeptId] = useState("");
+  const [selectedMemberIds, setSelectedMemberIds] = useState<Set<number>>(new Set());
   const [typeId, setTypeId] = useState("");
   const [amountMin, setAmountMin] = useState("0");
   const [amountMax, setAmountMax] = useState("");
   const [steps, setSteps] = useState<string[]>([""]);
   const [saving, setSaving] = useState(false);
+
+  const deptMembers = deptId ? positions.filter(p => p.department_id === Number(deptId)) : [];
+
+  const pickDept = (id: string) => {
+    setDeptId(id);
+    const members = id ? positions.filter(p => p.department_id === Number(id)) : [];
+    setSelectedMemberIds(new Set(members.map(p => p.id))); // ค่าเริ่มต้น: เลือกทุกตำแหน่งในแผนก
+  };
+  const toggleMember = (id: number) => setSelectedMemberIds(s => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
 
   const addStep = () => setSteps(s => [...s, ""]);
   const removeStep = (i: number) => setSteps(s => s.filter((_, idx) => idx !== i));
@@ -242,32 +258,73 @@ function RuleForm({ positions, types, versionId, onCreated }: {
     e.preventDefault();
     const stepIds = steps.filter(Boolean).map(Number);
     if (stepIds.length === 0) { alert("ต้องมีอย่างน้อย 1 ขั้นตอนผู้อนุมัติ"); return; }
+
+    const targetPositionIds = requesterMode === "position"
+      ? [Number(requesterId)]
+      : [...selectedMemberIds];
+    if (requesterMode === "department" && targetPositionIds.length === 0) {
+      alert("เลือกอย่างน้อย 1 ตำแหน่งในแผนก"); return;
+    }
+
     setSaving(true);
     try {
-      await rulesApi.create(versionId, {
-        requester_position_id: Number(requesterId),
+      const payload = {
         expense_type_id: Number(typeId),
         amount_min: Number(amountMin),
         amount_max: amountMax ? Number(amountMax) : null,
         steps: stepIds.map((id, idx) => ({ step_no: idx + 1, approver_position_id: id })),
-      });
-      setRequesterId(""); setTypeId(""); setAmountMin("0"); setAmountMax(""); setSteps([""]);
+      };
+      const results = await Promise.allSettled(
+        targetPositionIds.map(pid => rulesApi.create(versionId, { ...payload, requester_position_id: pid }))
+      );
+      const failed = results
+        .map((r, i) => ({ r, pid: targetPositionIds[i] }))
+        .filter((x): x is { r: PromiseRejectedResult; pid: number } => x.r.status === "rejected");
+      if (failed.length > 0) {
+        const positionName = (pid: number) => positions.find(p => p.id === pid)?.name ?? String(pid);
+        alert(
+          `สร้างสำเร็จ ${targetPositionIds.length - failed.length}/${targetPositionIds.length} ตำแหน่ง\n` +
+          failed.map(f => `- ${positionName(f.pid)}: ${getApiErrorMessage(f.r.reason, "ไม่ทราบสาเหตุ")}`).join("\n")
+        );
+      }
+      setRequesterId(""); setDeptId(""); setSelectedMemberIds(new Set());
+      setTypeId(""); setAmountMin("0"); setAmountMax(""); setSteps([""]);
       onCreated();
-    } catch (e: unknown) {
-      alert(getApiErrorMessage(e, "เพิ่มกฎไม่สำเร็จ"));
     } finally { setSaving(false); }
   };
 
   return (
     <form onSubmit={submit} className="space-y-3 rounded-lg border p-4">
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className={labelCls}>ตำแหน่งผู้เบิก *</label>
-          <select className={inputCls} required value={requesterId} onChange={e => setRequesterId(e.target.value)}>
-            <option value="">-- เลือก --</option>
-            {positions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
+      <div>
+        <label className={labelCls}>ผู้เบิก *</label>
+        <div className="flex gap-4 text-sm">
+          <label className="flex items-center gap-1.5">
+            <input type="radio" checked={requesterMode === "position"} onChange={() => setRequesterMode("position")} /> ตำแหน่งเดียว
+          </label>
+          <label className="flex items-center gap-1.5">
+            <input type="radio" checked={requesterMode === "department"} onChange={() => setRequesterMode("department")} /> ทั้งแผนก (เลือกได้หลายตำแหน่ง)
+          </label>
         </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {requesterMode === "position" ? (
+          <div>
+            <label className={labelCls}>ตำแหน่งผู้เบิก *</label>
+            <select className={inputCls} required value={requesterId} onChange={e => setRequesterId(e.target.value)}>
+              <option value="">-- เลือก --</option>
+              {positions.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </div>
+        ) : (
+          <div>
+            <label className={labelCls}>แผนกผู้เบิก *</label>
+            <select className={inputCls} required value={deptId} onChange={e => pickDept(e.target.value)}>
+              <option value="">-- เลือก --</option>
+              {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+        )}
         <div>
           <label className={labelCls}>ประเภทการเบิก *</label>
           <select className={inputCls} required value={typeId} onChange={e => setTypeId(e.target.value)}>
@@ -276,6 +333,32 @@ function RuleForm({ positions, types, versionId, onCreated }: {
           </select>
         </div>
       </div>
+
+      {requesterMode === "department" && deptId && (
+        <div className="rounded-md border p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <span className={labelCls + " mb-0"}>ตำแหน่งในแผนกนี้ (ติ๊กออกได้ถ้าไม่ต้องการรวมบางตำแหน่ง)</span>
+            <div className="flex gap-2 text-xs">
+              <button type="button" className="text-primary hover:underline" onClick={() => setSelectedMemberIds(new Set(deptMembers.map(p => p.id)))}>เลือกทั้งหมด</button>
+              <button type="button" className="text-muted-foreground hover:underline" onClick={() => setSelectedMemberIds(new Set())}>ไม่เลือกเลย</button>
+            </div>
+          </div>
+          {deptMembers.length === 0 ? (
+            <p className="text-sm text-muted-foreground">แผนกนี้ยังไม่มีตำแหน่งอยู่เลย</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {deptMembers.map(p => (
+                <label key={p.id} className="flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs">
+                  <input type="checkbox" checked={selectedMemberIds.has(p.id)} onChange={() => toggleMember(p.id)} /> {p.name}
+                </label>
+              ))}
+            </div>
+          )}
+          <p className="mt-2 text-xs text-muted-foreground">
+            ถ้าเลือกครบทุกตำแหน่งในแผนก จะแสดงรวมเป็นแถวเดียว เช่น "แผนก {departments.find(d => String(d.id) === deptId)?.name} (ทุกตำแหน่ง — ...)"
+          </p>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className={labelCls}>ยอดเงินต่ำสุด (บาท) *</label>
@@ -317,12 +400,77 @@ function RuleForm({ positions, types, versionId, onCreated }: {
   );
 }
 
-function RulesTab({ positions, types }: { positions: Position[]; types: ExpenseType[] }) {
+// จัดกลุ่ม rule ที่มีเงื่อนไข (ประเภท/ช่วงยอดเงิน/ขั้นตอนอนุมัติ) เหมือนกันทุกอย่าง
+// และตำแหน่งผู้เบิกครอบคลุม "ทุกตำแหน่งในแผนกเดียวกัน" พอดี ให้แสดงเป็นแถวเดียวระดับแผนก
+// แทนที่จะแสดงแยกทีละตำแหน่ง (เช่น สายอนุมัติของแผนก CRM/IT ที่ผูกไว้ทุกตำแหน่งในแผนก)
+type DisplayRow =
+  | { kind: "department"; key: string; department: Department; memberNames: string[]; rule: Rule }
+  | { kind: "rule"; key: string; rule: Rule };
+
+function groupRulesByDepartment(rules: Rule[], positions: Position[], departments: Department[]): DisplayRow[] {
+  const positionById = new Map(positions.map(p => [p.id, p]));
+  const memberIdsByDept = new Map<number, number[]>();
+  for (const p of positions) {
+    if (p.department_id == null) continue;
+    const list = memberIdsByDept.get(p.department_id) ?? [];
+    list.push(p.id);
+    memberIdsByDept.set(p.department_id, list);
+  }
+
+  const signature = (r: Rule) =>
+    `${r.expense_type_id}|${r.amount_min}|${r.amount_max ?? ""}|${r.steps.map(s => s.approver_position_id).join(",")}`;
+
+  // จับกลุ่ม "ทีละแผนก" (ไม่ใช่จับกลุ่มด้วย signature รวมทุกแผนกพร้อมกัน) เพราะสอง
+  // แผนกที่ต่างกันอาจบังเอิญมีเนื้อหา rule เหมือนกันเป๊ะ (เช่น CRM กับ IT ที่ต่างก็ใช้
+  // COO เป็นผู้อนุมัติขั้นตอนเดียวในช่วงยอดเดียวกัน) ถ้าจับกลุ่มด้วย signature อย่างเดียว
+  // ก่อน จะรวมกันเป็นกลุ่มผสมข้ามแผนกที่ไม่ตรงกับสมาชิกของแผนกไหนเป๊ะสักแผนก แล้ว
+  // "หลุด" กลับไปแสดงแยกทีละตำแหน่งทั้งหมดโดยไม่มีการ error ให้เห็น
+  const consumed = new Set<number>();
+  const rows: DisplayRow[] = [];
+
+  for (const dept of departments) {
+    const memberIds = memberIdsByDept.get(dept.id);
+    if (!memberIds || memberIds.length < 2) continue; // แผนกที่มีตำแหน่งเดียวไม่คุ้มจะรวมแถว
+    const memberIdSet = new Set(memberIds);
+
+    const bySig = new Map<string, Rule[]>();
+    for (const r of rules) {
+      if (!memberIdSet.has(r.requester_position_id)) continue;
+      const sig = signature(r);
+      const list = bySig.get(sig) ?? [];
+      list.push(r);
+      bySig.set(sig, list);
+    }
+    for (const [sig, group] of bySig) {
+      const requesterIds = new Set(group.map(r => r.requester_position_id));
+      if (requesterIds.size === memberIds.length && memberIds.every(id => requesterIds.has(id))) {
+        rows.push({
+          kind: "department",
+          key: `dept-${dept.id}-${sig}`,
+          department: dept,
+          memberNames: group.map(r => positionById.get(r.requester_position_id)?.name ?? r.requester_position_name ?? "-"),
+          rule: group[0],
+        });
+        for (const r of group) consumed.add(r.id);
+      }
+    }
+  }
+
+  for (const r of rules) {
+    if (consumed.has(r.id)) continue;
+    rows.push({ kind: "rule", key: `rule-${r.id}`, rule: r });
+  }
+  return rows;
+}
+
+function RulesTab({ positions, types, departments }: { positions: Position[]; types: ExpenseType[]; departments: Department[] }) {
   const [versions, setVersions] = useState<PolicyVersion[]>([]);
   const [versionId, setVersionId] = useState<number | null>(null);
   const [rules, setRules] = useState<Rule[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+
+  const displayRows = useMemo(() => groupRulesByDepartment(rules, positions, departments), [rules, positions, departments]);
 
   const loadVersions = useCallback(async () => {
     const v = await policyVersionsApi.list();
@@ -397,20 +545,31 @@ function RulesTab({ positions, types }: { positions: Position[]; types: ExpenseT
               <tbody className="divide-y">
                 {loading ? (
                   <tr><td colSpan={4} className="p-6 text-center"><Loader2 className="h-4 w-4 animate-spin inline text-muted-foreground" /></td></tr>
-                ) : rules.map(r => (
-                  <tr key={r.id} className="hover:bg-muted/20">
-                    <td className="px-4 py-3 font-medium">{r.requester_position_name}</td>
-                    <td className="px-4 py-3">{r.expense_type_name}</td>
-                    <td className="px-4 py-3">{formatCurrency(r.amount_min)} – {r.amount_max != null ? formatCurrency(r.amount_max) : "ไม่จำกัด"}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-1">
-                        {r.steps.map((s, i) => (
-                          <span key={s.step_no} className="rounded-full bg-muted px-2 py-0.5 text-xs">{i + 1}. {s.approver_position_name}</span>
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                ) : displayRows.map(row => {
+                  const r = row.rule;
+                  return (
+                    <tr key={row.key} className="hover:bg-muted/20">
+                      <td className="px-4 py-3 font-medium">
+                        {row.kind === "department" ? (
+                          <span title={row.memberNames.join(", ")}>
+                            แผนก {row.department.name} <span className="font-normal text-xs text-muted-foreground">(ทุกตำแหน่ง — {row.memberNames.join(", ")})</span>
+                          </span>
+                        ) : (
+                          r.requester_position_name
+                        )}
+                      </td>
+                      <td className="px-4 py-3">{r.expense_type_name}</td>
+                      <td className="px-4 py-3">{formatCurrency(r.amount_min)} – {r.amount_max != null ? formatCurrency(r.amount_max) : "ไม่จำกัด"}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-1">
+                          {r.steps.map((s, i) => (
+                            <span key={s.step_no} className="rounded-full bg-muted px-2 py-0.5 text-xs">{i + 1}. {s.approver_position_name}</span>
+                          ))}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
                 {!loading && rules.length === 0 && (
                   <tr><td colSpan={4} className="p-6 text-center text-sm text-muted-foreground">ยังไม่มีกฎในเวอร์ชันนี้</td></tr>
                 )}
@@ -423,7 +582,7 @@ function RulesTab({ positions, types }: { positions: Position[]; types: ExpenseT
               <Plus className="h-4 w-4" /> เพิ่มกฎใหม่ในเวอร์ชันนี้
             </button>
           ) : (
-            <RuleForm positions={positions} types={types} versionId={versionId} onCreated={() => { setShowForm(false); loadRules(versionId); }} />
+            <RuleForm positions={positions} types={types} departments={departments} versionId={versionId} onCreated={() => { setShowForm(false); loadRules(versionId); }} />
           )}
         </>
       )}
@@ -522,9 +681,8 @@ export function ApprovalMatrixPage() {
   const { currentCompany } = useCompany();
   const [positions, setPositions] = useState<Position[]>([]);
   const [types, setTypes] = useState<ExpenseType[]>([]);
-  const [primaryApprovers, setPrimaryApprovers] = useState<PrimaryApprover[]>([]);
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [delegations, setDelegations] = useState<Delegation[]>([]);
-  const [userPositions, setUserPositions] = useState<UserPositionRow[]>([]);
   const [users, setUsers] = useState<CompanyUser[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -532,16 +690,14 @@ export function ApprovalMatrixPage() {
     if (!currentCompany) return;
     setLoading(true);
     try {
-      const [pos, t, pa, dele, ups, companyUsers] = await Promise.all([
+      const [pos, t, deps, dele, companyUsers] = await Promise.all([
         positionsApi.list(),
         expenseTypesApi.list(),
-        primaryApproversApi.list(),
+        expenseSettingsApi.departments(),
         delegationsApi.list(),
-        userPositionsApi.list(),
         api.get(`/companies/${currentCompany.id}/users`).then(r => r.data),
       ]);
-      setPositions(pos); setTypes(t); setPrimaryApprovers(pa); setDelegations(dele);
-      setUserPositions(ups); setUsers(companyUsers);
+      setPositions(pos); setTypes(t); setDepartments(deps); setDelegations(dele); setUsers(companyUsers);
     } finally { setLoading(false); }
   }, [currentCompany]);
 
@@ -549,32 +705,24 @@ export function ApprovalMatrixPage() {
 
   return (
     <div className="p-6 space-y-4">
-      <PageHeader title="สายอนุมัติ" subtitle="จัดการตำแหน่ง ประเภทการเบิก และกฎการอนุมัติหลายขั้นตอน" />
+      <PageHeader title="สายอนุมัติ" subtitle="จัดการประเภท กฎการอนุมัติ และผู้รับมอบหมาย โดยข้อมูลพนักงานและแผนกจัดการที่หน้าผู้ใช้งาน" />
 
       <Card>
         <CardContent className="p-6">
           {loading ? (
             <div className="flex h-40 items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div>
           ) : (
-            <Tabs defaultValue="positions">
+            <Tabs defaultValue="rules">
               <TabsList>
-                <TabsTrigger value="user-positions">กำหนดตำแหน่งพนักงาน</TabsTrigger>
-                <TabsTrigger value="positions">ตำแหน่ง / ผู้อนุมัติหลัก</TabsTrigger>
                 <TabsTrigger value="types">ประเภทการเบิก</TabsTrigger>
                 <TabsTrigger value="rules">กฎการอนุมัติ</TabsTrigger>
                 <TabsTrigger value="delegations">ผู้รับมอบหมาย</TabsTrigger>
               </TabsList>
-              <TabsContent value="user-positions">
-                <UserPositionsTab positions={positions} users={users} userPositions={userPositions} onChanged={load} />
-              </TabsContent>
-              <TabsContent value="positions">
-                <PositionsTab positions={positions} users={users} primaryApprovers={primaryApprovers} onChanged={load} />
-              </TabsContent>
               <TabsContent value="types">
                 <ExpenseTypesTab types={types} onChanged={load} />
               </TabsContent>
               <TabsContent value="rules">
-                <RulesTab positions={positions} types={types} />
+                <RulesTab positions={positions} types={types} departments={departments} />
               </TabsContent>
               <TabsContent value="delegations">
                 <DelegationsTab positions={positions} users={users} delegations={delegations} onChanged={load} />

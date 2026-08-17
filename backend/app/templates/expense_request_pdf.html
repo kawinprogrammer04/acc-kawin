@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <title>{{ request.request_no }}</title>
+  <style>
+    @font-face { font-family: 'THSarabunNew'; font-style: normal; font-weight: normal; src: url('fonts/THSarabunNew.ttf') format('truetype'); }
+    @font-face { font-family: 'THSarabunNew'; font-style: normal; font-weight: bold; src: url('fonts/THSarabunNew-Bold.ttf') format('truetype'); }
+    @page {
+      size: A4 portrait;
+      margin: 18pt 24pt;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #111827; font-family: 'THSarabunNew', sans-serif; font-size: 12pt; line-height: 1.05; }
+    h1, h2, p { margin: 0; }
+    table { width: 100%; border-collapse: collapse; }
+    .page { position: relative; min-height: 780pt; page-break-after: always; page-break-inside: avoid; }
+    .page:last-of-type { page-break-after: auto; }
+
+    .document-header { height: 91.03pt; border-bottom: 1.2pt solid #d7a72c; }
+    .document-header td { height: 91.03pt; vertical-align: middle; }
+    .logo-cell { width: 78pt; text-align: center; }
+    .logo { position: relative; top: 2pt; width: 55pt; height: 55pt; object-fit: contain; }
+    .company-cell { width: auto; padding-left: 5pt; }
+    .company-stack { position: relative; height: 91.03pt; }
+    /* วางแต่ละบรรทัดแยกกันเพื่อไม่ให้ line box ตัดสระและวรรณยุกต์ไทย */
+    .company-th { position: absolute; top: 9.35pt; left: 0; right: 0; font-weight: bold; line-height: 1; word-break: break-word; }
+    .company-en { position: absolute; top: 39.15pt; left: 0; right: 0; font-size: 14pt; font-weight: bold; line-height: .95; white-space: nowrap; }
+    .company-detail { position: absolute; top: 63.39pt; left: 0; right: 0; font-size: 8.8pt; color: #374151; line-height: 1.05; white-space: nowrap; }
+    .company-detail.company-contact { top: 81.47pt; }
+
+    .title-box { width: 77.12%; margin: 7.8pt auto 8.8pt; border: 1.6pt solid #d97706; border-radius: 8pt; padding: 14pt 5pt 4pt; text-align: center; }
+    .title-box h1 { font-size: 18.5pt; line-height: 1; }
+    .meta td { height: 23.15pt; border: .7pt solid #374151; padding: 2pt 5pt; vertical-align: middle; }
+    .meta .label { width: 16%; background: #f3f4f6; font-weight: bold; }
+    .meta .value { width: 34%; }
+
+    .items { margin-top: 7pt; table-layout: fixed; }
+    .items th, .items td { height: 22.1pt; border: .65pt solid #374151; padding: 1.5pt 4pt; vertical-align: middle; overflow: hidden; word-break: break-word; overflow-wrap: break-word; }
+    .items th { height: 40.54pt; background: #eef0f2; text-align: center; font-weight: bold; }
+    .items .number { width: 5%; text-align: center; }
+    .items .description { width: 30%; }
+    .items .payee { width: 15%; }
+    .items .quantity { width: 10%; text-align: right; }
+    .items .unit { width: 8%; text-align: center; }
+    .items .price, .items .amount { width: 16%; text-align: right; }
+    .items .blank-content { color: transparent; }
+
+    .final-page-summary { page-break-inside: avoid; }
+    .summary-wrap { table-layout: fixed; border-top: .65pt solid #374151; }
+    .summary-note { width: 59.12%; border: .65pt solid #374151; border-top: 0; padding: 4pt 6pt; vertical-align: top; }
+    .summary-note .label { font-weight: bold; }
+    .summary-note .purpose { margin-top: 9pt; max-height: 24pt; overflow: hidden; }
+    .summary-note .workflow { margin-top: 8pt; color: #d66a21; font-size: 9.2pt; line-height: 1.1; }
+    .summary-note .plan-line { margin-top: 3pt; color: #6b21a8; font-size: 9pt; line-height: 1.1; }
+    .summary { width: 40.88%; vertical-align: top; }
+    .summary table { width: 100%; table-layout: fixed; }
+    .summary td { height: 20.95pt; border: .65pt solid #374151; border-top: 0; padding: 1pt 5pt; }
+    .summary td:first-child { border-left: 0; }
+    .summary .label { width: 69.7%; background: #f3f4f6; font-weight: bold; }
+    .summary .amount { width: 30.3%; text-align: right; white-space: nowrap; }
+    .summary .grand td { background: #e5e7eb; font-size: 13pt; font-weight: bold; }
+
+    .approval-panel { margin-top: 0; }
+    .approval-heading { height: 21pt; border: .7pt solid #374151; background: #eef0f2; padding: 2pt 5pt; font-weight: bold; }
+    .approval-grid { table-layout: fixed; }
+    .approval-grid td { position: relative; width: 25%; height: 52pt; border: .7pt solid #374151; border-top: 0; padding: 2pt 4pt; text-align: center; vertical-align: top; }
+    .approval-role { height: 13pt; overflow: hidden; font-size: 10pt; font-weight: bold; white-space: nowrap; }
+    .signature-line { margin: 3pt 8pt 0; border-bottom: .6pt solid #374151; line-height: 1; min-height: 12pt; }
+    .signed-by-name { white-space: nowrap; overflow: hidden; text-align: center; }
+    .signature-prefix { position: absolute; left: 5pt; bottom: 16pt; font-size: 9pt; }
+    .approval-name { margin-top: 2pt; height: 10pt; overflow: hidden; color: #374151; font-size: 8.7pt; line-height: 1; white-space: nowrap; }
+    .certification { position: fixed; bottom: -3pt; left: 0; right: 0; color: #9ca3af; font-size: 7.5pt; text-align: center; }
+  </style>
+</head>
+<body>
+{% for page in pages %}
+  <section class="page">
+    <table class="document-header">
+      <tr>
+        <td class="logo-cell">{% if logo_data_uri %}<img class="logo" src="{{ logo_data_uri }}" alt="Kawin Brothers">{% endif %}</td>
+        <td class="company-cell"><div class="company-stack">
+          <div class="company-th" style="font-size: {{ company_name_font_size }}pt">{{ company_name }}</div>
+          <div class="company-en">Kawin Brothers Co.,Ltd.</div>
+          <div class="company-detail">{{ company_address }}</div>
+          <div class="company-detail company-contact">{% if company.phone %}โทร. {{ company.phone }}&nbsp;&nbsp;{% endif %}เลขประจำตัวผู้เสียภาษี {{ company.tax_id or '— ยังไม่ได้ตั้งค่า —' }}</div>
+        </div>
+        </td>
+      </tr>
+    </table>
+
+    <div class="title-box"><h1>แบบฟอร์มขออนุมัติชำระเงิน (Payment Approval)</h1></div>
+
+    <table class="meta">
+      <tr><td class="label">ผู้เบิก</td><td class="value">{{ requester_name }}</td><td class="label">เลขที่เอกสาร</td><td class="value">{{ request.request_no }}</td></tr>
+      <tr><td class="label">แผนก / ตำแหน่ง</td><td class="value">{{ department_name }} / {{ position_name }}</td><td class="label">วันที่ทำรายการ</td><td class="value">{{ transaction_date }}</td></tr>
+      <tr><td class="label">วันที่ต้องการโอน</td><td class="value">{{ required_date }}</td><td class="label">เลขที่บิล</td><td class="value">-</td></tr>
+    </table>
+
+    <table class="items">
+      <thead><tr><th class="number">ลำดับ</th><th class="description">รายการ</th><th class="payee">ชื่อผู้รับ</th><th class="quantity">จำนวน</th><th class="unit">หน่วย</th><th class="price">ราคา/หน่วย</th><th class="amount">จำนวนเงิน</th></tr></thead>
+      <tbody>
+      {% for row in page.rows %}
+        <tr>
+          <td class="number">{{ row.number }}</td>
+          <td>{{ row.description }}</td>
+          <td class="payee" style="font-size:{{ payee_font_size }}pt;line-height:{{ payee_line_height }}">{{ payee_name }}</td>
+          <td class="quantity">{{ row.quantity_display }}</td>
+          <td class="unit">{{ row.unit }}</td>
+          <td class="price">{{ row.unit_price_display }}</td>
+          <td class="amount">{{ row.line_total_display }}</td>
+        </tr>
+      {% endfor %}
+      {% for row_number in page.blank_row_numbers %}
+        <tr><td class="number">{{ row_number }}</td><td class="description blank-content">&nbsp;</td><td class="payee blank-content">&nbsp;</td><td class="quantity blank-content">&nbsp;</td><td class="unit blank-content">&nbsp;</td><td class="price blank-content">&nbsp;</td><td class="amount">-</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+
+    {% if page.is_final %}
+      <div class="final-page-summary">
+        <table class="summary-wrap"><tr>
+          <td class="summary-note">
+            <div class="label">หมายเหตุ / วัตถุประสงค์</div>
+            <div class="purpose">{{ purpose }}</div>
+            <div class="workflow">{{ tax_note }}</div>
+            {% if request.request_format == 'advance' %}<div class="plan-line">เงินทดรองจ่าย · ต้องเคลียร์ยอดภายในกำหนดหลังรับเงิน</div>{% endif %}
+          </td>
+          <td class="summary"><table>
+            {% if totals.discount_amount > 0 %}
+              <tr><td class="label">ยอดก่อนหักส่วนลด</td><td class="amount">{{ totals.before_discount }}</td></tr>
+              <tr><td class="label">ส่วนลดรวม</td><td class="amount">-{{ totals.discount_amount_display }}</td></tr>
+            {% endif %}
+            {% if request.installment_payment_amount %}
+              <tr><td class="label">รวมเงิน</td><td class="amount">{{ totals.before_discount }}</td></tr>
+              <tr><td class="label">จำนวนที่ต้องจ่ายในงวดนี้</td><td class="amount">{{ totals.price_before_vat_display }}</td></tr>
+            {% else %}
+              <tr><td class="label">{{ 'ยอดก่อน VAT' if request.price_mode == 'include_vat' else 'รวมเงิน' }}</td><td class="amount">{{ totals.price_before_vat_display }}</td></tr>
+            {% endif %}
+            <tr><td class="label">VAT{% if totals.vat_amount > 0 and request.vat_mode == 'rate' %} {{ vat_rate_display }}%{% endif %}</td><td class="amount">{{ totals.vat_amount_display }}</td></tr>
+            <tr><td class="label">หัก ณ ที่จ่าย{% if totals.withholding_amount > 0 %} {{ withholding_rate_display }}%{% endif %}</td><td class="amount">{{ '-' if totals.withholding_amount > 0 else '' }}{{ totals.withholding_amount_display }}</td></tr>
+            <tr class="grand"><td>ยอดที่ต้องชำระ</td><td class="amount">{{ totals.payable_total_display }}</td></tr>
+          </table></td>
+        </tr></table>
+
+        <section class="approval-panel">
+          <div class="approval-heading">ผู้ขอเบิกและผู้อนุมัติ - ลงชื่อในช่องของตนเอง</div>
+          <table class="approval-grid">
+          {% for signature_row in signature_rows %}<tr>
+            {% for cell in signature_row %}<td>
+              {% if cell %}
+                <div class="approval-role">{{ cell.role }}</div>
+                <span class="signature-prefix">ลงชื่อ</span>
+                <div class="signature-line{% if cell.is_requester %} signed-by-name{% endif %}">{% if cell.is_requester %}{{ cell.name }}{% else %}&nbsp;{% endif %}</div>
+                <div class="approval-name">{% if cell.name %}({{ cell.name }}){% endif %}</div>
+              {% endif %}
+            </td>{% endfor %}
+          </tr>{% endfor %}
+          </table>
+        </section>
+      </div>
+    {% endif %}
+
+  </section>
+{% endfor %}
+<div class="certification">{{ request.request_no }} · Revision {{ request.current_revision }} · สร้างจากระบบ Kawin Brothers HR · บันทึก SHA-256 และ Audit Log ทุกการอนุมัติ</div>
+</body>
+</html>

@@ -136,6 +136,42 @@ services:
     networks:
       - backend_net
 
+  # ── Expense settlement reminder scheduler (separate process) ─────────────
+  expense_scheduler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    image: acc_backend:latest
+    container_name: acc_expense_scheduler
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "-m", "app.scheduler"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,sys; sys.exit(0 if b'app.scheduler' in pathlib.Path('/proc/1/cmdline').read_bytes() else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    environment:
+      XDG_CACHE_HOME: /tmp/.cache
+      APP_ENV: ${APP_ENV:-local}
+      DATABASE_URL: ${DATABASE_URL:-}
+      MIGRATION_DATABASE_URL: ${MIGRATION_DATABASE_URL:-}
+      DATABASE_HOST: ${DATABASE_HOST:-db}
+      POSTGRES_DB: ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set (min 32 chars)}
+      TZ: Asia/Bangkok
+    volumes:
+      - backend_uploads:/app/uploads
+    networks:
+      - backend_net
+
   # ── Tax Invoice PDF Renderer (PHP + Dompdf) ───────────────────────────────
   tax_invoice_renderer:
     build:

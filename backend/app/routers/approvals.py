@@ -10,17 +10,21 @@ from decimal import Decimal
 import mimetypes
 from pathlib import Path
 from typing import Optional
+import re
 import uuid
+import hashlib
+import shutil
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import Range
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_company, get_current_user, require_admin
+from app.core.dependencies import get_current_company, get_current_user, require_permission
 from app.models.approval import (
     ApprovalDelegation,
     ApprovalPolicyVersion,
@@ -35,12 +39,15 @@ from app.models.approval import (
     PositionPrimaryApprover,
     UserPosition,
 )
-from app.models.company import Company
+from app.models.company import Company, UserCompany
 from app.models.user import User
+from app.models.expense_finance import Department, ExpenseApprovalCandidate, ExpenseAttachmentRequirement, ExpensePayment, ExpenseRequestHistory
 from app.schemas.approval import (
     DecisionIn,
     DelegationCreate,
     DelegationOut,
+    ExpenseInstallmentCreate,
+    ExpenseInstallmentSiblingOut,
     ExpenseRequestCreate,
     ExpenseRequestDraftUpdate,
     ExpenseRequestDetailOut,
@@ -63,10 +70,15 @@ from app.schemas.approval import (
     UserPositionCreate,
     UserPositionOut,
 )
-from app.services import approval_service, expense_request_service
+from app.services import approval_service, expense_request_service, expense_signature_service
 from app.core.config import settings
 
 router = APIRouter(tags=["Approvals"])
+settings_view = require_permission("expense_settings.view", legacy_min_role="admin")
+settings_create = require_permission("expense_settings.create", legacy_min_role="admin")
+settings_update = require_permission("expense_settings.update", legacy_min_role="admin")
+settings_delete = require_permission("expense_settings.delete", legacy_min_role="admin")
+settings_approve = require_permission("expense_settings.approve", legacy_min_role="admin")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -80,6 +92,46 @@ async def _get_company_row(db: AsyncSession, model, row_id, company_id: int, not
     if not obj:
         raise HTTPException(404, not_found)
     return obj
+
+
+async def _validate_position_department(
+    db: AsyncSession, department_id: Optional[int], company_id: int,
+) -> None:
+    if department_id is None:
+        return
+    department = (
+        await db.execute(
+            select(Department).where(
+                Department.id == department_id,
+                Department.company_id == company_id,
+                Department.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if not department:
+        raise HTTPException(400, "ไม่พบแผนกที่เลือก หรือแผนกถูกปิดใช้งานแล้ว")
+
+
+async def _is_company_accounting(db: AsyncSession, user: User, company_id: int) -> bool:
+    if user.is_platform_admin:
+        return True
+    role = (await db.execute(select(UserCompany.role).where(
+        UserCompany.user_id == user.id, UserCompany.company_id == company_id,
+        UserCompany.is_active.is_(True),
+    ))).scalar_one_or_none()
+    return role in {"accountant", "admin", "super_admin"}
+
+
+async def _can_view_all_company_requests(db: AsyncSession, user: User, company_id: int) -> bool:
+    """super_admin (company-level role, distinct from the global is_platform_admin
+    flag) sees every employee's expense requests and approvals, not just their own."""
+    if user.is_platform_admin:
+        return True
+    role = (await db.execute(select(UserCompany.role).where(
+        UserCompany.user_id == user.id, UserCompany.company_id == company_id,
+        UserCompany.is_active.is_(True),
+    ))).scalar_one_or_none()
+    return role == "super_admin"
 
 
 def _amount_range(amount_min: Decimal, amount_max: Optional[Decimal]) -> Range:
@@ -127,7 +179,10 @@ async def list_positions(
     company: Company = Depends(get_current_company),
 ):
     result = await db.execute(
-        select(Position).where(Position.company_id == company.id).order_by(Position.name)
+        select(Position).where(
+            Position.company_id == company.id,
+            Position.is_active.is_(True),
+        ).order_by(Position.name)
     )
     return result.scalars().all()
 
@@ -136,12 +191,33 @@ async def list_positions(
 async def create_position(
     payload: PositionCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_create),
     company: Company = Depends(get_current_company),
 ):
-    obj = Position(company_id=company.id, name=payload.name, is_active=payload.is_active)
-    db.add(obj)
-    await db.commit()
+    await _validate_position_department(db, payload.department_id, company.id)
+    obj = (await db.execute(select(Position).where(
+        Position.company_id == company.id,
+        Position.name == payload.name,
+    ).with_for_update())).scalar_one_or_none()
+    if obj and obj.is_active:
+        raise HTTPException(409, "มีชื่อตำแหน่งนี้อยู่แล้ว")
+    if obj:
+        obj.department_id = payload.department_id
+        obj.is_active = True
+        obj.updated_at = datetime.now(timezone.utc)
+    else:
+        obj = Position(
+            company_id=company.id,
+            name=payload.name,
+            department_id=payload.department_id,
+            is_active=payload.is_active,
+        )
+        db.add(obj)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "มีชื่อตำแหน่งนี้อยู่แล้ว") from exc
     await db.refresh(obj)
     return obj
 
@@ -151,15 +227,49 @@ async def update_position(
     position_id: int,
     payload: PositionUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_update),
     company: Company = Depends(get_current_company),
 ):
     obj = await _get_company_row(db, Position, position_id, company.id, "ไม่พบตำแหน่งนี้")
+    if "department_id" in payload.model_fields_set:
+        await _validate_position_department(db, payload.department_id, company.id)
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(obj, key, value)
-    await db.commit()
+    obj.updated_at = datetime.now(timezone.utc)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "มีชื่อตำแหน่งนี้อยู่แล้ว") from exc
     await db.refresh(obj)
     return obj
+
+
+@router.delete("/positions/{position_id}", status_code=204)
+async def delete_position(
+    position_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(settings_delete),
+    company: Company = Depends(get_current_company),
+):
+    obj = await _get_company_row(db, Position, position_id, company.id, "ไม่พบตำแหน่งนี้")
+    await db.execute(
+        delete(UserPosition).where(
+            UserPosition.company_id == company.id,
+            UserPosition.position_id == position_id,
+        )
+    )
+    await db.execute(
+        update(PositionPrimaryApprover)
+        .where(
+            PositionPrimaryApprover.company_id == company.id,
+            PositionPrimaryApprover.position_id == position_id,
+        )
+        .values(is_active=False, updated_at=datetime.now(timezone.utc))
+    )
+    obj.is_active = False
+    obj.updated_at = datetime.now(timezone.utc)
+    await db.commit()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -190,7 +300,7 @@ async def list_my_positions(
 async def list_user_positions(
     user_id: Optional[int] = None,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_view),
     company: Company = Depends(get_current_company),
 ):
     q = select(UserPosition).where(UserPosition.company_id == company.id)
@@ -214,7 +324,7 @@ async def list_user_positions(
 async def assign_user_position(
     payload: UserPositionCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_create),
     company: Company = Depends(get_current_company),
 ):
     await _get_company_row(db, Position, payload.position_id, company.id, "ไม่พบตำแหน่งนี้")
@@ -229,7 +339,7 @@ async def assign_user_position(
 async def remove_user_position(
     row_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_delete),
     company: Company = Depends(get_current_company),
 ):
     obj = await _get_company_row(db, UserPosition, row_id, company.id, "ไม่พบข้อมูลนี้")
@@ -257,7 +367,7 @@ async def list_expense_types(
 async def create_expense_type(
     payload: ExpenseTypeCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_create),
     company: Company = Depends(get_current_company),
 ):
     obj = ExpenseType(company_id=company.id, **payload.model_dump())
@@ -272,7 +382,7 @@ async def update_expense_type(
     expense_type_id: int,
     payload: ExpenseTypeUpdate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_update),
     company: Company = Depends(get_current_company),
 ):
     obj = await _get_company_row(db, ExpenseType, expense_type_id, company.id, "ไม่พบประเภทการเบิกนี้")
@@ -290,7 +400,7 @@ async def update_expense_type(
 @router.get("/approval-policy-versions", response_model=list[PolicyVersionOut])
 async def list_policy_versions(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_view),
     company: Company = Depends(get_current_company),
 ):
     result = await db.execute(
@@ -305,7 +415,7 @@ async def list_policy_versions(
 async def create_policy_version(
     payload: PolicyVersionCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_create),
     company: Company = Depends(get_current_company),
 ):
     max_version = (
@@ -333,7 +443,7 @@ async def create_policy_version(
 async def activate_policy_version(
     version_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_approve),
     company: Company = Depends(get_current_company),
 ):
     obj = await _get_company_row(
@@ -355,7 +465,7 @@ async def activate_policy_version(
 async def list_rules(
     version_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_view),
     company: Company = Depends(get_current_company),
 ):
     await _get_company_row(db, ApprovalPolicyVersion, version_id, company.id, "ไม่พบเวอร์ชันสายอนุมัตินี้")
@@ -370,7 +480,7 @@ async def create_rule(
     version_id: int,
     payload: RuleCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_create),
     company: Company = Depends(get_current_company),
 ):
     await _get_company_row(db, ApprovalPolicyVersion, version_id, company.id, "ไม่พบเวอร์ชันสายอนุมัตินี้")
@@ -414,7 +524,7 @@ async def create_rule(
 async def delete_rule(
     rule_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_delete),
     company: Company = Depends(get_current_company),
 ):
     rule = (await db.execute(select(ApprovalRule).where(ApprovalRule.id == rule_id))).scalar_one_or_none()
@@ -434,7 +544,7 @@ async def delete_rule(
 @router.get("/position-primary-approvers", response_model=list[PrimaryApproverOut])
 async def list_primary_approvers(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_view),
     company: Company = Depends(get_current_company),
 ):
     rows = (
@@ -457,7 +567,7 @@ async def list_primary_approvers(
 async def set_primary_approver(
     payload: PrimaryApproverSet,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_update),
     company: Company = Depends(get_current_company),
 ):
     await _get_company_row(db, Position, payload.position_id, company.id, "ไม่พบตำแหน่งนี้")
@@ -484,7 +594,7 @@ async def set_primary_approver(
 async def remove_primary_approver(
     row_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_delete),
     company: Company = Depends(get_current_company),
 ):
     obj = await _get_company_row(db, PositionPrimaryApprover, row_id, company.id, "ไม่พบข้อมูลนี้")
@@ -495,7 +605,7 @@ async def remove_primary_approver(
 @router.get("/approval-delegations", response_model=list[DelegationOut])
 async def list_delegations(
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_view),
     company: Company = Depends(get_current_company),
 ):
     rows = (
@@ -521,7 +631,7 @@ async def list_delegations(
 async def create_delegation(
     payload: DelegationCreate,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_create),
     company: Company = Depends(get_current_company),
 ):
     await _get_company_row(db, Position, payload.position_id, company.id, "ไม่พบตำแหน่งนี้")
@@ -547,7 +657,7 @@ async def create_delegation(
 async def delete_delegation(
     row_id: int,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(settings_delete),
     company: Company = Depends(get_current_company),
 ):
     obj = await _get_company_row(db, ApprovalDelegation, row_id, company.id, "ไม่พบข้อมูลนี้")
@@ -579,19 +689,75 @@ async def preview_route(
 # ═══════════════════════════════════════════════════════════════════════════
 
 async def _request_items(db: AsyncSession, request_id: str) -> list[ExpenseRequestItem]:
+    revision = (await db.execute(select(ExpenseRequest.current_revision).where(ExpenseRequest.id == request_id))).scalar_one_or_none()
     return list((await db.execute(
         select(ExpenseRequestItem)
-        .where(ExpenseRequestItem.expense_request_id == request_id)
+        .where(ExpenseRequestItem.expense_request_id == request_id, ExpenseRequestItem.revision == (revision or 1))
         .order_by(ExpenseRequestItem.sort_order, ExpenseRequestItem.id)
     )).scalars().all())
 
 
 async def _request_attachments(db: AsyncSession, request_id: str) -> list[ExpenseRequestAttachment]:
+    revision = (await db.execute(select(ExpenseRequest.current_revision).where(ExpenseRequest.id == request_id))).scalar_one_or_none()
     return list((await db.execute(
         select(ExpenseRequestAttachment)
-        .where(ExpenseRequestAttachment.expense_request_id == request_id)
+        .where(ExpenseRequestAttachment.expense_request_id == request_id,
+               ExpenseRequestAttachment.revision == (revision or 1),
+               ExpenseRequestAttachment.is_active.is_(True))
         .order_by(ExpenseRequestAttachment.attachment_type, ExpenseRequestAttachment.created_at)
     )).scalars().all())
+
+
+async def _employee_organization(
+    db: AsyncSession,
+    user: User,
+    company: Company,
+    position_id: int,
+) -> tuple[Position, Optional[Department]]:
+    """Resolve the employee organization snapshot.
+
+    Department is optional by design (for example, executives may report at
+    company level).  When a company membership exists its department value is
+    authoritative, including an explicit NULL; the position department is
+    retained only as a compatibility fallback for platform admins without a
+    company-membership row.
+    """
+    position = await _get_company_row(db, Position, position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
+    assignment = (await db.execute(select(UserPosition.id).where(
+        UserPosition.user_id == user.id,
+        UserPosition.company_id == company.id,
+        UserPosition.position_id == position_id,
+        UserPosition.is_active.is_(True),
+    ))).scalar_one_or_none()
+    if not assignment and not user.is_platform_admin:
+        raise HTTPException(403, "ตำแหน่งนี้ไม่ได้ถูกกำหนดให้พนักงานในบริษัทปัจจุบัน")
+
+    membership = (await db.execute(select(UserCompany).where(
+        UserCompany.user_id == user.id,
+        UserCompany.company_id == company.id,
+        UserCompany.is_active.is_(True),
+    ))).scalar_one_or_none()
+    department_id = membership.department_id if membership else position.department_id
+    department = await db.get(Department, department_id) if department_id else None
+    if department_id and (
+        not department or department.company_id != company.id or not department.is_active
+    ):
+        raise HTTPException(400, "แผนกของพนักงานไม่ถูกต้องหรือถูกปิดใช้งาน กรุณาตรวจสอบที่หน้าจัดการผู้ใช้งาน")
+    return position, department
+
+
+async def _installment_chain_remaining(db: AsyncSession, req: ExpenseRequest) -> Optional[Decimal]:
+    """How much of the whole installment chain's target still needs to be paid out.
+
+    None when this request isn't part of an installment chain. Safe to compare
+    against 0 to decide whether a further installment may still be created.
+    """
+    if req.installment_chain_root_id is None or req.installment_target_amount is None:
+        return None
+    paid = (await db.execute(select(func.coalesce(func.sum(ExpenseRequest.paid_amount), 0)).where(
+        ExpenseRequest.installment_chain_root_id == req.installment_chain_root_id
+    ))).scalar_one()
+    return expense_request_service.money(req.installment_target_amount - Decimal(paid))
 
 
 async def _request_to_out(
@@ -605,24 +771,45 @@ async def _request_to_out(
     masked = f"••••{req.bank_account_last4}" if req.bank_account_last4 else None
     return ExpenseRequestOut(
         id=req.id, request_no=req.request_no, requester_user_id=req.requester_user_id,
+        version=req.version, current_revision=req.current_revision,
         requester_name=(requester.full_name or requester.username) if requester else None,
         requester_position_id=req.requester_position_id,
         requester_position_name=position.name if position else None,
+        department_id=req.department_id,
+        department_name=req.department_name_snapshot,
         expense_type_id=req.expense_type_id,
         expense_type_name=expense_type.name if expense_type else None,
         amount=req.amount, title=req.title, description=req.description,
-        request_date=req.request_date, request_format=req.request_format,
+        request_date=req.request_date, required_date=req.required_date, request_format=req.request_format,
         payer_company_name=req.payer_company_name,
         recipient_type=req.recipient_type, recipient_name=req.recipient_name,
         bank_name=req.bank_name, bank_account_name=req.bank_account_name,
         bank_account_number=(expense_request_service.decrypt_account_number(req.bank_account_number_encrypted)
                              if include_sensitive else None),
-        bank_account_masked=masked, subtotal=totals["subtotal"],
+        recipient_address=req.recipient_address, service_description=req.service_description,
+        bank_account_masked=masked, subtotal=totals["subtotal"], discount_amount=totals["discount_amount"],
+        price_before_vat=totals["price_before_vat"],
+        price_mode=req.price_mode,
         vat_mode=req.vat_mode, vat_rate=req.vat_rate, vat_amount=totals["vat_amount"],
         withholding_required=req.withholding_required,
         withholding_mode=req.withholding_mode, withholding_rate=req.withholding_rate,
         withholding_amount=totals["withholding_amount"], payable_total=totals["payable_total"],
-        taxpayer_name=req.taxpayer_name, taxpayer_id=req.taxpayer_id,
+        gross=totals["grand_total"], net=totals["payable_total"],
+        paid=req.paid_amount, remaining=req.remaining_amount,
+        gross_up_enabled=req.gross_up_enabled,
+        installment_enabled=req.installment_enabled,
+        installment_no=req.installment_no,
+        installment_chain_root_id=req.installment_chain_root_id,
+        installment_target_amount=req.installment_target_amount,
+        installment_payment_amount=req.installment_payment_amount,
+        installment_chain_status=req.installment_chain_status,
+        installment_chain_remaining=await _installment_chain_remaining(db, req),
+        requested_net_amount=req.requested_net_amount,
+        requester_withholding_status=req.requester_withholding_status,
+        taxpayer_name=req.taxpayer_name,
+        taxpayer_type=req.taxpayer_type, taxpayer_branch=req.taxpayer_branch,
+        taxpayer_id=(expense_request_service.decrypt_account_number(req.recipient_tax_id_encrypted)
+                     if include_sensitive and req.recipient_tax_id_encrypted else (req.taxpayer_id if include_sensitive else None)),
         taxpayer_address=req.taxpayer_address, status=req.status,
         current_step_no=req.current_step_no, submitted_at=req.submitted_at,
         decided_at=req.decided_at, created_at=req.created_at,
@@ -639,20 +826,12 @@ async def list_expense_requests(
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
-    # q = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
-    q = select(ExpenseRequest).where(
-        ExpenseRequest.company_id == company.id,
-        ExpenseRequest.status != "approved",
-    )
-    if scope == "mine" or not current_user.is_platform_admin:
+    q = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
+    if scope == "mine" or not await _can_view_all_company_requests(db, current_user, company.id):
         q = q.where(ExpenseRequest.requester_user_id == current_user.id)
     if status:
         # เมื่อผู้ใช้เลือกสถานะ ให้แสดงสถานะนั้นตามปกติ
         q = q.where(ExpenseRequest.status == status)
-    else:
-        # หน้ารายการเริ่มต้นไม่แสดงรายการที่อนุมัติแล้ว
-        q = q.where(ExpenseRequest.status != "approved")
-        
     q = q.order_by(ExpenseRequest.created_at.desc()).limit(limit).offset(offset)
     rows = (await db.execute(q)).scalars().all()
     return [await _request_to_out(db, r) for r in rows]
@@ -665,12 +844,23 @@ async def create_expense_request(
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
-    await _get_company_row(db, Position, payload.requester_position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
-    await _get_company_row(db, ExpenseType, payload.expense_type_id, company.id, "ไม่พบประเภทการเบิก")
-    data = payload.model_dump(exclude={"bank_account_number"})
+    position, department = await _employee_organization(
+        db, current_user, company, payload.requester_position_id
+    )
+    expense_type = await _get_company_row(db, ExpenseType, payload.expense_type_id, company.id, "ไม่พบประเภทการเบิก")
+    if payload.request_format not in (expense_type.allowed_kinds or []):
+        raise HTTPException(400, "ประเภทการเบิกนี้ไม่รองรับรูปแบบคำขอที่เลือก")
+    if payload.request_format == "advance" and payload.installment_enabled:
+        raise HTTPException(400, "คำขอเงินทดรองไม่รองรับการแบ่งจ่ายเป็นงวด")
+    data = payload.model_dump(exclude={"bank_account_number", "department_id"})
     bank_account_number = payload.bank_account_number or ""
     obj = ExpenseRequest(
         company_id=company.id, requester_user_id=current_user.id, status="draft",
+        company_name_snapshot=company.name_th,
+        department_id=department.id if department else None,
+        department_name_snapshot=department.name if department else None,
+        requester_name_snapshot=current_user.full_name or current_user.username,
+        requester_position_snapshot=position.name,
         payer_company_name=payload.payer_company_name or company.name_th,
         bank_account_number_encrypted=expense_request_service.encrypt_account_number(bank_account_number),
         bank_account_last4=bank_account_number[-4:] or None,
@@ -690,17 +880,25 @@ async def get_expense_request(
     company: Company = Depends(get_current_company),
 ):
     req = await _get_company_row(db, ExpenseRequest, request_id, company.id, "ไม่พบคำขอเบิกเงินนี้")
-    steps = (
+    all_steps = (
         await db.execute(
             select(ApprovalRequestStep)
             .where(ApprovalRequestStep.expense_request_id == request_id)
             .order_by(ApprovalRequestStep.step_no)
         )
     ).scalars().all()
+    # A user who approved/returned a *previous* revision (before a
+    # return-for-correction) must still count as a participant so they keep
+    # visibility into the request's history — but only the CURRENT revision's
+    # steps should be shown as "the approval timeline" (see `steps` below),
+    # otherwise old and new revisions' rows mix together with only `step_no`
+    # to sort by, which is unstable across ties and randomly resurfaces
+    # stale/returned steps from a prior revision.
     is_participant = req.requester_user_id == current_user.id or any(
-        s.resolved_approver_user_id == current_user.id for s in steps
+        s.resolved_approver_user_id == current_user.id for s in all_steps
     )
-    if not (is_participant or current_user.is_platform_admin):
+    steps = [s for s in all_steps if s.revision == req.current_revision]
+    if not (is_participant or await _is_company_accounting(db, current_user, company.id)):
         raise HTTPException(403, "คุณไม่มีสิทธิ์ดูคำขอนี้")
 
     positions = {p.id: p.name for p in (await db.execute(select(Position).where(Position.company_id == company.id))).scalars().all()}
@@ -708,6 +906,25 @@ async def get_expense_request(
     base = await _request_to_out(db, req, include_sensitive=True)
     items = await _request_items(db, request_id)
     attachments = await _request_attachments(db, request_id)
+    requirement_ids = {item.requirement_id for item in attachments if item.requirement_id is not None}
+    requirements_by_id = {
+        requirement.id: requirement
+        for requirement in (
+            await db.execute(
+                select(ExpenseAttachmentRequirement).where(
+                    ExpenseAttachmentRequirement.company_id == company.id,
+                    ExpenseAttachmentRequirement.id.in_(requirement_ids),
+                )
+            )
+        ).scalars().all()
+    } if requirement_ids else {}
+    siblings = []
+    if req.installment_chain_root_id is not None:
+        siblings = (await db.execute(
+            select(ExpenseRequest)
+            .where(ExpenseRequest.installment_chain_root_id == req.installment_chain_root_id)
+            .order_by(ExpenseRequest.installment_no)
+        )).scalars().all()
     return ExpenseRequestDetailOut(
         **base.model_dump(),
         items=[
@@ -721,9 +938,22 @@ async def get_expense_request(
         ],
         attachments=[
             {
-                "id": item.id, "attachment_type": item.attachment_type,
+                "id": item.id, "requirement_id": item.requirement_id,
+                "attachment_type": item.attachment_type,
+                "category": item.category,
                 "file_name": item.file_name, "content_type": item.content_type,
-                "file_size": item.file_size, "created_at": item.created_at,
+                "file_size": item.file_size, "requires_signature": item.requires_signature,
+                "has_signed_file": bool(item.signed_file_path), "created_at": item.created_at,
+                "default_signature_page": requirements_by_id[item.requirement_id].default_signature_page
+                    if item.requirement_id in requirements_by_id else None,
+                "default_signature_x": requirements_by_id[item.requirement_id].default_signature_x
+                    if item.requirement_id in requirements_by_id else None,
+                "default_signature_y": requirements_by_id[item.requirement_id].default_signature_y
+                    if item.requirement_id in requirements_by_id else None,
+                "default_signature_width": requirements_by_id[item.requirement_id].default_signature_width
+                    if item.requirement_id in requirements_by_id else None,
+                "default_signature_height": requirements_by_id[item.requirement_id].default_signature_height
+                    if item.requirement_id in requirements_by_id else None,
             }
             for item in attachments
         ],
@@ -739,6 +969,13 @@ async def get_expense_request(
             }
             for s in steps
         ],
+        installment_siblings=[
+            {
+                "id": s.id, "request_no": s.request_no, "installment_no": s.installment_no,
+                "status": s.status, "amount": s.amount, "paid_amount": s.paid_amount,
+            }
+            for s in siblings
+        ],
     )
 
 
@@ -753,16 +990,59 @@ async def update_expense_request_draft(
     req = await _get_company_row(db, ExpenseRequest, request_id, company.id, "ไม่พบคำขอเบิกเงินนี้")
     if req.requester_user_id != current_user.id:
         raise HTTPException(403, "คุณไม่ใช่เจ้าของคำขอนี้")
-    if req.status != "draft":
-        raise HTTPException(400, "แก้ไขได้เฉพาะคำขอที่เป็นแบบร่างเท่านั้น")
+    if req.status not in {"draft", "returned_for_correction"}:
+        raise HTTPException(400, "แก้ไขได้เฉพาะแบบร่างหรือคำขอที่ถูกส่งกลับเท่านั้น")
 
     data = payload.model_dump(exclude_unset=True)
+    expected_version = data.pop("version", None)
+    if expected_version is not None and expected_version != req.version:
+        raise HTTPException(409, f"ข้อมูลถูกแก้ไขจากอีกหน้าจอ กรุณาโหลดใหม่ (version ปัจจุบัน {req.version})")
+    previous_revision = req.current_revision
+    revision_created = req.status == "returned_for_correction"
+    if revision_created:
+        old_supporting = (await db.execute(select(ExpenseRequestAttachment).where(
+            ExpenseRequestAttachment.expense_request_id == request_id,
+            ExpenseRequestAttachment.revision == previous_revision,
+            ExpenseRequestAttachment.attachment_type == "supporting",
+            ExpenseRequestAttachment.is_active.is_(True),
+        ))).scalars().all()
+        req.current_revision += 1
+        req.status = "draft"
+        req.signed_pdf_path = None
+        req.signed_pdf_sha256 = None
+        for attachment in old_supporting:
+            suffix = Path(attachment.file_name).suffix.lower()
+            stored_name = f"revision-{req.current_revision}-{uuid.uuid4().hex}{suffix}"
+            new_path = Path(settings.EXPENSE_REQUEST_UPLOAD_DIR) / request_id / stored_name
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(attachment.file_path, new_path)
+            db.add(ExpenseRequestAttachment(
+                expense_request_id=request_id, company_id=company.id,
+                requirement_id=attachment.requirement_id, revision=req.current_revision,
+                category=attachment.category, attachment_type="supporting",
+                file_name=attachment.file_name, stored_name=stored_name, file_path=str(new_path),
+                content_type=attachment.content_type, file_size=attachment.file_size,
+                sha256=attachment.sha256, requires_signature=attachment.requires_signature,
+                uploaded_by=current_user.id,
+            ))
     items_payload = data.pop("items", None)
     account_number = data.pop("bank_account_number", None)
-    if "requester_position_id" in data:
-        await _get_company_row(db, Position, data["requester_position_id"], company.id, "ไม่พบตำแหน่งผู้เบิก")
-    if "expense_type_id" in data:
-        await _get_company_row(db, ExpenseType, data["expense_type_id"], company.id, "ไม่พบประเภทการเบิก")
+    tax_id = data.pop("recipient_tax_id", None)
+    legacy_tax_id = data.pop("taxpayer_id", None)
+    position, department = await _employee_organization(
+        db, current_user, company, data.get("requester_position_id", req.requester_position_id)
+    )
+    data["department_id"] = department.id if department else None
+    req.department_name_snapshot = department.name if department else None
+    req.requester_position_snapshot = position.name
+    expense_type = await _get_company_row(
+        db, ExpenseType, data.get("expense_type_id", req.expense_type_id), company.id, "ไม่พบประเภทการเบิก"
+    )
+    if data.get("request_format", req.request_format) not in (expense_type.allowed_kinds or []):
+        raise HTTPException(400, "ประเภทการเบิกนี้ไม่รองรับรูปแบบคำขอที่เลือก")
+    if (data.get("request_format", req.request_format) == "advance"
+            and data.get("installment_enabled", req.installment_enabled)):
+        raise HTTPException(400, "คำขอเงินทดรองไม่รองรับการแบ่งจ่ายเป็นงวด")
 
     for key, value in data.items():
         setattr(req, key, value)
@@ -770,24 +1050,81 @@ async def update_expense_request_draft(
         normalized = "".join(account_number.split())
         req.bank_account_number_encrypted = expense_request_service.encrypt_account_number(normalized)
         req.bank_account_last4 = normalized[-4:] or None
+    tax_id = tax_id if tax_id is not None else legacy_tax_id
+    if tax_id is not None:
+        normalized_tax_id = "".join(tax_id.split())
+        req.recipient_tax_id_encrypted = expense_request_service.encrypt_account_number(normalized_tax_id)
+        req.recipient_tax_id_last4 = normalized_tax_id[-4:] or None
+        req.taxpayer_id = None
 
     if items_payload is not None:
-        await db.execute(delete(ExpenseRequestItem).where(ExpenseRequestItem.expense_request_id == request_id))
+        await db.execute(delete(ExpenseRequestItem).where(
+            ExpenseRequestItem.expense_request_id == request_id,
+            ExpenseRequestItem.revision == req.current_revision,
+        ))
         for index, item in enumerate(items_payload, start=1):
             line_total = expense_request_service.money(item["quantity"] * item["unit_price"])
             db.add(ExpenseRequestItem(
-                expense_request_id=request_id, sort_order=index,
+                expense_request_id=request_id, revision=req.current_revision, sort_order=index,
                 description=item["description"].strip(), quantity=item["quantity"],
                 unit=item["unit"].strip(), unit_price=item["unit_price"], line_total=line_total,
             ))
         await db.flush()
+    elif revision_created:
+        old_items = (await db.execute(select(ExpenseRequestItem).where(
+            ExpenseRequestItem.expense_request_id == request_id,
+            ExpenseRequestItem.revision == previous_revision,
+        ).order_by(ExpenseRequestItem.sort_order))).scalars().all()
+        for item in old_items:
+            db.add(ExpenseRequestItem(
+                expense_request_id=request_id, revision=req.current_revision,
+                sort_order=item.sort_order, description=item.description,
+                quantity=item.quantity, unit=item.unit, unit_price=item.unit_price,
+                line_total=item.line_total,
+            ))
+        await db.flush()
 
     items = await _request_items(db, request_id)
+    if req.installment_enabled and req.installment_payment_amount is not None and req.installment_chain_root_id is None:
+        # First time this draft is split into installments: snapshot the full
+        # (non-overridden) claim total as the fixed target the whole chain must
+        # reach, then rename this document to be installment #1 of its own chain.
+        original_override = req.installment_payment_amount
+        req.installment_payment_amount = None
+        full_totals = expense_request_service.calculate_totals(req, items)
+        req.installment_payment_amount = original_override
+        req.installment_target_amount = full_totals["payable_total"]
+        req.installment_chain_root_id = req.id
+        req.installment_no = 1
+        req.request_no = f"{req.request_no}-1"
+        req.installment_chain_status = "in_progress"
+    if req.installment_payment_amount is not None:
+        # An installment amount overrides the taxable base directly — discount
+        # doesn't apply on top of it (avoids double-counting the reduction).
+        req.discount_amount = Decimal("0")
     totals = expense_request_service.calculate_totals(req, items)
+    if req.gross_up_enabled and req.requested_net_amount is not None:
+        if not req.withholding_required or req.withholding_mode != "rate" or req.withholding_rate <= 0 or req.withholding_rate >= 100:
+            raise HTTPException(400, "Gross-up ใช้ได้เมื่อเลือกต้องหัก ณ ที่จ่ายและระบุอัตรามากกว่า 0% แต่น้อยกว่า 100%")
+        if req.requested_net_amount <= 0 or req.requested_net_amount <= totals["vat_amount"]:
+            raise HTTPException(400, "ยอดที่ผู้รับเงินต้องได้สุทธิต้องมากกว่า 0 และมากกว่ายอด VAT")
+        maximum_net = expense_request_service.money(totals["price_before_vat"] + totals["vat_amount"] - (totals["price_before_vat"] * req.withholding_rate / Decimal("100")))
+        if req.requested_net_amount > maximum_net:
+            raise HTTPException(400, f"ยอดที่ผู้รับเงินต้องได้สุทธิเกินยอดสูงสุดที่วงเงินนี้รองรับ ({maximum_net:,.2f} บาท)")
     req.amount = totals["grand_total"]
+    req.subtotal_amount = totals["subtotal"]
+    req.price_before_vat = totals["price_before_vat"]
+    req.gross_amount = totals["grand_total"]
+    req.net_amount = totals["payable_total"]
+    req.remaining_amount = expense_request_service.money(totals["payable_total"] - req.paid_amount)
     req.vat_amount = totals["vat_amount"]
     req.withholding_amount = totals["withholding_amount"]
+    req.gross_up_base_amount = (expense_request_service.money((req.requested_net_amount - totals["vat_amount"]) /
+                                (Decimal("1") - req.withholding_rate / Decimal("100")))
+                                if req.gross_up_enabled and req.requested_net_amount is not None and req.withholding_rate < 100
+                                else (totals["grand_total"] if req.gross_up_enabled else None))
     req.updated_at = datetime.now(timezone.utc)
+    req.version += 1
     # Any draft edit makes the generated approval PDF stale. It will be
     # recreated automatically when the requester opens the attachment step.
     old_primary = next((a for a in await _request_attachments(db, request_id) if a.attachment_type == "primary"), None)
@@ -802,10 +1139,115 @@ async def update_expense_request_draft(
     return await _request_to_out(db, req, include_sensitive=True)
 
 
+@router.post("/expense-requests/{request_id}/installments/next", response_model=ExpenseRequestOut, status_code=201)
+async def create_next_installment(
+    request_id: str,
+    payload: ExpenseInstallmentCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    source = await _get_company_row(db, ExpenseRequest, request_id, company.id, "ไม่พบคำขอเบิกเงินนี้")
+    if source.requester_user_id != current_user.id:
+        raise HTTPException(403, "คุณไม่ใช่เจ้าของคำขอนี้")
+    if source.installment_chain_root_id is None:
+        raise HTTPException(400, "ต้องบันทึกงวดแรกพร้อมระบุยอดแบ่งจ่ายก่อนจึงจะสร้างงวดถัดไปได้")
+
+    root_id = source.installment_chain_root_id
+    root = (await db.execute(
+        select(ExpenseRequest).where(ExpenseRequest.id == root_id, ExpenseRequest.company_id == company.id)
+        .with_for_update()
+    )).scalar_one()
+    siblings = (await db.execute(
+        select(ExpenseRequest)
+        .where(ExpenseRequest.installment_chain_root_id == root_id)
+        .order_by(ExpenseRequest.installment_no)
+    )).scalars().all()
+    latest = siblings[-1]
+    if latest.status != "completed":
+        raise HTTPException(400, "ต้องจ่ายงวดปัจจุบันให้ครบก่อนจึงจะสร้างงวดถัดไปได้")
+
+    chain_paid = sum((expense_request_service.money(s.paid_amount) for s in siblings), Decimal("0"))
+    chain_remaining = expense_request_service.money((root.installment_target_amount or Decimal("0")) - chain_paid)
+    if chain_remaining <= 0:
+        raise HTTPException(400, "คำขอนี้แบ่งจ่ายครบยอดเต็มแล้ว ไม่ต้องสร้างงวดถัดไปอีก")
+    if payload.installment_payment_amount > chain_remaining:
+        raise HTTPException(400, f"ยอดงวดนี้ต้องไม่เกินยอดคงเหลือของคำขอ ({chain_remaining:,.2f} บาท)")
+
+    base_no = re.sub(r"-\d+$", "", root.request_no or "")
+    new_installment_no = (latest.installment_no or 1) + 1
+    new_req = ExpenseRequest(
+        company_id=latest.company_id, status="draft", version=1, current_revision=1,
+        department_id=latest.department_id,
+        company_name_snapshot=latest.company_name_snapshot,
+        department_name_snapshot=latest.department_name_snapshot,
+        requester_name_snapshot=latest.requester_name_snapshot,
+        requester_position_snapshot=latest.requester_position_snapshot,
+        requester_user_id=latest.requester_user_id, requester_position_id=latest.requester_position_id,
+        expense_type_id=latest.expense_type_id,
+        amount=Decimal("0"), title=latest.title, description=latest.description,
+        request_date=datetime.now(timezone.utc).date(), required_date=latest.required_date,
+        request_format=latest.request_format, payer_company_name=latest.payer_company_name,
+        recipient_type=latest.recipient_type, recipient_name=latest.recipient_name,
+        bank_name=latest.bank_name, bank_account_name=latest.bank_account_name,
+        bank_account_number_encrypted=latest.bank_account_number_encrypted, bank_account_last4=latest.bank_account_last4,
+        recipient_tax_id_encrypted=latest.recipient_tax_id_encrypted, recipient_tax_id_last4=latest.recipient_tax_id_last4,
+        recipient_address=latest.recipient_address, service_description=latest.service_description,
+        discount_amount=Decimal("0"), subtotal_amount=Decimal("0"), price_before_vat=Decimal("0"),
+        gross_amount=Decimal("0"), net_amount=Decimal("0"), paid_amount=Decimal("0"), remaining_amount=Decimal("0"),
+        price_mode=latest.price_mode, vat_mode=latest.vat_mode, vat_rate=latest.vat_rate, vat_amount=Decimal("0"),
+        withholding_required=latest.withholding_required, withholding_mode=latest.withholding_mode,
+        withholding_rate=latest.withholding_rate, withholding_amount=Decimal("0"),
+        requester_withholding_status=latest.requester_withholding_status,
+        gross_up_enabled=latest.gross_up_enabled,
+        installment_enabled=True, installment_chain_root_id=root_id, installment_no=new_installment_no,
+        installment_target_amount=root.installment_target_amount,
+        installment_payment_amount=payload.installment_payment_amount,
+        installment_chain_status=root.installment_chain_status,
+        taxpayer_name=latest.taxpayer_name, taxpayer_type=latest.taxpayer_type,
+        taxpayer_branch=latest.taxpayer_branch, taxpayer_id=latest.taxpayer_id,
+        taxpayer_address=latest.taxpayer_address,
+        request_no=f"{base_no}-{new_installment_no}",
+    )
+    db.add(new_req)
+    await db.flush()
+
+    source_items = await _request_items(db, latest.id)
+    for item in source_items:
+        db.add(ExpenseRequestItem(
+            expense_request_id=new_req.id, revision=1, sort_order=item.sort_order,
+            description=item.description, quantity=item.quantity, unit=item.unit,
+            unit_price=item.unit_price, line_total=item.line_total,
+        ))
+    await db.flush()
+
+    new_items = await _request_items(db, new_req.id)
+    totals = expense_request_service.calculate_totals(new_req, new_items)
+    new_req.amount = totals["grand_total"]
+    new_req.subtotal_amount = totals["subtotal"]
+    new_req.price_before_vat = totals["price_before_vat"]
+    new_req.gross_amount = totals["grand_total"]
+    new_req.net_amount = totals["payable_total"]
+    new_req.remaining_amount = totals["payable_total"]
+    new_req.vat_amount = totals["vat_amount"]
+    new_req.withholding_amount = totals["withholding_amount"]
+
+    db.add(ExpenseRequestHistory(company_id=company.id, expense_request_id=new_req.id,
+        revision=1, event="installment_created", from_status=None, to_status="draft",
+        actor_user_id=current_user.id, snapshot={"installment_no": new_installment_no, "source_request_id": latest.id}))
+    db.add(ExpenseRequestHistory(company_id=company.id, expense_request_id=latest.id,
+        revision=latest.current_revision, event="installment_child_created", from_status=latest.status, to_status=latest.status,
+        actor_user_id=current_user.id, snapshot={"new_request_no": new_req.request_no}))
+    await db.commit()
+    await db.refresh(new_req)
+    return await _request_to_out(db, new_req, include_sensitive=True)
+
+
 @router.post("/expense-requests/{request_id}/attachments", status_code=201)
 async def upload_expense_request_attachment(
     request_id: str,
     file: UploadFile = File(...),
+    requirement_id: Optional[int] = Form(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
@@ -818,28 +1260,45 @@ async def upload_expense_request_attachment(
     allowed = {".pdf", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".xls", ".xlsx"}
     if not filename or extension not in allowed:
         raise HTTPException(400, "รองรับเฉพาะ PDF, JPG, JPEG, PNG, DOC, DOCX, XLS และ XLSX")
+    requirement = None
+    if requirement_id is not None:
+        requirement = (await db.execute(select(ExpenseAttachmentRequirement).where(
+            ExpenseAttachmentRequirement.id == requirement_id,
+            ExpenseAttachmentRequirement.expense_type_id == req.expense_type_id,
+            ExpenseAttachmentRequirement.company_id == company.id,
+            ExpenseAttachmentRequirement.is_active.is_(True),
+        ))).scalar_one_or_none()
+        if not requirement:
+            raise HTTPException(400, "ข้อกำหนดเอกสารไม่ถูกต้องหรือไม่ตรงกับประเภทการเบิก")
+        if file.content_type and requirement.allowed_mime_types and file.content_type not in requirement.allowed_mime_types:
+            raise HTTPException(400, f"ชนิดไฟล์ไม่ตรงกับข้อกำหนด {requirement.name}")
     existing = await _request_attachments(db, request_id)
     if len([item for item in existing if item.attachment_type == "supporting"]) >= 10:
         raise HTTPException(400, "แนบเอกสารประกอบได้สูงสุด 10 ไฟล์")
     content = await file.read(10 * 1024 * 1024 + 1)
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(400, "ไฟล์ต้องมีขนาดไม่เกิน 10 MB")
+    size_limit = requirement.max_file_size if requirement else 10 * 1024 * 1024
+    if len(content) > size_limit:
+        raise HTTPException(400, f"ไฟล์ต้องมีขนาดไม่เกิน {max(1, size_limit // 1024 // 1024)} MB")
 
     stored_name = f"{uuid.uuid4().hex}{extension}"
     path = Path(settings.EXPENSE_REQUEST_UPLOAD_DIR) / request_id / stored_name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
     attachment = ExpenseRequestAttachment(
-        expense_request_id=request_id, attachment_type="supporting",
+        expense_request_id=request_id, company_id=company.id, requirement_id=requirement_id,
+        revision=req.current_revision,
+        attachment_type="supporting", category="supporting",
         file_name=filename, stored_name=stored_name, file_path=str(path),
         content_type=file.content_type or mimetypes.guess_type(filename)[0],
-        file_size=len(content), uploaded_by=current_user.id,
+        file_size=len(content), sha256=hashlib.sha256(content).hexdigest(),
+        requires_signature=bool(requirement and requirement.requires_signature), uploaded_by=current_user.id,
     )
     db.add(attachment)
     await db.commit()
     await db.refresh(attachment)
     return {
-        "id": attachment.id, "attachment_type": attachment.attachment_type,
+        "id": attachment.id, "requirement_id": attachment.requirement_id,
+        "attachment_type": attachment.attachment_type,
         "file_name": attachment.file_name, "content_type": attachment.content_type,
         "file_size": attachment.file_size, "created_at": attachment.created_at,
     }
@@ -870,20 +1329,35 @@ async def generate_expense_request_primary_document(
 
     position = await db.get(Position, req.requester_position_id)
     expense_type = await db.get(ExpenseType, req.expense_type_id)
+    department_id = req.department_id or (position.department_id if position else None)
+    department = await db.get(Department, department_id) if department_id else None
+    route = await approval_service.preview_route(
+        db, company.id, req.requester_position_id, req.expense_type_id, approval_service.routing_amount(req)
+    )
+    signature_cells = [{
+        "role": f"ผู้อนุมัติลำดับ {step['step_no']} - {step['approver_position_name']}",
+        "name": step["resolved_approver_name"] or "รอระบุผู้อนุมัติ",
+        "is_requester": False,
+    } for step in route.get("steps", [])]
     filename = "เอกสารหลักสำหรับอนุมัติ (PDF).pdf"
     stored_name = f"primary-{uuid.uuid4().hex}.pdf"
     path = Path(settings.EXPENSE_REQUEST_UPLOAD_DIR) / request_id / stored_name
     expense_request_service.render_payment_approval_pdf(
         req, items, company, current_user,
         position.name if position else "-", expense_type.name if expense_type else "-", path,
+        department.name if department else "-", signature_cells,
     )
     attachment = ExpenseRequestAttachment(
-        expense_request_id=request_id, attachment_type="primary",
+        expense_request_id=request_id, company_id=company.id, revision=req.current_revision,
+        attachment_type="primary", category="system_document", requires_signature=True,
         file_name=filename, stored_name=stored_name, file_path=str(path),
         content_type="application/pdf", file_size=path.stat().st_size,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         uploaded_by=current_user.id,
     )
     db.add(attachment)
+    req.request_pdf_path = str(path)
+    req.request_pdf_sha256 = attachment.sha256
     await db.commit()
     await db.refresh(attachment)
     return {
@@ -897,6 +1371,7 @@ async def generate_expense_request_primary_document(
 async def view_expense_request_attachment(
     request_id: str,
     attachment_id: str,
+    signed: bool = Query(False),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
@@ -906,18 +1381,27 @@ async def view_expense_request_attachment(
         ApprovalRequestStep.expense_request_id == request_id,
         ApprovalRequestStep.resolved_approver_user_id == current_user.id,
     ))).scalars().all()
-    if not (req.requester_user_id == current_user.id or steps or current_user.is_platform_admin):
+    if not (req.requester_user_id == current_user.id or steps or await _is_company_accounting(db, current_user, company.id)):
         raise HTTPException(403, "คุณไม่มีสิทธิ์ดูเอกสารนี้")
     attachment = (await db.execute(select(ExpenseRequestAttachment).where(
         ExpenseRequestAttachment.id == attachment_id,
         ExpenseRequestAttachment.expense_request_id == request_id,
     ))).scalar_one_or_none()
-    if not attachment or not Path(attachment.file_path).is_file():
+    selected_path = None
+    if attachment:
+        selected_path = attachment.signed_file_path if signed and attachment.signed_file_path else attachment.file_path
+    if not attachment or not selected_path or not Path(selected_path).is_file():
         raise HTTPException(404, "ไม่พบไฟล์แนบนี้")
     return FileResponse(
-        attachment.file_path,
+        selected_path,
         media_type=attachment.content_type or "application/octet-stream",
-        headers={"Content-Disposition": f"inline; filename*=UTF-8''{quote(attachment.file_name)}"},
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{quote(attachment.file_name)}",
+            # Draft primary PDFs are regenerated in-place while preserving the
+            # attachment ID. Never let a browser reuse the older rendered form.
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+        },
     )
 
 
@@ -965,12 +1449,32 @@ async def submit_expense_request(
         missing.append("ข้อมูลคำขอและบัญชีผู้รับเงิน")
     if not items or req.amount <= 0:
         missing.append("รายการค่าใช้จ่าย")
-    if req.withholding_required and not all([req.taxpayer_name, req.taxpayer_id, req.taxpayer_address]):
+    if req.withholding_required and not all([
+        req.taxpayer_name, req.taxpayer_type,
+        (req.recipient_tax_id_encrypted or req.taxpayer_id),
+        req.taxpayer_address, req.service_description,
+    ]):
         missing.append("ข้อมูลภาษีสำหรับฝ่ายบัญชี")
     if not any(item.attachment_type == "primary" for item in attachments):
         missing.append("เอกสารหลักสำหรับอนุมัติ")
     if not any(item.attachment_type == "supporting" for item in attachments):
         missing.append("เอกสารประกอบเพิ่มเติม")
+    required_docs = (await db.execute(select(ExpenseAttachmentRequirement).where(
+        ExpenseAttachmentRequirement.expense_type_id == req.expense_type_id,
+        ExpenseAttachmentRequirement.is_required.is_(True), ExpenseAttachmentRequirement.is_active.is_(True),
+    ))).scalars().all()
+    uploaded_requirement_ids = {a.requirement_id for a in attachments if a.attachment_type == "supporting" and a.is_active}
+    missing_requirement_names = [doc.name for doc in required_docs if doc.id not in uploaded_requirement_ids]
+    legacy_unassigned_count = len([
+        a for a in attachments
+        if a.attachment_type == "supporting" and a.is_active and a.requirement_id is None
+    ])
+    if legacy_unassigned_count:
+        # Attachments created before requirement_id was exposed by the API remain
+        # valid and satisfy required document slots in configured order.
+        missing_requirement_names = missing_requirement_names[legacy_unassigned_count:]
+    if missing_requirement_names:
+        missing.append("เอกสารบังคับ: " + ", ".join(missing_requirement_names))
     if missing:
         raise HTTPException(400, f"ข้อมูลยังไม่ครบ: {', '.join(missing)}")
     try:
@@ -990,9 +1494,14 @@ async def cancel_expense_request(
     req = await _get_company_row(db, ExpenseRequest, request_id, company.id, "ไม่พบคำขอเบิกเงินนี้")
     if req.requester_user_id != current_user.id:
         raise HTTPException(403, "คุณไม่ใช่เจ้าของคำขอนี้")
-    if req.status != "draft":
-        raise HTTPException(400, "ยกเลิกได้เฉพาะคำขอที่ยังไม่ส่ง (draft) เท่านั้น")
+    if req.status not in {"draft", "returned_for_correction"}:
+        raise HTTPException(400, "ผู้ขอยกเลิกได้เฉพาะแบบร่างหรือรายการที่ถูกส่งกลับ")
     req.status = "cancelled"
+    req.cancelled_at = datetime.now(timezone.utc)
+    req.cancelled_by = current_user.id
+    db.add(ExpenseRequestHistory(company_id=company.id, expense_request_id=req.id,
+        revision=req.current_revision, event="cancelled", from_status="draft", to_status="cancelled",
+        actor_user_id=current_user.id, snapshot={}))
     await db.commit()
 
 
@@ -1008,13 +1517,23 @@ async def permanently_delete_expense_request(
         raise HTTPException(403, "คุณไม่ใช่เจ้าของคำขอนี้")
     if req.status not in {"draft", "cancelled"}:
         raise HTTPException(400, "ลบทิ้งถาวรได้เฉพาะคำขอแบบร่างหรือคำขอที่ยกเลิกแล้ว")
+    payment_exists = (await db.execute(select(ExpensePayment.id).where(
+        ExpensePayment.expense_request_id == request_id
+    ).limit(1))).scalar_one_or_none()
+    if payment_exists:
+        raise HTTPException(400, "ลบคำขอที่มีประวัติการจ่ายเงินไม่ได้")
 
-    attachments = await _request_attachments(db, request_id)
+    attachments = (await db.execute(select(ExpenseRequestAttachment).where(
+        ExpenseRequestAttachment.expense_request_id == request_id
+    ))).scalars().all()
     for attachment in attachments:
-        try:
-            Path(attachment.file_path).unlink(missing_ok=True)
-        except OSError:
-            pass
+        for stored_path in {attachment.file_path, attachment.signed_file_path}:
+            if not stored_path:
+                continue
+            try:
+                Path(stored_path).unlink(missing_ok=True)
+            except OSError:
+                pass
     await db.delete(req)
     await db.commit()
 
@@ -1025,19 +1544,24 @@ async def permanently_delete_expense_request(
 
 @router.get("/approvals/inbox", response_model=list[InboxItemOut])
 async def get_inbox(
+    scope: str = Query("mine", pattern="^(mine|all)$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
+    conditions = [
+        ApprovalRequestStep.status == "pending",
+        ExpenseRequest.company_id == company.id,
+    ]
+    # scope=all is only honored for super_admin/platform_admin — everyone else's
+    # "รอฉันอนุมัติ" stays scoped to steps actually resolved to them.
+    if scope == "mine" or not await _can_view_all_company_requests(db, current_user, company.id):
+        conditions.append(ApprovalRequestStep.resolved_approver_user_id == current_user.id)
     rows = (
         await db.execute(
             select(ApprovalRequestStep, ExpenseRequest)
             .join(ExpenseRequest, ExpenseRequest.id == ApprovalRequestStep.expense_request_id)
-            .where(
-                ApprovalRequestStep.resolved_approver_user_id == current_user.id,
-                ApprovalRequestStep.status == "pending",
-                ExpenseRequest.company_id == company.id,
-            )
+            .where(*conditions)
             .order_by(ExpenseRequest.submitted_at)
         )
     ).all()
@@ -1047,9 +1571,11 @@ async def get_inbox(
     return [
         InboxItemOut(
             step_id=step.id, step_no=step.step_no, expense_request_id=req.id,
+            request_no=req.request_no,
             title=req.title, amount=req.amount, requester_user_id=req.requester_user_id,
             requester_name=users.get(req.requester_user_id),
             requester_position_name=positions.get(req.requester_position_id),
+            department_name=req.department_name_snapshot,
             expense_type_name=expense_types.get(req.expense_type_id),
             request_date=req.request_date, submitted_at=req.submitted_at,
         )
@@ -1061,13 +1587,67 @@ async def get_inbox(
 async def decide_approval_step(
     step_id: int,
     payload: DecisionIn,
+    http_request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
+    if payload.action in {"return", "reject"} and not (payload.comment or "").strip():
+        raise HTTPException(400, "กรุณาระบุเหตุผลที่ส่งคืนหรือไม่อนุมัติ")
+    signature_data_url = payload.signature_data_url
+    if payload.action == "approve" and payload.use_saved_signature:
+        try:
+            signature_data_url = expense_signature_service.saved_signature_data_url(current_user.signature_path)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+    if payload.action == "approve":
+        step_row = await db.get(ApprovalRequestStep, step_id)
+        if not step_row:
+            raise HTTPException(404, "ไม่พบขั้นตอนอนุมัตินี้")
+        req_row = await _get_company_row(db, ExpenseRequest, step_row.expense_request_id, company.id, "ไม่พบคำขอเบิกเงินนี้")
+        required_signature_ids = list((await db.execute(select(ExpenseRequestAttachment.id).where(
+            ExpenseRequestAttachment.expense_request_id == req_row.id,
+            ExpenseRequestAttachment.revision == req_row.current_revision,
+            ExpenseRequestAttachment.is_active.is_(True),
+            (ExpenseRequestAttachment.attachment_type == "primary") | ExpenseRequestAttachment.requires_signature.is_(True),
+        ))).scalars().all())
+        if required_signature_ids and not signature_data_url:
+            raise HTTPException(400, "กรุณาวาดหรือเลือกใช้ลายเซ็นก่อนอนุมัติ")
+        placement_ids = {str(item.get("attachment_id")) for item in payload.placements if item.get("attachment_id")}
+        if any(str(attachment_id) not in placement_ids for attachment_id in required_signature_ids):
+            raise HTTPException(400, "กรุณาเปิด PDF และกำหนดตำแหน่งลายเซ็นให้ครบทุกเอกสาร")
+        for placement in payload.placements:
+            try:
+                page_number = int(placement.get("page_number", 0))
+                x, y = float(placement.get("x", -1)), float(placement.get("y", -1))
+                width, height = float(placement.get("width", 0)), float(placement.get("height", 0))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, "ตำแหน่งลายเซ็นไม่ถูกต้อง") from exc
+            if (page_number < 1 or x < 0 or y < 0 or width < .04 or height < .02
+                    or x + width > 1 or y + height > 1):
+                raise HTTPException(400, "ตำแหน่งหรือขนาดลายเซ็นอยู่นอกขอบเอกสาร")
+        is_candidate = (await db.execute(select(ExpenseApprovalCandidate.id).where(
+            ExpenseApprovalCandidate.request_step_id == step_id,
+            ExpenseApprovalCandidate.user_id == current_user.id,
+            ExpenseApprovalCandidate.status == "pending",
+        ).limit(1))).scalar_one_or_none()
+        if step_row.resolved_approver_user_id != current_user.id and not is_candidate:
+            raise HTTPException(403, "คุณไม่ใช่ผู้อนุมัติของขั้นตอนนี้")
+        try:
+            await expense_signature_service.stamp_required_documents(
+                db, req_row, step_row, current_user.id, signature_data_url, payload.placements
+            )
+            if payload.save_signature and payload.signature_data_url:
+                current_user.signature_path = expense_signature_service.save_user_signature(current_user.id, payload.signature_data_url)
+            await db.flush()
+        except ValueError as exc:
+            await db.rollback()
+            raise HTTPException(400, str(exc))
     try:
         step = await approval_service.decide_step(
-            db, step_id, current_user.id, payload.action, payload.comment, payload.idempotency_key
+            db, step_id, current_user.id, payload.action, payload.comment, payload.idempotency_key,
+            http_request.client.host if http_request.client else None,
+            http_request.headers.get("user-agent"),
         )
     except PermissionError as exc:
         raise HTTPException(403, str(exc))

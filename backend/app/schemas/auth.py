@@ -21,6 +21,7 @@ class UserCreate(BaseModel):
     full_name: str | None = None
     role: str = "accountant"
     company_id: int | None = None
+    department_id: int | None = None
     position_ids: list[int] = []
 
 

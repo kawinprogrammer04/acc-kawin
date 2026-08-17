@@ -18,16 +18,17 @@ export function UserPositionChecklist({
   loading?: boolean;
   immediate?: boolean;
 }) {
+  const activePositions = positions.filter((position) => position.is_active);
   return (
     <div>
       <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
         {loading && (
           <div className="flex justify-center py-2"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
         )}
-        {!loading && positions.length === 0 && (
-          <p className="py-1 text-center text-xs text-muted-foreground">บริษัทนี้ยังไม่มีตำแหน่ง (ตั้งค่าที่หน้า "สายอนุมัติ")</p>
+        {!loading && activePositions.length === 0 && (
+          <p className="py-1 text-center text-xs text-muted-foreground">บริษัทนี้ยังไม่มีตำแหน่ง กรุณาเพิ่มจาก “จัดการแผนกและตำแหน่ง”</p>
         )}
-        {!loading && positions.map(p => (
+        {!loading && activePositions.map(p => (
           <label key={p.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50">
             <input
               type="checkbox"

@@ -8,7 +8,9 @@ export interface Company {
   name_en?: string;
   tax_id?: string;
   is_active: boolean;
-  role: "admin" | "approver" | "accountant" | "viewer";
+  role: "admin" | "approver" | "accountant" | "viewer" | "super_admin" | (string & {});
+  department_id?: number;
+  department_name?: string;
 }
 
 interface CompanyContextValue {

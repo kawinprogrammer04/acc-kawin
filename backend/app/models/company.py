@@ -33,6 +33,9 @@ class UserCompany(Base):
 
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True)
+    department_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("departments.id", ondelete="SET NULL")
+    )
     granted_at: Mapped[datetime] = mapped_column(server_default=func.now())
     granted_by: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"))
     role: Mapped[str] = mapped_column(String(30), nullable=False, default="viewer")

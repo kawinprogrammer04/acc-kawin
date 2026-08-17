@@ -106,6 +106,7 @@ export const authApi = {
   login: (username: string, password: string) =>
     api.post("/auth/login", { username, password }).then((r) => r.data),
   me: () => api.get("/auth/me").then((r) => r.data),
+  mySignature: () => api.get("/auth/me/signature").then((r) => r.data as { signature_data_url: string }),
 };
 
 // ── Accounts ─────────────────────────────────────────────────────────────────

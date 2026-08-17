@@ -18,7 +18,14 @@ import { useEffect, useState } from "react";
 import type { AppMenu } from "@/types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-type NavLeaf = { key: string; label: string; href: string; icon?: React.ComponentType<any> };
+type NavLeaf = {
+  key: string; label: string; href: string; icon?: React.ComponentType<any>;
+  // Sub-routes nested under `href` that are actually a different section
+  // (e.g. /expense-requests/accounting is "บัญชีตรวจจ่าย", not "เบิกเงิน / ขออนุมัติ")
+  // and have no nav entry of their own — NavLink's default prefix matching would
+  // otherwise light this tab up while viewing them.
+  excludePrefixes?: string[];
+};
 type NavGroup = { label: string; icon: React.ComponentType<any>; children: NavLeaf[] };
 type NavItem = NavLeaf | NavGroup;
 
@@ -41,7 +48,10 @@ const cashflowNav: NavItem[] = [
   { key: "documents", label: "เอกสาร", href: "/documents", icon: FolderOpen },
   { key: "tax_invoices", label: "ใบกำกับภาษี", href: "/tax-invoices", icon: Receipt },
   { key: "budgets", label: "งบประมาณ", href: "/budgets", icon: PiggyBank },
-  { key: "expense_requests", label: "เบิกเงิน / ขออนุมัติ", href: "/expense-requests", icon: Send },
+  {
+    key: "expense_requests", label: "เบิกเงิน / ขออนุมัติ", href: "/expense-requests", icon: Send,
+    excludePrefixes: ["/expense-requests/accounting", "/expense-requests/settings"],
+  },
   { key: "approvals_inbox", label: "รออนุมัติของฉัน", href: "/approvals/inbox", icon: Inbox },
   { key: "activity_logs", label: "Activity Log", href: "/activity-logs", icon: ClipboardList },
 ];
@@ -118,11 +128,15 @@ const baseCls = "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition
 // ── Components ────────────────────────────────────────────────────────────────
 function LeafLink({ item, compact = false }: { item: NavLeaf; compact?: boolean }) {
   const Icon = item.icon;
+  const location = useLocation();
+  const excluded = item.excludePrefixes?.some(
+    (prefix) => location.pathname === prefix || location.pathname.startsWith(prefix + "/"),
+  );
   return (
     <NavLink
       to={item.href}
-      end={item.href === "/"}
-      className={({ isActive }) => cn(baseCls, isActive ? activeCls : inactiveCls)}
+      end={item.href === "/" || excluded}
+      className={({ isActive }) => cn(baseCls, isActive && !excluded ? activeCls : inactiveCls)}
     >
       {Icon && <Icon className="h-4 w-4 shrink-0" />}
       {!Icon && compact && <ChevronRight className="h-3 w-3 shrink-0" />}
@@ -224,7 +238,6 @@ const adminNav: NavLeaf[] = [
   { key: "companies", label: "บริษัท", href: "/companies", icon: Building2 },
   { key: "users", label: "ผู้ใช้งาน", href: "/users", icon: Users },
   { key: "settings", label: "ตั้งค่าบริษัท", href: "/settings", icon: Settings },
-  { key: "approval_matrix", label: "สายอนุมัติ", href: "/approval-matrix", icon: Workflow },
   { key: "roles", label: "จัดการบทบาท", href: "/roles", icon: KeyRound },
   { key: "permissions", label: "Permission", href: "/permissions", icon: ShieldCheck },
   { key: "menus", label: "จัดการเมนู", href: "/menus", icon: ListTree },

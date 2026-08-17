@@ -9,15 +9,19 @@ from app.models.user import User
 
 
 class _Result:
-    def __init__(self, *, scalar=None, row=None):
+    def __init__(self, *, scalar=None, row=None, rows=None):
         self._scalar = scalar
         self._row = row
+        self._rows = rows or []
 
     def scalar_one_or_none(self):
         return self._scalar
 
     def first(self):
         return self._row
+
+    def all(self):
+        return self._rows
 
 
 def _user(*, platform: bool = False) -> User:
@@ -66,7 +70,10 @@ class TenantDependencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_company_viewer_cannot_use_accountant_action(self):
         db = AsyncMock()
-        db.execute.side_effect = [_Result(row=(_company(), "viewer")), _Result()]
+        db.execute.side_effect = [
+            _Result(row=(_company(), "viewer")), _Result(),
+            _Result(rows=[("admin", 40), ("approver", 30), ("accountant", 20), ("viewer", 10)]),
+        ]
         dependency = require_min_role("accountant")
 
         with self.assertRaises(HTTPException) as raised:
@@ -76,7 +83,10 @@ class TenantDependencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_company_accountant_can_use_accountant_action(self):
         db = AsyncMock()
-        db.execute.side_effect = [_Result(row=(_company(), "accountant")), _Result()]
+        db.execute.side_effect = [
+            _Result(row=(_company(), "accountant")), _Result(),
+            _Result(rows=[("admin", 40), ("approver", 30), ("accountant", 20), ("viewer", 10)]),
+        ]
         dependency = require_min_role("accountant")
 
         current_user = _user()
