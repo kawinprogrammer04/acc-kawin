@@ -6,7 +6,35 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  check-migrations:
+    # Guards against the acc-kawin migration incidents of 2026-08-13 and
+    # 2026-08-17: two Alembic revisions merged in from parallel branches both
+    # pointing at the same down_revision, giving the migration graph two
+    # heads. `alembic upgrade head` then picked one arbitrarily/errored
+    # inside the backend entrypoint, so the container never went healthy and
+    # the deploy job failed after already recreating containers. Catch it
+    # here, before the deploy step ever touches the server.
+    if: github.ref == 'refs/heads/Production'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Reject multiple Alembic heads
+        working-directory: backend
+        run: |
+          pip install --no-cache-dir alembic==1.13.2
+          heads="$(alembic heads)"
+          echo "$heads"
+          head_count="$(grep -c '(head)' <<< "$heads")"
+          if [ "$head_count" -ne 1 ]; then
+            echo "::error::Expected exactly 1 Alembic head, found $head_count. Rebase/merge the migration branches (fix down_revision chain) before pushing to Production."
+            exit 1
+          fi
+
   deploy:
+    needs: check-migrations
     # This job intentionally lives in the same workflow file that receives the
     # push event, instead of a separate deploy.yml triggered by `workflow_run`.
     # `workflow_run` always reads the *default branch's* copy of the triggered
