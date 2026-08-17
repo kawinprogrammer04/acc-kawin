@@ -262,6 +262,12 @@ function menuToLeaf(menu: AppMenu): NavLeaf | null {
     label: menu.label,
     href: menu.path,
     icon: resolveIcon(menu.icon),
+    // These pages share the `/expense-requests` prefix but are separate
+    // finance sections. Without this exclusion, NavLink marks both the
+    // parent request menu and the accounting/settings menu as active.
+    excludePrefixes: menu.key === "expense_requests"
+      ? ["/expense-requests/accounting", "/expense-requests/settings"]
+      : undefined,
   };
 }
 
