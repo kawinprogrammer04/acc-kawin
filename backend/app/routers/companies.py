@@ -22,6 +22,7 @@ from app.core.dependencies import get_current_user, require_platform_admin
 from app.core.roles import get_role_level, get_role_levels, role_is_active
 from app.core.security import hash_password
 from app.models.company import Company, UserCompany
+from app.models.expense_finance import Department
 from app.models.user import User
 
 router = APIRouter(prefix="/companies", tags=["Companies"])
@@ -80,6 +81,7 @@ class CompanyUpdate(BaseModel):
 class GrantUserIn(BaseModel):
     user_id: int
     role: str = "viewer"
+    department_id: Optional[int] = None
 
 
 class InviteCompanyUserIn(BaseModel):
@@ -88,6 +90,7 @@ class InviteCompanyUserIn(BaseModel):
     password: str
     full_name: Optional[str] = None
     role: str = "viewer"
+    department_id: Optional[int] = None
 
 
 class UserCompanyOut(BaseModel):
@@ -95,6 +98,8 @@ class UserCompanyOut(BaseModel):
     username: str
     full_name: Optional[str]
     role: str
+    department_id: Optional[int] = None
+    department_name: Optional[str] = None
 
 
 class UserSearchOut(BaseModel):
@@ -307,14 +312,21 @@ async def list_company_users(
 ):
     await _require_company_admin(company_id, current_user, db)
     result = await db.execute(
-        select(User, UserCompany)
+        select(User, UserCompany, Department.name)
         .join(UserCompany, User.id == UserCompany.user_id)
+        .outerjoin(Department, Department.id == UserCompany.department_id)
         .where(UserCompany.company_id == company_id)
         .order_by(User.id)
     )
     rows = result.all()
-    return [{"user_id": u.id, "username": u.username, "full_name": u.full_name, "role": uc.role}
-            for u, uc in rows if uc.is_active]
+    return [{
+        "user_id": user.id,
+        "username": user.username,
+        "full_name": user.full_name,
+        "role": membership.role,
+        "department_id": membership.department_id,
+        "department_name": department_name,
+    } for user, membership, department_name in rows if membership.is_active]
 
 
 @router.get("/{company_id}/users/search", response_model=list[UserSearchOut])
@@ -354,6 +366,14 @@ async def grant_company_access(
     company = await _require_company_admin(company_id, current_user, db)
     if not await role_is_active(db, payload.role):
         raise HTTPException(400, "ไม่พบบทบาทนี้ หรือบทบาทนี้ถูกปิดใช้งานแล้ว")
+    if payload.department_id is not None:
+        department = (await db.execute(select(Department).where(
+            Department.id == payload.department_id,
+            Department.company_id == company_id,
+            Department.is_active.is_(True),
+        ))).scalar_one_or_none()
+        if not department:
+            raise HTTPException(400, "แผนกไม่ถูกต้องหรือไม่ได้อยู่ในบริษัทที่เลือก")
     levels = await get_role_levels(db)
     if payload.user_id == current_user.id and levels.get(payload.role, 0) < levels.get("admin", 0):
         raise HTTPException(400, "ไม่สามารถลดสิทธิ์ผู้ดูแลของบัญชีตัวเองได้")
@@ -370,11 +390,13 @@ async def grant_company_access(
     membership = existing.scalar_one_or_none()
     if membership:
         membership.role = payload.role
+        membership.department_id = payload.department_id
         membership.is_active = True
     else:
         db.add(UserCompany(
             user_id=payload.user_id,
             company_id=company.id,
+            department_id=payload.department_id,
             granted_by=current_user.id,
             role=payload.role,
         ))
@@ -392,6 +414,14 @@ async def invite_company_user(
     await _require_company_admin(company_id, current_user, db)
     if not await role_is_active(db, payload.role):
         raise HTTPException(400, "ไม่พบบทบาทนี้ หรือบทบาทนี้ถูกปิดใช้งานแล้ว")
+    if payload.department_id is not None:
+        department = (await db.execute(select(Department).where(
+            Department.id == payload.department_id,
+            Department.company_id == company_id,
+            Department.is_active.is_(True),
+        ))).scalar_one_or_none()
+        if not department:
+            raise HTTPException(400, "แผนกไม่ถูกต้องหรือไม่ได้อยู่ในบริษัทที่เลือก")
     existing = (await db.execute(
         select(User).where(
             (User.username == payload.username) | (User.email == payload.email)
@@ -415,6 +445,7 @@ async def invite_company_user(
     db.add(UserCompany(
         user_id=user.id,
         company_id=company_id,
+        department_id=payload.department_id,
         granted_by=current_user.id,
         role=payload.role,
     ))
@@ -424,6 +455,8 @@ async def invite_company_user(
         "username": user.username,
         "full_name": user.full_name,
         "role": payload.role,
+        "department_id": payload.department_id,
+        "department_name": department.name if payload.department_id is not None else None,
     }
 
 

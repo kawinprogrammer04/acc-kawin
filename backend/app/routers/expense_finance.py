@@ -1,0 +1,622 @@
+"""Accounting, settlement, finance settings, histories and notifications."""
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, RedirectResponse, Response
+from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.dependencies import get_current_company, get_current_user, require_permission
+from app.models.approval import ApprovalRequestStep, ExpenseRequest, ExpenseType, Position
+from app.models.company import Company, UserCompany
+from app.models.expense_finance import (
+    Department, ExpenseAttachmentRequirement, ExpensePayment, ExpenseRequestHistory,
+    ExpenseSettlement, ExpenseWithholdingTaxCertificate, SystemNotification,
+)
+from app.models.user import User
+from app.schemas.expense_finance import (
+    AccountingCancelIn, AccountingReturnIn, AccountingStatsOut,
+    AttachmentRequirementIn, AttachmentRequirementOut, DepartmentIn, DepartmentOut,
+    HistoryOut, NotificationOut, PaymentIn, PaymentOut,
+    PaymentProofReplaceIn, PaymentVoidIn, SettlementIn, SettlementOut, SettlementReviewIn,
+)
+from app.services import expense_finance_service, expense_request_service
+
+router = APIRouter(tags=["Expense Finance"])
+
+accounting_view = require_permission("expense_accounting.view", legacy_min_role="accountant")
+accounting_pay = require_permission("expense_accounting.create", legacy_min_role="accountant")
+accounting_update = require_permission("expense_accounting.update", legacy_min_role="accountant")
+accounting_cancel_permission = require_permission("expense_accounting.delete", legacy_min_role="accountant")
+accounting_approve = require_permission("expense_accounting.approve", legacy_min_role="accountant")
+accounting_export = require_permission("expense_accounting.export", legacy_min_role="accountant")
+settings_view = require_permission("expense_settings.view", legacy_min_role="admin")
+settings_create = require_permission("expense_settings.create", legacy_min_role="admin")
+settings_update = require_permission("expense_settings.update", legacy_min_role="admin")
+settings_delete = require_permission("expense_settings.delete", legacy_min_role="admin")
+
+
+async def _request(db: AsyncSession, request_id: str, company_id: int, lock: bool = False) -> ExpenseRequest:
+    query = select(ExpenseRequest).where(ExpenseRequest.id == request_id, ExpenseRequest.company_id == company_id)
+    if lock:
+        query = query.with_for_update()
+    row = (await db.execute(query)).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "ไม่พบคำขอเบิกเงินนี้")
+    return row
+
+
+async def _can_view(db: AsyncSession, req: ExpenseRequest, user: User, *, accounting: bool = False) -> None:
+    if user.is_platform_admin or accounting or req.requester_user_id == user.id:
+        return
+    membership = (await db.execute(select(UserCompany.role).where(
+        UserCompany.user_id == user.id, UserCompany.company_id == req.company_id,
+        UserCompany.is_active.is_(True),
+    ))).scalar_one_or_none()
+    if membership in {"accountant", "admin", "super_admin"}:
+        return
+    participant = (await db.execute(select(ApprovalRequestStep.id).where(
+        ApprovalRequestStep.expense_request_id == req.id,
+        ApprovalRequestStep.resolved_approver_user_id == user.id,
+    ).limit(1))).scalar_one_or_none()
+    if not participant:
+        raise HTTPException(403, "คุณไม่มีสิทธิ์ดูคำขอนี้")
+
+
+ACCOUNTING_STATUSES = [
+    "accounting_review", "ready_to_pay", "partially_paid", "paid", "settlement_due",
+    "settlement_review", "completed",
+]
+
+
+def _accounting_query(
+    company: Company, *, status: Optional[str] = None,
+    department_id: Optional[int] = None, type_id: Optional[int] = None,
+    date_from: Optional[date] = None, date_to: Optional[date] = None,
+    withholding_only: bool = False, query: Optional[str] = None,
+):
+    stmt = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
+    if status:
+        stmt = stmt.where(ExpenseRequest.status == status)
+    else:
+        stmt = stmt.where(ExpenseRequest.status.in_(ACCOUNTING_STATUSES))
+    # รายการที่อยู่หน้าบัญชีต้องอนุมัติครบทุก step ใน revision ปัจจุบันแล้ว
+    incomplete_step = exists(select(1).where(
+        ApprovalRequestStep.expense_request_id == ExpenseRequest.id,
+        ApprovalRequestStep.revision == ExpenseRequest.current_revision,
+        ApprovalRequestStep.status != "approved",
+    ))
+    stmt = stmt.where(or_(
+        ~ExpenseRequest.status.in_(["accounting_review", "ready_to_pay"]),
+        ~incomplete_step,
+    ))
+    if department_id is not None:
+        stmt = stmt.where(ExpenseRequest.department_id == department_id)
+    if type_id is not None:
+        stmt = stmt.where(ExpenseRequest.expense_type_id == type_id)
+    if date_from is not None:
+        stmt = stmt.where(func.date(ExpenseRequest.submitted_at) >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(func.date(ExpenseRequest.submitted_at) <= date_to)
+    if withholding_only:
+        stmt = stmt.where(or_(
+            ExpenseRequest.withholding_required.is_(True),
+            ExpenseRequest.requester_withholding_status == "already_withheld",
+            ExpenseRequest.withholding_decision == "already_withheld",
+        ))
+    if query:
+        term = f"%{query.strip()}%"
+        stmt = stmt.where(ExpenseRequest.request_no.ilike(term) | ExpenseRequest.title.ilike(term) |
+                          ExpenseRequest.recipient_name.ilike(term))
+    return stmt
+
+
+@router.get("/expense-requests/accounting/list")
+async def accounting_list(
+    status: Optional[str] = None, query: Optional[str] = None,
+    department_id: Optional[int] = None, type_id: Optional[int] = None,
+    date_from: Optional[date] = None, date_to: Optional[date] = None,
+    withholding_only: bool = False,
+    limit: int = Query(100, le=500), offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
+    company: Company = Depends(get_current_company),
+):
+    stmt = _accounting_query(
+        company, status=status, department_id=department_id, type_id=type_id,
+        date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        query=query,
+    )
+    rows = (await db.execute(stmt.order_by(ExpenseRequest.approved_at.desc().nullslast(), ExpenseRequest.updated_at.desc()).limit(limit).offset(offset))).scalars().all()
+    if not rows:
+        return []
+    request_ids = [row.id for row in rows]
+    type_names = dict((await db.execute(select(ExpenseType.id, ExpenseType.name).where(
+        ExpenseType.id.in_({row.expense_type_id for row in rows})
+    ))).all())
+    department_names = dict((await db.execute(select(Department.id, Department.name).where(
+        Department.id.in_({row.department_id for row in rows if row.department_id is not None})
+    ))).all())
+    paid_request_ids = set((await db.execute(select(ExpensePayment.expense_request_id).where(
+        ExpensePayment.expense_request_id.in_(request_ids), ExpensePayment.voided_at.is_(None)
+    ))).scalars().all())
+    settlement_rows = (await db.execute(select(ExpenseSettlement).where(
+        ExpenseSettlement.expense_request_id.in_(request_ids)
+    ).order_by(ExpenseSettlement.created_at))).scalars().all()
+    settlements = {item.expense_request_id: item for item in settlement_rows}
+    return [{
+        "id": r.id, "request_no": r.request_no, "request_date": r.request_date,
+        "title": r.title, "recipient_name": r.recipient_name,
+        "requester_name": r.requester_name_snapshot, "request_format": r.request_format,
+        "company_id": r.company_id, "company_name": r.company_name_snapshot or company.name_th,
+        "department_id": r.department_id,
+        "department_name": r.department_name_snapshot or department_names.get(r.department_id),
+        "expense_type_id": r.expense_type_id, "expense_type_name": type_names.get(r.expense_type_id),
+        "bank_name": r.bank_name, "bank_account_name": r.bank_account_name,
+        "bank_account_number": expense_request_service.decrypt_account_number(r.bank_account_number_encrypted),
+        "status": r.status, "gross": r.gross_amount, "vat": r.vat_amount,
+        "withholding": r.withholding_amount, "net": r.net_amount,
+        "paid": r.paid_amount, "remaining": r.remaining_amount,
+        "installment_no": r.installment_no, "installment_chain_root_id": r.installment_chain_root_id,
+        "installment_chain_status": r.installment_chain_status,
+        "installment_payment_amount": r.installment_payment_amount,
+        "settlement_due_date": r.settlement_due_date, "approved_at": r.approved_at,
+        "is_adjustment_transfer": (
+            r.id in paid_request_ids and r.id in settlements
+            and settlements[r.id].settlement_type == "additional"
+            and r.status in {"accounting_review", "ready_to_pay"}
+        ),
+        "transfer_amount": (
+            settlements[r.id].difference_amount
+            if r.id in paid_request_ids and r.id in settlements
+            and settlements[r.id].settlement_type == "additional"
+            and r.status in {"accounting_review", "ready_to_pay"}
+            else r.remaining_amount
+        ),
+    } for r in rows]
+
+
+@router.get("/expense-requests/accounting/stats", response_model=AccountingStatsOut)
+async def accounting_stats(
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
+    company: Company = Depends(get_current_company),
+):
+    rows = (await db.execute(_accounting_query(company))).scalars().all()
+    today = datetime.now(timezone.utc).date()
+    ready = [r for r in rows if r.status == "ready_to_pay"]
+    return AccountingStatsOut(
+        accounting_review_count=sum(r.status == "accounting_review" for r in rows),
+        ready_to_pay_count=len(ready), settlement_review_count=sum(r.status == "settlement_review" for r in rows),
+        overdue_count=sum(r.status == "settlement_due" and r.settlement_due_date and r.settlement_due_date < today for r in rows),
+        ready_to_pay_amount=sum((Decimal(r.remaining_amount or r.net_amount or 0) for r in ready), Decimal("0")),
+        partially_paid_count=sum(r.status == "partially_paid" for r in rows),
+    )
+
+
+@router.get("/expense-requests/accounting/export")
+async def export_accounting(
+    status: Optional[str] = None, query: Optional[str] = None,
+    department_id: Optional[int] = None, type_id: Optional[int] = None,
+    date_from: Optional[date] = None, date_to: Optional[date] = None,
+    withholding_only: bool = False,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_export),
+    company: Company = Depends(get_current_company),
+):
+    stmt = _accounting_query(
+        company, status=status, department_id=department_id, type_id=type_id,
+        date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        query=query,
+    )
+    rows = (await db.execute(stmt.order_by(ExpenseRequest.created_at.desc()))).scalars().all()
+    data = expense_finance_service.excel_bytes(list(rows))
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename=expense-requests.xlsx"})
+
+
+@router.get("/expense-requests/{request_id}/payments", response_model=list[PaymentOut])
+async def list_payments(
+    request_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    await _can_view(db, req, current_user)
+    return (await db.execute(select(ExpensePayment).where(
+        ExpensePayment.expense_request_id == request_id
+    ).order_by(ExpensePayment.created_at))).scalars().all()
+
+
+@router.post("/expense-requests/{request_id}/payments", response_model=PaymentOut, status_code=201)
+async def create_payment(
+    request_id: str, payload: PaymentIn,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_pay),
+    company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    try:
+        return await expense_finance_service.record_payment(db, req, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/expense-requests/{request_id}/payments/{payment_id}/proof")
+async def payment_proof(
+    request_id: str, payment_id: str, db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user), company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    await _can_view(db, req, current_user)
+    payment = (await db.execute(select(ExpensePayment).where(
+        ExpensePayment.id == payment_id, ExpensePayment.expense_request_id == request_id,
+        ExpensePayment.company_id == company.id,
+    ))).scalar_one_or_none()
+    if not payment or not payment.proof_file_path or not Path(payment.proof_file_path).is_file():
+        raise HTTPException(404, "ไม่พบหลักฐานการจ่าย")
+    return FileResponse(payment.proof_file_path, filename=payment.proof_file_name)
+
+
+@router.patch("/expense-payments/{payment_id}/proof", response_model=PaymentOut)
+async def replace_payment_proof(
+    payment_id: str, payload: PaymentProofReplaceIn,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_update),
+    company: Company = Depends(get_current_company),
+):
+    payment = (await db.execute(select(ExpensePayment).where(
+        ExpensePayment.id == payment_id, ExpensePayment.company_id == company.id,
+    ).with_for_update())).scalar_one_or_none()
+    if not payment:
+        raise HTTPException(404, "ไม่พบรายการจ่ายเงินนี้")
+    try:
+        return await expense_finance_service.replace_payment_proof(db, payment, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/expense-payments/{payment_id}/void", response_model=PaymentOut)
+async def void_payment(
+    payment_id: str, payload: PaymentVoidIn,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_cancel_permission),
+    company: Company = Depends(get_current_company),
+):
+    payment = (await db.execute(select(ExpensePayment).where(
+        ExpensePayment.id == payment_id, ExpensePayment.company_id == company.id,
+    ).with_for_update())).scalar_one_or_none()
+    if not payment:
+        raise HTTPException(404, "ไม่พบรายการจ่ายเงินนี้")
+    try:
+        return await expense_finance_service.void_payment(db, payment, payload.reason, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.post("/expense-requests/{request_id}/accounting/return")
+async def accounting_return(
+    request_id: str, payload: AccountingReturnIn,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_update),
+    company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id, lock=True)
+    if req.status not in {"ready_to_pay", "accounting_review"}:
+        raise HTTPException(400, "ส่งกลับได้เฉพาะรายการที่รอตรวจจ่าย")
+    previous = req.status
+    req.status = "returned_for_correction"
+    req.version += 1
+    expense_finance_service.add_history(db, req, "accounting_returned", current_user.id, previous, payload.reason)
+    expense_finance_service.notify(db, req, req.requester_user_id, "accounting_returned",
+        "ฝ่ายบัญชีส่งคำขอกลับให้แก้ไข", payload.reason, f"accounting-return:{req.id}:{req.version}")
+    await db.commit()
+    return {"status": req.status}
+
+
+@router.post("/expense-requests/{request_id}/accounting/review")
+async def accounting_review_legacy(
+    request_id: str,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_update),
+    company: Company = Depends(get_current_company),
+):
+    """Forward legacy accounting-review rows using requester-provided tax data.
+
+    New approvals go directly to ready_to_pay.  This endpoint mirrors the HR
+    compatibility action so migrated rows cannot remain stuck forever.
+    """
+    req = await _request(db, request_id, company.id, lock=True)
+    if req.status != "accounting_review":
+        raise HTTPException(400, "รายการนี้ไม่ได้อยู่ในขั้นบัญชีตรวจสอบ")
+    incomplete = (await db.execute(select(ApprovalRequestStep.id).where(
+        ApprovalRequestStep.expense_request_id == req.id,
+        ApprovalRequestStep.revision == req.current_revision,
+        ApprovalRequestStep.status != "approved",
+    ).limit(1))).scalar_one_or_none()
+    if incomplete:
+        raise HTTPException(400, "รายการอนุมัติหรือลายเซ็นยังไม่ครบ บัญชียังไม่สามารถดำเนินการได้")
+    previous = req.status
+    req.status = "ready_to_pay"
+    req.version += 1
+    req.updated_at = datetime.now(timezone.utc)
+    expense_finance_service.add_history(
+        db, req, "withholding_applied_from_requester", current_user.id, previous,
+        "ส่งต่อรายการเดิมด้วยข้อมูลภาษีที่ผู้ขอระบุ",
+    )
+    expense_finance_service.notify(
+        db, req, req.requester_user_id, "ready_to_pay",
+        "คำขอผ่านการตรวจจากฝ่ายบัญชีแล้ว", f"{req.request_no} พร้อมจ่าย",
+        f"accounting-reviewed:{req.id}:{req.version}",
+    )
+    await db.commit()
+    return {"status": req.status}
+
+
+@router.post("/expense-requests/{request_id}/accounting/cancel")
+async def accounting_cancel(
+    request_id: str, payload: AccountingCancelIn,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_cancel_permission),
+    company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id, lock=True)
+    previous = req.status
+    req.status = "cancelled"
+    req.cancelled_at = datetime.now(timezone.utc)
+    req.cancelled_by = current_user.id
+    req.cancellation_reason = payload.reason
+    expense_finance_service.add_history(db, req, "accounting_cancelled", current_user.id, previous, payload.reason)
+    await db.commit()
+    return {"status": req.status}
+
+
+@router.post("/expense-requests/{request_id}/settlements", response_model=SettlementOut, status_code=201)
+async def create_settlement(
+    request_id: str, payload: SettlementIn,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    try:
+        return await expense_finance_service.submit_settlement(db, req, payload, current_user.id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/expense-requests/{request_id}/settlements", response_model=list[SettlementOut])
+async def list_settlements(
+    request_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    await _can_view(db, req, current_user)
+    return (await db.execute(select(ExpenseSettlement).where(
+        ExpenseSettlement.expense_request_id == request_id
+    ).order_by(ExpenseSettlement.created_at))).scalars().all()
+
+
+@router.post("/expense-settlements/{settlement_id}/review", response_model=SettlementOut)
+async def review_settlement(
+    settlement_id: str, payload: SettlementReviewIn,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_approve),
+    company: Company = Depends(get_current_company),
+):
+    settlement = (await db.execute(select(ExpenseSettlement).where(
+        ExpenseSettlement.id == settlement_id, ExpenseSettlement.company_id == company.id
+    ))).scalar_one_or_none()
+    if not settlement:
+        raise HTTPException(404, "ไม่พบรายการเคลียร์เงิน")
+    try:
+        return await expense_finance_service.review_settlement(db, settlement, payload.action, payload.comment, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/expense-requests/{request_id}/histories", response_model=list[HistoryOut])
+async def histories(
+    request_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    await _can_view(db, req, current_user)
+    return (await db.execute(select(ExpenseRequestHistory).where(
+        ExpenseRequestHistory.expense_request_id == request_id
+    ).order_by(ExpenseRequestHistory.created_at))).scalars().all()
+
+
+@router.post("/expense-requests/{request_id}/wht-certificate", status_code=201)
+async def create_wht_certificate(
+    request_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_update),
+    company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    try:
+        cert = await expense_finance_service.issue_wht_certificate(db, req, current_user.id)
+        return {"id": cert.id, "certificate_no": cert.certificate_no, "sha256": cert.sha256}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@router.get("/expense-requests/{request_id}/wht-certificate/{certificate_id}")
+async def download_wht_certificate(
+    request_id: str, certificate_id: str, db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user), company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    await _can_view(db, req, current_user)
+    cert = (await db.execute(select(ExpenseWithholdingTaxCertificate).where(
+        ExpenseWithholdingTaxCertificate.id == certificate_id,
+        ExpenseWithholdingTaxCertificate.expense_request_id == request_id,
+    ))).scalar_one_or_none()
+    if not cert or not Path(cert.file_path).is_file():
+        raise HTTPException(404, "ไม่พบหนังสือรับรอง")
+    return FileResponse(cert.file_path, media_type="application/pdf", filename=f"{cert.certificate_no}.pdf")
+
+
+@router.get("/notifications", response_model=list[NotificationOut])
+async def notifications(
+    unread_only: bool = False, limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    stmt = select(SystemNotification).where(
+        SystemNotification.company_id == company.id, SystemNotification.user_id == current_user.id
+    )
+    if unread_only:
+        stmt = stmt.where(SystemNotification.read_at.is_(None))
+    return (await db.execute(stmt.order_by(SystemNotification.created_at.desc()).limit(limit))).scalars().all()
+
+
+@router.post("/notifications/{notification_id}/read")
+async def read_notification(
+    notification_id: str, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    row = (await db.execute(select(SystemNotification).where(
+        SystemNotification.id == notification_id, SystemNotification.company_id == company.id,
+        SystemNotification.user_id == current_user.id,
+    ).with_for_update())).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "ไม่พบการแจ้งเตือน")
+    row.read_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"read_at": row.read_at}
+
+
+@router.get("/expense-settings/departments", response_model=list[DepartmentOut])
+async def list_departments(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user),
+                           company: Company = Depends(get_current_company)):
+    return (await db.execute(select(Department).where(Department.company_id == company.id).order_by(Department.name))).scalars().all()
+
+
+@router.post("/expense-settings/departments", response_model=DepartmentOut, status_code=201)
+async def create_department(payload: DepartmentIn, db: AsyncSession = Depends(get_db),
+                            current_user: User = Depends(settings_create), company: Company = Depends(get_current_company)):
+    row = (await db.execute(select(Department).where(
+        Department.company_id == company.id,
+        Department.name == payload.name,
+    ).with_for_update())).scalar_one_or_none()
+    if row and row.is_active:
+        raise HTTPException(409, "มีชื่อแผนกนี้อยู่แล้ว")
+    if row:
+        for key, value in payload.model_dump().items():
+            setattr(row, key, value)
+        row.is_active = True
+        row.updated_at = datetime.now(timezone.utc)
+    else:
+        row = Department(company_id=company.id, **payload.model_dump())
+        db.add(row)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "ชื่อหรือรหัสแผนกซ้ำกับข้อมูลที่มีอยู่") from exc
+    await db.refresh(row)
+    return row
+
+
+@router.put("/expense-settings/departments/{department_id}", response_model=DepartmentOut)
+async def update_department(department_id: int, payload: DepartmentIn,
+                            db: AsyncSession = Depends(get_db), current_user: User = Depends(settings_update),
+                            company: Company = Depends(get_current_company)):
+    row = (await db.execute(select(Department).where(
+        Department.id == department_id, Department.company_id == company.id,
+    ).with_for_update())).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "ไม่พบแผนกนี้")
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    row.updated_at = datetime.now(timezone.utc)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "ชื่อหรือรหัสแผนกซ้ำกับข้อมูลที่มีอยู่") from exc
+    await db.refresh(row)
+    return row
+
+
+@router.delete("/expense-settings/departments/{department_id}", status_code=204)
+async def delete_department(department_id: int, db: AsyncSession = Depends(get_db),
+                            current_user: User = Depends(settings_delete),
+                            company: Company = Depends(get_current_company)):
+    row = (await db.execute(select(Department).where(
+        Department.id == department_id, Department.company_id == company.id,
+    ).with_for_update())).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "ไม่พบแผนกนี้")
+    await db.execute(
+        update(Position)
+        .where(Position.company_id == company.id, Position.department_id == department_id)
+        .values(department_id=None)
+    )
+    await db.execute(
+        update(UserCompany)
+        .where(UserCompany.company_id == company.id, UserCompany.department_id == department_id)
+        .values(department_id=None)
+    )
+    row.is_active = False
+    row.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+
+@router.get("/expense-types/{expense_type_id}/attachment-requirements", response_model=list[AttachmentRequirementOut])
+async def requirements(expense_type_id: int, db: AsyncSession = Depends(get_db),
+                       current_user: User = Depends(get_current_user), company: Company = Depends(get_current_company)):
+    expense_type = (await db.execute(select(ExpenseType).where(
+        ExpenseType.id == expense_type_id, ExpenseType.company_id == company.id))).scalar_one_or_none()
+    if not expense_type: raise HTTPException(404, "ไม่พบประเภทค่าใช้จ่าย")
+    return (await db.execute(select(ExpenseAttachmentRequirement).where(
+        ExpenseAttachmentRequirement.expense_type_id == expense_type_id,
+        ExpenseAttachmentRequirement.company_id == company.id,
+        ExpenseAttachmentRequirement.is_active.is_(True),
+    ).order_by(ExpenseAttachmentRequirement.sort_order))).scalars().all()
+
+
+@router.post("/expense-types/{expense_type_id}/attachment-requirements", response_model=AttachmentRequirementOut, status_code=201)
+async def create_requirement(expense_type_id: int, payload: AttachmentRequirementIn,
+                             db: AsyncSession = Depends(get_db), current_user: User = Depends(settings_create),
+                             company: Company = Depends(get_current_company)):
+    expense_type = (await db.execute(select(ExpenseType).where(
+        ExpenseType.id == expense_type_id, ExpenseType.company_id == company.id))).scalar_one_or_none()
+    if not expense_type: raise HTTPException(404, "ไม่พบประเภทค่าใช้จ่าย")
+    row = ExpenseAttachmentRequirement(company_id=company.id, expense_type_id=expense_type_id, **payload.model_dump())
+    db.add(row); await db.commit(); await db.refresh(row)
+    return row
+
+
+@router.put("/expense-types/{expense_type_id}/attachment-requirements/{requirement_id}", response_model=AttachmentRequirementOut)
+async def update_requirement(expense_type_id: int, requirement_id: int, payload: AttachmentRequirementIn,
+                             db: AsyncSession = Depends(get_db), current_user: User = Depends(settings_update),
+                             company: Company = Depends(get_current_company)):
+    row = (await db.execute(select(ExpenseAttachmentRequirement).where(
+        ExpenseAttachmentRequirement.id == requirement_id,
+        ExpenseAttachmentRequirement.expense_type_id == expense_type_id,
+        ExpenseAttachmentRequirement.company_id == company.id,
+    ).with_for_update())).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "ไม่พบข้อกำหนดเอกสารนี้")
+    for key, value in payload.model_dump().items():
+        setattr(row, key, value)
+    row.updated_at = datetime.now(timezone.utc)
+    await db.commit(); await db.refresh(row)
+    return row
+
+
+@router.delete("/expense-types/{expense_type_id}/attachment-requirements/{requirement_id}", status_code=204)
+async def delete_requirement(expense_type_id: int, requirement_id: int,
+                             db: AsyncSession = Depends(get_db), current_user: User = Depends(settings_delete),
+                             company: Company = Depends(get_current_company)):
+    row = (await db.execute(select(ExpenseAttachmentRequirement).where(
+        ExpenseAttachmentRequirement.id == requirement_id,
+        ExpenseAttachmentRequirement.expense_type_id == expense_type_id,
+        ExpenseAttachmentRequirement.company_id == company.id,
+    ).with_for_update())).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "ไม่พบข้อกำหนดเอกสารนี้")
+    row.is_active = False
+    row.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+
+@router.get("/approval-matrix", include_in_schema=False)
+async def old_approval_matrix_redirect():
+    return RedirectResponse("/expense-requests/settings", status_code=307)

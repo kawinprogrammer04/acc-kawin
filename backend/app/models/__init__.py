@@ -22,7 +22,13 @@ from app.models.bank_reconciliation import (
     BankStatementImport,
     BankStatementLine,
 )
+from app.models.cashflow import ExpenseEntry
 from app.models.approval import ExpenseRequest, ExpenseRequestAttachment, ExpenseRequestItem
+from app.models.expense_finance import (
+    Department, ExpenseAttachmentRequirement, ExpenseApprovalCandidate, ExpenseSignaturePlacement,
+    ExpensePayment, ExpenseSettlement, ExpenseSettlementItem,
+    ExpenseWithholdingTaxCertificate, ExpenseRequestHistory, SystemNotification,
+)
 from app.models.crm_cashflow import (
     CrmCashflowCategory,
     CrmCashflowDepartment,
@@ -38,7 +44,11 @@ __all__ = [
     "AppMenu", "MenuPermission", "PermissionItem", "PermissionSet",
     "PermissionSetItem", "PositionPermissionSet", "UserPermissionSet", "UserPermissionOverride",
     "BankStatementImport", "BankStatementLine", "BankReconciliation",
+    "ExpenseEntry",
     "ExpenseRequest", "ExpenseRequestItem", "ExpenseRequestAttachment",
+    "Department", "ExpenseAttachmentRequirement", "ExpenseApprovalCandidate", "ExpenseSignaturePlacement",
+    "ExpensePayment", "ExpenseSettlement", "ExpenseSettlementItem",
+    "ExpenseWithholdingTaxCertificate", "ExpenseRequestHistory", "SystemNotification",
     "CrmCashflowCategory", "CrmCashflowList", "CrmCashflowDepartment",
     "CrmCashflowStatement",
 ]

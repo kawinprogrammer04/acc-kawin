@@ -8,17 +8,20 @@ from pydantic import BaseModel, Field
 # ── Position ─────────────────────────────────────────────────────────────────
 class PositionCreate(BaseModel):
     name: str
+    department_id: Optional[int] = None
     is_active: bool = True
 
 
 class PositionUpdate(BaseModel):
     name: Optional[str] = None
+    department_id: Optional[int] = None
     is_active: Optional[bool] = None
 
 
 class PositionOut(BaseModel):
     id: int
     name: str
+    department_id: Optional[int] = None
     is_active: bool
     model_config = {"from_attributes": True}
 
@@ -43,12 +46,22 @@ class UserPositionOut(BaseModel):
 class ExpenseTypeCreate(BaseModel):
     code: str
     name: str
+    description: Optional[str] = None
+    allowed_kinds: list[str] = ["reimbursement", "advance", "direct_payment"]
+    requires_payment_proof: bool = True
+    may_require_withholding_tax: bool = True
+    settlement_days: int = Field(default=7, ge=0, le=365)
     is_active: bool = True
 
 
 class ExpenseTypeUpdate(BaseModel):
     code: Optional[str] = None
     name: Optional[str] = None
+    description: Optional[str] = None
+    allowed_kinds: Optional[list[str]] = None
+    requires_payment_proof: Optional[bool] = None
+    may_require_withholding_tax: Optional[bool] = None
+    settlement_days: Optional[int] = Field(default=None, ge=0, le=365)
     is_active: Optional[bool] = None
 
 
@@ -56,6 +69,11 @@ class ExpenseTypeOut(BaseModel):
     id: int
     code: str
     name: str
+    description: Optional[str] = None
+    allowed_kinds: list[str] = []
+    requires_payment_proof: bool = True
+    may_require_withholding_tax: bool = True
+    settlement_days: int = 7
     is_active: bool
     model_config = {"from_attributes": True}
 
@@ -170,6 +188,8 @@ class ExpenseRequestCreate(BaseModel):
     title: str
     description: Optional[str] = None
     request_date: date
+    required_date: Optional[date] = None
+    department_id: Optional[int] = None
     request_format: str = Field(default="reimbursement", pattern="^(reimbursement|advance|direct_payment)$")
     payer_company_name: Optional[str] = None
     recipient_type: Optional[str] = Field(default=None, pattern="^(employee|individual|company)?$")
@@ -177,6 +197,7 @@ class ExpenseRequestCreate(BaseModel):
     bank_name: Optional[str] = None
     bank_account_name: Optional[str] = None
     bank_account_number: Optional[str] = None
+    installment_enabled: bool = False
 
 
 class ExpenseRequestItemIn(BaseModel):
@@ -194,19 +215,31 @@ class ExpenseRequestItemOut(ExpenseRequestItemIn):
 
 class ExpenseRequestAttachmentOut(BaseModel):
     id: str
+    requirement_id: Optional[int] = None
     attachment_type: str
+    category: str = "supporting"
     file_name: str
     content_type: Optional[str]
     file_size: int
+    requires_signature: bool = False
+    has_signed_file: bool = False
+    default_signature_page: Optional[int] = None
+    default_signature_x: Optional[Decimal] = None
+    default_signature_y: Optional[Decimal] = None
+    default_signature_width: Optional[Decimal] = None
+    default_signature_height: Optional[Decimal] = None
     created_at: datetime
 
 
 class ExpenseRequestDraftUpdate(BaseModel):
+    version: Optional[int] = Field(default=None, ge=1)
     requester_position_id: Optional[int] = None
     expense_type_id: Optional[int] = None
     title: Optional[str] = None
     description: Optional[str] = None
     request_date: Optional[date] = None
+    required_date: Optional[date] = None
+    department_id: Optional[int] = None
     request_format: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment)$")
     payer_company_name: Optional[str] = None
     recipient_type: Optional[str] = Field(default=None, pattern="^(employee|individual|company)?$")
@@ -214,7 +247,14 @@ class ExpenseRequestDraftUpdate(BaseModel):
     bank_name: Optional[str] = None
     bank_account_name: Optional[str] = None
     bank_account_number: Optional[str] = None
+    installment_enabled: Optional[bool] = None
+    installment_payment_amount: Optional[Decimal] = Field(default=None, ge=0)
+    recipient_tax_id: Optional[str] = None
+    recipient_address: Optional[str] = None
+    service_description: Optional[str] = None
     items: Optional[list[ExpenseRequestItemIn]] = None
+    discount_amount: Optional[Decimal] = Field(default=None, ge=0)
+    price_mode: Optional[str] = Field(default=None, pattern="^(exclude_vat|include_vat)$")
     vat_mode: Optional[str] = Field(default=None, pattern="^(none|rate|amount)$")
     vat_rate: Optional[Decimal] = Field(default=None, ge=0, le=100)
     vat_amount: Optional[Decimal] = Field(default=None, ge=0)
@@ -222,7 +262,12 @@ class ExpenseRequestDraftUpdate(BaseModel):
     withholding_mode: Optional[str] = Field(default=None, pattern="^(none|rate|amount)$")
     withholding_rate: Optional[Decimal] = Field(default=None, ge=0, le=100)
     withholding_amount: Optional[Decimal] = Field(default=None, ge=0)
+    requester_withholding_status: Optional[str] = Field(default=None, pattern="^(not_required|required|accounting_decide|not_withheld|deduct|already_withheld)$")
+    gross_up_enabled: Optional[bool] = None
+    requested_net_amount: Optional[Decimal] = Field(default=None, ge=0)
     taxpayer_name: Optional[str] = None
+    taxpayer_type: Optional[str] = Field(default=None, pattern="^(individual|juristic)?$")
+    taxpayer_branch: Optional[str] = None
     taxpayer_id: Optional[str] = None
     taxpayer_address: Optional[str] = None
 
@@ -230,16 +275,21 @@ class ExpenseRequestDraftUpdate(BaseModel):
 class ExpenseRequestOut(BaseModel):
     id: str
     request_no: Optional[str] = None
+    version: int = 1
+    current_revision: int = 1
     requester_user_id: int
     requester_name: Optional[str] = None
     requester_position_id: int
     requester_position_name: Optional[str] = None
+    department_id: Optional[int] = None
+    department_name: Optional[str] = None
     expense_type_id: int
     expense_type_name: Optional[str] = None
     amount: Decimal
     title: str
     description: Optional[str]
     request_date: date
+    required_date: Optional[date] = None
     request_format: str = "reimbursement"
     payer_company_name: Optional[str] = None
     recipient_type: Optional[str] = None
@@ -248,7 +298,12 @@ class ExpenseRequestOut(BaseModel):
     bank_account_name: Optional[str] = None
     bank_account_number: Optional[str] = None
     bank_account_masked: Optional[str] = None
+    recipient_address: Optional[str] = None
+    service_description: Optional[str] = None
     subtotal: Decimal = Decimal("0")
+    discount_amount: Decimal = Decimal("0")
+    price_before_vat: Decimal = Decimal("0")
+    price_mode: str = "exclude_vat"
     vat_mode: str = "none"
     vat_rate: Decimal = Decimal("0")
     vat_amount: Decimal = Decimal("0")
@@ -257,7 +312,23 @@ class ExpenseRequestOut(BaseModel):
     withholding_rate: Decimal = Decimal("0")
     withholding_amount: Decimal = Decimal("0")
     payable_total: Decimal = Decimal("0")
+    gross: Decimal = Decimal("0")
+    net: Decimal = Decimal("0")
+    paid: Decimal = Decimal("0")
+    remaining: Decimal = Decimal("0")
+    gross_up_enabled: bool = False
+    installment_enabled: bool = False
+    installment_no: Optional[int] = None
+    installment_chain_root_id: Optional[str] = None
+    installment_target_amount: Optional[Decimal] = None
+    installment_payment_amount: Optional[Decimal] = None
+    installment_chain_status: Optional[str] = None
+    installment_chain_remaining: Optional[Decimal] = None
+    requested_net_amount: Optional[Decimal] = None
+    requester_withholding_status: str = "not_required"
     taxpayer_name: Optional[str] = None
+    taxpayer_type: Optional[str] = None
+    taxpayer_branch: Optional[str] = None
     taxpayer_id: Optional[str] = None
     taxpayer_address: Optional[str] = None
     status: str
@@ -282,27 +353,47 @@ class ApprovalStepTimelineOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExpenseInstallmentSiblingOut(BaseModel):
+    id: str
+    request_no: Optional[str] = None
+    installment_no: Optional[int] = None
+    status: str
+    amount: Decimal
+    paid_amount: Decimal
+
+
 class ExpenseRequestDetailOut(ExpenseRequestOut):
     items: list[ExpenseRequestItemOut] = []
     attachments: list[ExpenseRequestAttachmentOut] = []
     steps: list[ApprovalStepTimelineOut] = []
+    installment_siblings: list[ExpenseInstallmentSiblingOut] = []
+
+
+class ExpenseInstallmentCreate(BaseModel):
+    installment_payment_amount: Decimal = Field(gt=0)
 
 
 class InboxItemOut(BaseModel):
     step_id: int
     step_no: int
     expense_request_id: str
+    request_no: Optional[str] = None
     title: str
     amount: Decimal
     requester_user_id: int
     requester_name: Optional[str] = None
     requester_position_name: Optional[str] = None
+    department_name: Optional[str] = None
     expense_type_name: Optional[str] = None
     request_date: date
     submitted_at: Optional[datetime]
 
 
 class DecisionIn(BaseModel):
-    action: str = Field(pattern="^(approve|reject)$")
+    action: str = Field(pattern="^(approve|reject|return)$")
     comment: Optional[str] = None
     idempotency_key: str
+    signature_data_url: Optional[str] = None
+    use_saved_signature: bool = False
+    save_signature: bool = False
+    placements: list[dict] = []

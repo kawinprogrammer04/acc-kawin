@@ -146,3 +146,76 @@ async def get_current_company(
     """Validate tenant access and bind company_id for PostgreSQL RLS."""
     company, _ = await _resolve_company_access(x_company_id, current_user, db)
     return company
+
+
+async def _catalog_permission_state(
+    db: AsyncSession, user: User, company_id: int, permission_key: str,
+) -> tuple[bool, bool]:
+    """Return (allowed, configured) for the permission catalog.
+
+    Explicit user overrides win. A user is considered catalog-configured when
+    they have an active user/position permission set or an override; callers
+    may use the legacy role fallback only when no catalog assignment exists.
+    """
+    from app.models.approval import UserPosition
+    from app.models.permission import (
+        PermissionItem, PermissionSet, PermissionSetItem, PositionPermissionSet,
+        UserPermissionOverride, UserPermissionSet,
+    )
+
+    item = (await db.execute(select(PermissionItem).where(
+        PermissionItem.key == permission_key, PermissionItem.is_active.is_(True),
+    ))).scalar_one_or_none()
+    if not item:
+        return False, False
+    override = (await db.execute(select(UserPermissionOverride.is_allowed).where(
+        UserPermissionOverride.user_id == user.id,
+        UserPermissionOverride.permission_item_id == item.id,
+    ))).scalar_one_or_none()
+    if override is not None:
+        return bool(override), True
+
+    user_sets = (await db.execute(select(UserPermissionSet.permission_set_id).join(
+        PermissionSet, PermissionSet.id == UserPermissionSet.permission_set_id
+    ).where(UserPermissionSet.user_id == user.id, PermissionSet.is_active.is_(True)))).scalars().all()
+    position_sets = (await db.execute(select(PositionPermissionSet.permission_set_id)
+        .join(PermissionSet, PermissionSet.id == PositionPermissionSet.permission_set_id)
+        .join(UserPosition, UserPosition.position_id == PositionPermissionSet.position_id)
+        .where(
+            UserPosition.user_id == user.id, UserPosition.company_id == company_id,
+            UserPosition.is_active.is_(True), PermissionSet.is_active.is_(True),
+        ))).scalars().all()
+    assigned = set(user_sets) | set(position_sets)
+    if not assigned:
+        return False, False
+    allowed = (await db.execute(select(PermissionSetItem.id).where(
+        PermissionSetItem.permission_set_id.in_(assigned),
+        PermissionSetItem.permission_item_id == item.id,
+    ).limit(1))).scalar_one_or_none()
+    return allowed is not None, True
+
+
+def require_permission(permission_key: str, *, legacy_min_role: str | None = None):
+    """Enforce a fine-grained permission with a migration-safe role fallback."""
+    async def _check(
+        x_company_id: Optional[int] = Header(None, alias="X-Company-Id"),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        company, role = await _resolve_company_access(x_company_id, current_user, db)
+        if current_user.is_platform_admin:
+            return current_user
+        allowed, configured = await _catalog_permission_state(
+            db, current_user, company.id, permission_key
+        )
+        if allowed:
+            return current_user
+        if not configured and legacy_min_role:
+            levels = await get_role_levels(db)
+            if levels.get(role, 0) >= levels.get(legacy_min_role, 0):
+                return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"ไม่มีสิทธิ์ {permission_key}",
+        )
+    return _check

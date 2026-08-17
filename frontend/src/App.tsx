@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes, useParams, useSearchParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useParams, useSearchParams } from "react-router-dom";
 import { AuthProvider } from "@/context/AuthContext";
 import { CompanyProvider } from "@/context/CompanyContext";
 import { FilterProvider } from "@/context/FilterContext";
@@ -37,7 +37,8 @@ import { BankReconciliationPage } from "@/pages/BankReconciliationPage";
 import { ExpenseRequestPage, ExpenseRequestWizardPage } from "@/pages/ExpenseRequestPage";
 import { ExpenseRequestDetailPage } from "@/pages/ExpenseRequestDetailPage";
 import { ApprovalInboxPage } from "@/pages/ApprovalInboxPage";
-import { ApprovalMatrixPage } from "@/pages/ApprovalMatrixPage";
+import { ExpenseAccountingPage } from "@/pages/ExpenseAccountingPage";
+import { ExpenseSettingsPage } from "@/pages/ExpenseSettingsPage";
 import { RoleManagementPage } from "@/pages/RoleManagementPage";
 import { CrmCashflowStatementPage } from "@/pages/CrmCashflowStatementPage";
 import { CrmCashflowInvoicePage } from "@/pages/CrmCashflowInvoicePage";
@@ -111,7 +112,9 @@ export default function App() {
               <Route path="/expense-requests/:requestId/edit" element={guarded("expense_requests", <ExpenseRequestWizardPage />)} />
               <Route path="/expense-requests/:requestId" element={guarded("expense_requests", <ExpenseRequestDetailPage />)} />
               <Route path="/approvals/inbox" element={guarded("approvals_inbox", <ApprovalInboxPage />)} />
-              <Route path="/approval-matrix" element={guarded("approval_matrix", <ApprovalMatrixPage />)} />
+              <Route path="/expense-requests/accounting" element={guarded("expense_accounting", <ExpenseAccountingPage />)} />
+              <Route path="/expense-requests/settings" element={guarded("expense_settings", <ExpenseSettingsPage />)} />
+              <Route path="/approval-matrix" element={<Navigate to="/expense-requests/settings" replace />} />
               <Route path="/roles" element={guarded("roles", <RoleManagementPage />)} />
               <Route path="/settings" element={guarded("settings", <CompanySettingsPage />)} />
               <Route path="/companies" element={guarded("companies", <CompaniesPage />)} />

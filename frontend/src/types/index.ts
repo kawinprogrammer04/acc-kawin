@@ -6,7 +6,9 @@ export interface Company {
   name_en?: string;
   tax_id?: string;
   is_active: boolean;
-  role: "admin" | "approver" | "accountant" | "viewer";
+  role: "admin" | "approver" | "accountant" | "viewer" | "super_admin" | (string & {});
+  department_id?: number;
+  department_name?: string;
 }
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -15,7 +17,7 @@ export interface User {
   username: string;
   email: string;
   full_name: string | null;
-  role: "admin" | "approver" | "accountant" | "viewer";
+  role: "admin" | "approver" | "accountant" | "viewer" | "super_admin" | (string & {});
   is_platform_admin: boolean;
   is_active: boolean;
   companies?: Company[];
@@ -25,6 +27,7 @@ export interface User {
   allowed_menus?: AppMenu[];
   allowed_permissions?: string[];
   permission_sets?: PermissionSet[];
+  has_saved_signature?: boolean;
 }
 
 export type PermissionAction = string;

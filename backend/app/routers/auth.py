@@ -13,6 +13,7 @@ from app.core.roles import role_is_active
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.approval import Position, UserPosition
 from app.models.company import Company, UserCompany
+from app.models.expense_finance import Department
 from app.models.role import Role
 from app.models.permission import (
     AppMenu,
@@ -25,6 +26,7 @@ from app.models.permission import (
     UserPermissionSet,
 )
 from app.models.user import User
+from app.services import expense_signature_service
 from app.schemas.auth import (
     LoginRequest,
     RoleCreate,
@@ -48,6 +50,8 @@ class CompanyBrief(BaseModel):
     name_en: Optional[str]
     is_active: bool
     role: str
+    department_id: Optional[int] = None
+    department_name: Optional[str] = None
     model_config = {"from_attributes": True}
 
 
@@ -66,6 +70,7 @@ class UserMeOut(BaseModel):
     allowed_menus: list[dict] = []
     allowed_permissions: list[str] = []
     permission_sets: list[dict] = []
+    has_saved_signature: bool = False
     model_config = {"from_attributes": True}
 
 
@@ -290,6 +295,14 @@ async def get_me(
 ):
     # Fetch accessible companies
     if current_user.is_platform_admin:
+        memberships = {
+            membership.company_id: (membership, department_name)
+            for membership, department_name in (await db.execute(
+                select(UserCompany, Department.name)
+                .outerjoin(Department, Department.id == UserCompany.department_id)
+                .where(UserCompany.user_id == current_user.id, UserCompany.is_active.is_(True))
+            )).all()
+        }
         result = await db.execute(
             select(Company).where(Company.is_active == True).order_by(Company.id)
         )
@@ -301,13 +314,17 @@ async def get_me(
                 "name_en": company.name_en,
                 "is_active": company.is_active,
                 "role": "admin",
+                "department_id": memberships.get(company.id, (None, None))[0].department_id
+                    if memberships.get(company.id, (None, None))[0] else None,
+                "department_name": memberships.get(company.id, (None, None))[1],
             }
             for company in result.scalars().all()
         ]
     else:
         result = await db.execute(
-            select(Company, UserCompany.role)
+            select(Company, UserCompany, Department.name)
             .join(UserCompany, Company.id == UserCompany.company_id)
+            .outerjoin(Department, Department.id == UserCompany.department_id)
             .where(
                 UserCompany.user_id == current_user.id,
                 UserCompany.is_active == True,
@@ -322,9 +339,11 @@ async def get_me(
                 "name_th": company.name_th,
                 "name_en": company.name_en,
                 "is_active": company.is_active,
-                "role": role,
+                "role": membership.role,
+                "department_id": membership.department_id,
+                "department_name": department_name,
             }
-            for company, role in result.all()
+            for company, membership, department_name in result.all()
         ]
 
     permissions_configured, menu_permissions, menus = await _load_permission_payload(db, current_user)
@@ -350,7 +369,19 @@ async def get_me(
         "allowed_menus": allowed_menus,
         "allowed_permissions": allowed_permissions,
         "permission_sets": permission_sets,
+        "has_saved_signature": bool(current_user.signature_path),
     }
+
+
+@router.get("/me/signature")
+async def get_my_saved_signature(current_user: User = Depends(get_current_user)):
+    """Preview the caller's saved signature so they can decide whether to reuse
+    it or redraw before approving — never used to actually sign anything."""
+    try:
+        data_url = expense_signature_service.saved_signature_data_url(current_user.signature_path)
+    except ValueError:
+        raise HTTPException(404, "ยังไม่มีลายเซ็นที่บันทึกไว้")
+    return {"signature_data_url": data_url}
 
 
 @router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -372,6 +403,17 @@ async def create_user(
         company = await db.get(Company, payload.company_id)
         if not company or not company.is_active:
             raise HTTPException(status_code=404, detail="ไม่พบบริษัทที่เลือก")
+
+    if payload.department_id is not None:
+        if payload.company_id is None:
+            raise HTTPException(status_code=400, detail="ต้องเลือกบริษัทก่อนจึงจะกำหนดแผนกได้")
+        department = (await db.execute(select(Department).where(
+            Department.id == payload.department_id,
+            Department.company_id == payload.company_id,
+            Department.is_active.is_(True),
+        ))).scalar_one_or_none()
+        if not department:
+            raise HTTPException(status_code=400, detail="แผนกไม่ถูกต้องหรือไม่ได้อยู่ในบริษัทที่เลือก")
 
     if payload.position_ids and payload.company_id is None:
         raise HTTPException(status_code=400, detail="ต้องเลือกบริษัทก่อนจึงจะกำหนดตำแหน่งได้")
@@ -402,6 +444,7 @@ async def create_user(
         db.add(UserCompany(
             user_id=user.id,
             company_id=payload.company_id,
+            department_id=payload.department_id,
             granted_by=current_user.id,
             role=payload.role,
         ))
@@ -432,14 +475,22 @@ async def get_user_companies(
 ):
     """Every company this user currently has active membership in, for the edit-user modal."""
     result = await db.execute(
-        select(Company, UserCompany.role)
+        select(Company, UserCompany, Department.name)
         .join(UserCompany, Company.id == UserCompany.company_id)
+        .outerjoin(Department, Department.id == UserCompany.department_id)
         .where(UserCompany.user_id == user_id, UserCompany.is_active == True)  # noqa: E712
         .order_by(Company.id)
     )
     return [
-        {"company_id": company.id, "code": company.code, "name_th": company.name_th, "role": role}
-        for company, role in result.all()
+        {
+            "company_id": company.id,
+            "code": company.code,
+            "name_th": company.name_th,
+            "role": membership.role,
+            "department_id": membership.department_id,
+            "department_name": department_name,
+        }
+        for company, membership, department_name in result.all()
     ]
 
 
