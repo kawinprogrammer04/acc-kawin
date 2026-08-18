@@ -16,6 +16,7 @@ from app.services.expense_request_service import calculate_totals, render_paymen
 from app.services.expense_signature_service import _placement_box, _request_signature_slot, _stamp_pdf
 from app.services.approval_service import resolve_approver_for_position, routing_amount
 from app.routers.approvals import _employee_organization
+from app.routers.expense_finance import _append_legacy_approval_steps
 
 
 def request(**overrides):
@@ -150,6 +151,42 @@ class EmployeeApprovalResolutionTests(unittest.TestCase):
         ))
         self.assertIs(resolved_position, position)
         self.assertIsNone(resolved_department)
+
+
+class AccountingApprovalTimelineTests(unittest.TestCase):
+    def test_all_legacy_steps_are_appended_in_order(self):
+        steps_by_request = {"request-1": []}
+        legacy_steps = [
+            SimpleNamespace(
+                id=90, expense_request_id="request-1", revision=1, step_no=1,
+                name="Accounting", approvers=[{"name": "ปิยะธิดา", "status": "approved"}],
+                status="approved", completed_at="2026-08-18 15:46:32",
+            ),
+            SimpleNamespace(
+                id=91, expense_request_id="request-1", revision=1, step_no=2,
+                name="Manager Accountant", approvers=[{"name": "อิสราภรณ์", "status": "waiting"}],
+                status="active", completed_at=None,
+            ),
+        ]
+
+        _append_legacy_approval_steps(steps_by_request, legacy_steps, {"request-1": 1}, set())
+
+        self.assertEqual([step["step_no"] for step in steps_by_request["request-1"]], [1, 2])
+        self.assertEqual(steps_by_request["request-1"][1]["name"], "Manager Accountant")
+
+    def test_native_route_prevents_legacy_duplicate(self):
+        native_step = {"id": 10, "step_no": 1, "name": "ACC route"}
+        steps_by_request = {"request-1": [native_step]}
+        legacy_steps = [SimpleNamespace(
+            id=90, expense_request_id="request-1", revision=1, step_no=1,
+            name="HR route", approvers=[], status="approved", completed_at=None,
+        )]
+
+        _append_legacy_approval_steps(
+            steps_by_request, legacy_steps, {"request-1": 1}, {"request-1"},
+        )
+
+        self.assertEqual(steps_by_request["request-1"], [native_step])
 
 
 class ExpenseExportTests(unittest.TestCase):

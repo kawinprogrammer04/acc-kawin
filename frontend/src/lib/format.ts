@@ -16,6 +16,14 @@ export function formatDate(d: string | Date | undefined): string {
   return new Intl.DateTimeFormat("th-TH", { day: "2-digit", month: "short", year: "numeric" }).format(new Date(d));
 }
 
+export function formatDateTime(d: string | Date | undefined): string {
+  if (!d) return "-";
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "2-digit", month: "short", year: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(new Date(d));
+}
+
 export function today(): string {
   return localDateInput(new Date());
 }

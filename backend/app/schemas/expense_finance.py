@@ -171,6 +171,7 @@ class FinanceSummaryOut(BaseModel):
 
 
 class AccountingStatsOut(BaseModel):
+    pending_approval_count: int = 0
     accounting_review_count: int
     ready_to_pay_count: int
     settlement_review_count: int

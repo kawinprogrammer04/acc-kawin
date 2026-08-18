@@ -13,7 +13,7 @@ Company management endpoints
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +22,7 @@ from app.core.dependencies import get_current_user, require_platform_admin
 from app.core.roles import get_role_level, get_role_levels, role_is_active
 from app.core.security import hash_password
 from app.models.company import Company, UserCompany
+from app.models.approval import Position, UserPosition
 from app.models.expense_finance import Department
 from app.models.user import User
 
@@ -82,6 +83,10 @@ class GrantUserIn(BaseModel):
     user_id: int
     role: str = "viewer"
     department_id: Optional[int] = None
+    # None means "do not change positions" so existing callers that only grant
+    # company access remain backwards-compatible. An explicit list replaces the
+    # user's positions for this company atomically with the membership update.
+    position_ids: Optional[list[int]] = None
 
 
 class InviteCompanyUserIn(BaseModel):
@@ -100,6 +105,8 @@ class UserCompanyOut(BaseModel):
     role: str
     department_id: Optional[int] = None
     department_name: Optional[str] = None
+    position_ids: list[int] = Field(default_factory=list)
+    position_names: list[str] = Field(default_factory=list)
 
 
 class UserSearchOut(BaseModel):
@@ -319,6 +326,22 @@ async def list_company_users(
         .order_by(User.id)
     )
     rows = result.all()
+    active_user_ids = [user.id for user, membership, _ in rows if membership.is_active]
+    positions_by_user: dict[int, list[tuple[int, str]]] = {}
+    if active_user_ids:
+        position_rows = (await db.execute(
+            select(UserPosition.user_id, Position.id, Position.name)
+            .join(Position, Position.id == UserPosition.position_id)
+            .where(
+                UserPosition.company_id == company_id,
+                UserPosition.user_id.in_(active_user_ids),
+                UserPosition.is_active.is_(True),
+                Position.is_active.is_(True),
+            )
+            .order_by(UserPosition.user_id, Position.name)
+        )).all()
+        for user_id, position_id, position_name in position_rows:
+            positions_by_user.setdefault(user_id, []).append((position_id, position_name))
     return [{
         "user_id": user.id,
         "username": user.username,
@@ -326,6 +349,8 @@ async def list_company_users(
         "role": membership.role,
         "department_id": membership.department_id,
         "department_name": department_name,
+        "position_ids": [position_id for position_id, _ in positions_by_user.get(user.id, [])],
+        "position_names": [position_name for _, position_name in positions_by_user.get(user.id, [])],
     } for user, membership, department_name in rows if membership.is_active]
 
 
@@ -374,6 +399,21 @@ async def grant_company_access(
         ))).scalar_one_or_none()
         if not department:
             raise HTTPException(400, "แผนกไม่ถูกต้องหรือไม่ได้อยู่ในบริษัทที่เลือก")
+    desired_position_ids: set[int] | None = None
+    if payload.position_ids is not None:
+        desired_position_ids = set(payload.position_ids)
+        if len(desired_position_ids) != len(payload.position_ids):
+            raise HTTPException(400, "พบตำแหน่งซ้ำในรายการที่เลือก")
+        if desired_position_ids:
+            valid_position_ids = set((await db.execute(
+                select(Position.id).where(
+                    Position.id.in_(desired_position_ids),
+                    Position.company_id == company_id,
+                    Position.is_active.is_(True),
+                )
+            )).scalars().all())
+            if valid_position_ids != desired_position_ids:
+                raise HTTPException(400, "พบตำแหน่งที่ไม่ถูกต้องหรือไม่ได้อยู่ในบริษัทที่เลือก")
     levels = await get_role_levels(db)
     if payload.user_id == current_user.id and levels.get(payload.role, 0) < levels.get("admin", 0):
         raise HTTPException(400, "ไม่สามารถลดสิทธิ์ผู้ดูแลของบัญชีตัวเองได้")
@@ -400,8 +440,32 @@ async def grant_company_access(
             granted_by=current_user.id,
             role=payload.role,
         ))
+    if desired_position_ids is not None:
+        existing_position_rows = (await db.execute(
+            select(UserPosition).where(
+                UserPosition.user_id == payload.user_id,
+                UserPosition.company_id == company_id,
+            )
+        )).scalars().all()
+        existing_by_position = {row.position_id: row for row in existing_position_rows}
+
+        for position_id, row in existing_by_position.items():
+            if position_id in desired_position_ids:
+                row.is_active = True
+            else:
+                await db.delete(row)
+
+        for position_id in desired_position_ids - existing_by_position.keys():
+            db.add(UserPosition(
+                company_id=company_id,
+                user_id=payload.user_id,
+                position_id=position_id,
+            ))
     await db.commit()
-    return {"detail": "บันทึกสิทธิ์เรียบร้อย"}
+    return {
+        "detail": "บันทึกสิทธิ์และตำแหน่งเรียบร้อย",
+        "position_ids": sorted(desired_position_ids) if desired_position_ids is not None else None,
+    }
 
 
 @router.post("/{company_id}/users/invite", response_model=UserCompanyOut, status_code=201)

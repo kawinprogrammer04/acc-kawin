@@ -14,7 +14,7 @@ import { PdfSignatureWorkspace, initialPlacement } from "@/components/expense/Pd
 import type { SignaturePlacement } from "@/components/expense/PdfSignatureWorkspace";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
-import { formatCurrency, formatDate, formatNumber, today } from "@/lib/format";
+import { formatCurrency, formatDate, formatDateTime, formatNumber, today } from "@/lib/format";
 
 const fileAsBase64 = (file: File) => new Promise<string>((resolve, reject) => {
   const reader = new FileReader(); reader.onerror = () => reject(reader.error);
@@ -48,7 +48,7 @@ const recipientTypeLabel: Record<string, string> = {
 };
 
 const stepStatusLabel: Record<string, string> = {
-  waiting: "รอตามลำดับ", pending: "รอพิจารณา", approved: "อนุมัติแล้ว",
+  waiting: "รอตามลำดับ", active: "กำลังอนุมัติ", pending: "รอพิจารณา", approved: "อนุมัติแล้ว",
   rejected: "ไม่อนุมัติ", skipped: "ข้ามขั้นตอน",
 };
 
@@ -492,11 +492,12 @@ export function ExpenseRequestDetailPage() {
     {settlements.length > 0 && <Card><CardContent className="space-y-4 p-6"><SectionTitle>รายการเคลียร์เงิน</SectionTitle>{settlements.map(row => <div key={row.id} className="grid gap-3 rounded-lg border p-4 sm:grid-cols-4"><Field label="ประเภท" value={row.settlement_type === "equal" ? "ใช้เท่ากัน" : row.settlement_type === "refund" ? "คืนเงิน" : "ขอส่วนต่างเพิ่ม"} /><Field label="ยอดใช้จริง" value={formatCurrency(row.actual_amount)} /><Field label="ส่วนต่าง" value={formatCurrency(row.difference_amount)} /><Field label="สถานะ" value={row.status} /></div>)}</CardContent></Card>}
 
     <div className="grid gap-5 lg:grid-cols-2">
-      <Card><CardContent className="space-y-5 p-6"><SectionTitle>เส้นทางอนุมัติ</SectionTitle>{request.steps.length ? <ol className="space-y-3">{request.steps.map((step) => <li key={step.id} className="flex gap-3 rounded-lg border p-4"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{step.step_no}</div><div><p className="font-medium">{step.approver_position_name || `ขั้นตอนที่ ${step.step_no}`}</p><p className="text-sm text-muted-foreground">{step.resolved_approver_name || "ยังไม่ระบุผู้อนุมัติ"} · {stepStatusLabel[step.status]}</p>{step.comment && <p className="mt-1 text-sm">{step.comment}</p>}</div></li>)}</ol> : <p className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">ยังไม่ส่งอนุมัติ</p>}</CardContent></Card>
+      <Card><CardContent className="space-y-5 p-6"><SectionTitle>เส้นทางอนุมัติ</SectionTitle>{request.steps.length ? <ol className="space-y-3">{request.steps.map((step) => <li key={step.id} className="flex gap-3 rounded-lg border p-4"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{step.step_no}</div><div className="min-w-0 flex-1"><p className="font-medium">{step.name || step.approver_position_name || `ขั้นตอนที่ ${step.step_no}`}</p>{step.approvers?.length ? <div className="mt-1 space-y-1">{step.approvers.map((approver, index) => <p key={`${step.id}-${approver.user_id || index}`} className="text-sm text-muted-foreground">{approver.name || "ยังไม่ระบุผู้อนุมัติ"} · {stepStatusLabel[approver.status] || approver.status}{approver.acted_at && <span className="ml-2 text-xs">{formatDate(approver.acted_at)}</span>}</p>)}</div> : <p className="text-sm text-muted-foreground">{step.resolved_approver_name || "ยังไม่ระบุผู้อนุมัติ"} · {stepStatusLabel[step.status] || step.status}</p>}{step.comment && <p className="mt-1 text-sm">{step.comment}</p>}</div></li>)}</ol> : <p className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">ยังไม่ส่งอนุมัติ</p>}</CardContent></Card>
       <Card><CardContent className="space-y-5 p-6"><SectionTitle>ประวัติและ Audit</SectionTitle><ol className="space-y-4">
         <li className="flex gap-3"><Clock3 className="mt-0.5 h-5 w-5 text-muted-foreground" /><div><p className="font-medium">สร้างคำขอ</p><p className="text-sm text-muted-foreground">{formatDate(request.created_at)} · {request.requester_name}</p></div></li>
         {request.submitted_at && <li className="flex gap-3"><Send className="mt-0.5 h-5 w-5 text-amber-600" /><div><p className="font-medium">ส่งอนุมัติ</p><p className="text-sm text-muted-foreground">{formatDate(request.submitted_at)}</p></div></li>}
         {request.steps.filter((step) => step.decided_at).map((step) => <li key={step.id} className="flex gap-3">{step.status === "approved" ? <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600" /> : <RotateCcw className="mt-0.5 h-5 w-5 text-rose-600" />}<div><p className="font-medium">{stepStatusLabel[step.status]} · ขั้นตอนที่ {step.step_no}</p><p className="text-sm text-muted-foreground">{formatDate(step.decided_at)} · {step.resolved_approver_name}</p></div></li>)}
+        {request.approved_at && <li className="flex gap-3"><CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600" /><div><p className="font-medium">อนุมัติครบ</p><p className="text-sm text-muted-foreground">{formatDateTime(request.approved_at)}</p></div></li>}
         {histories.filter(row => !["legacy_imported","submitted"].includes(row.event)).map(row => <li key={`history-${row.id}`} className="flex gap-3"><Clock3 className="mt-0.5 h-5 w-5 text-primary" /><div><p className="font-medium">{row.event} · revision {row.revision}</p><p className="text-sm text-muted-foreground">{formatDate(row.created_at)}{row.note ? ` · ${row.note}` : ""}</p></div></li>)}
       </ol></CardContent></Card>
     </div>

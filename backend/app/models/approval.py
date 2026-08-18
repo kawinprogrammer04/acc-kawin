@@ -85,6 +85,12 @@ class ApprovalRule(Base):
     requester_position_id: Mapped[int] = mapped_column(Integer, ForeignKey("positions.id"), nullable=False)
     expense_type_id: Mapped[int] = mapped_column(Integer, ForeignKey("expense_types.id"), nullable=False)
     amount_range = mapped_column(NUMRANGE, nullable=False)
+    source_system: Mapped[Optional[str]] = mapped_column(String(20))
+    source_policy_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    source_policy_name: Mapped[Optional[str]] = mapped_column(String(255))
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    specificity: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=3)
+    request_kind: Mapped[Optional[str]] = mapped_column(String(30))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -97,7 +103,11 @@ class ApprovalRuleStep(Base):
         Integer, ForeignKey("approval_rules.id", ondelete="CASCADE"), nullable=False
     )
     step_no: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    approver_position_id: Mapped[int] = mapped_column(Integer, ForeignKey("positions.id"), nullable=False)
+    approver_position_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("positions.id"))
+    name: Mapped[Optional[str]] = mapped_column(String(180))
+    approve_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="any")
+    target_type: Mapped[str] = mapped_column(String(30), nullable=False, default="position")
+    target_user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"))
 
 
 # ─── PositionPrimaryApprover ──────────────────────────────────
@@ -278,7 +288,7 @@ class ApprovalRequestStep(Base):
     name: Mapped[Optional[str]] = mapped_column(String(180))
     approve_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="any")
     step_no: Mapped[int] = mapped_column(SmallInteger, nullable=False)
-    approver_position_id: Mapped[int] = mapped_column(Integer, ForeignKey("positions.id"), nullable=False)
+    approver_position_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("positions.id"))
     resolved_approver_user_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="waiting")
     comment: Mapped[Optional[str]] = mapped_column(Text)

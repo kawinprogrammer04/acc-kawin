@@ -419,6 +419,8 @@ async def create_user(
         raise HTTPException(status_code=400, detail="ต้องเลือกบริษัทก่อนจึงจะกำหนดตำแหน่งได้")
 
     if payload.position_ids:
+        if len(set(payload.position_ids)) != len(payload.position_ids):
+            raise HTTPException(status_code=400, detail="พบตำแหน่งซ้ำในรายการที่เลือก")
         valid_ids = (
             await db.execute(
                 select(Position.id).where(

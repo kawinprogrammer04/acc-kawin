@@ -41,7 +41,14 @@ from app.models.approval import (
 )
 from app.models.company import Company, UserCompany
 from app.models.user import User
-from app.models.expense_finance import Department, ExpenseApprovalCandidate, ExpenseAttachmentRequirement, ExpensePayment, ExpenseRequestHistory
+from app.models.expense_finance import (
+    Department,
+    ExpenseApprovalCandidate,
+    ExpenseAttachmentRequirement,
+    ExpensePayment,
+    ExpenseRequestHistory,
+    ExpenseRequestLegacyApprovalStep,
+)
 from app.schemas.approval import (
     DecisionIn,
     DelegationCreate,
@@ -372,7 +379,11 @@ async def create_expense_type(
 ):
     obj = ExpenseType(company_id=company.id, **payload.model_dump())
     db.add(obj)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "มีรหัสประเภทค่าใช้จ่ายนี้อยู่แล้ว") from exc
     await db.refresh(obj)
     return obj
 
@@ -388,9 +399,57 @@ async def update_expense_type(
     obj = await _get_company_row(db, ExpenseType, expense_type_id, company.id, "ไม่พบประเภทการเบิกนี้")
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(obj, key, value)
-    await db.commit()
+    obj.updated_at = datetime.now(timezone.utc)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "มีรหัสประเภทค่าใช้จ่ายนี้อยู่แล้ว") from exc
     await db.refresh(obj)
     return obj
+
+
+@router.delete("/expense-types/{expense_type_id}")
+async def delete_expense_type(
+    expense_type_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(settings_delete),
+    company: Company = Depends(get_current_company),
+):
+    obj = await _get_company_row(db, ExpenseType, expense_type_id, company.id, "ไม่พบประเภทการเบิกนี้")
+
+    in_use = (
+        await db.execute(
+            select(func.count()).select_from(ExpenseRequest).where(
+                ExpenseRequest.company_id == company.id,
+                ExpenseRequest.expense_type_id == expense_type_id,
+            )
+        )
+    ).scalar_one()
+
+    if in_use:
+        # ประเภทนี้เคยถูกใช้บันทึกคำขอเบิกแล้ว — ปิดการใช้งานแทนการลบถาวร
+        obj.is_active = False
+        obj.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(obj)
+        return {"deactivated": True, "expense_type": ExpenseTypeOut.model_validate(obj)}
+
+    rule_ids = (
+        await db.execute(select(ApprovalRule.id).where(ApprovalRule.expense_type_id == expense_type_id))
+    ).scalars().all()
+    if rule_ids:
+        await db.execute(delete(ApprovalRuleStep).where(ApprovalRuleStep.approval_rule_id.in_(rule_ids)))
+        await db.execute(delete(ApprovalRule).where(ApprovalRule.id.in_(rule_ids)))
+    await db.execute(
+        delete(ExpenseAttachmentRequirement).where(
+            ExpenseAttachmentRequirement.company_id == company.id,
+            ExpenseAttachmentRequirement.expense_type_id == expense_type_id,
+        )
+    )
+    await db.delete(obj)
+    await db.commit()
+    return {"deactivated": False}
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -812,7 +871,7 @@ async def _request_to_out(
                      if include_sensitive and req.recipient_tax_id_encrypted else (req.taxpayer_id if include_sensitive else None)),
         taxpayer_address=req.taxpayer_address, status=req.status,
         current_step_no=req.current_step_no, submitted_at=req.submitted_at,
-        decided_at=req.decided_at, created_at=req.created_at,
+        approved_at=req.approved_at, decided_at=req.decided_at, created_at=req.created_at,
     )
 
 
@@ -894,7 +953,30 @@ async def get_expense_request(
     # otherwise old and new revisions' rows mix together with only `step_no`
     # to sort by, which is unstable across ties and randomly resurfaces
     # stale/returned steps from a prior revision.
-    is_participant = req.requester_user_id == current_user.id or any(
+    step_ids = [s.id for s in all_steps]
+    is_candidate = bool(step_ids) and (await db.execute(select(ExpenseApprovalCandidate.id).where(
+        ExpenseApprovalCandidate.request_step_id.in_(step_ids),
+        ExpenseApprovalCandidate.user_id == current_user.id,
+    ).limit(1))).scalar_one_or_none() is not None
+    legacy_steps = []
+    if not [s for s in all_steps if s.revision == req.current_revision]:
+        legacy_steps = (
+            await db.execute(
+                select(ExpenseRequestLegacyApprovalStep)
+                .where(
+                    ExpenseRequestLegacyApprovalStep.expense_request_id == request_id,
+                    ExpenseRequestLegacyApprovalStep.revision == req.current_revision,
+                )
+                .order_by(ExpenseRequestLegacyApprovalStep.step_no)
+            )
+        ).scalars().all()
+    legacy_approver_ids = {
+        int(approver["user_id"])
+        for step in legacy_steps
+        for approver in (step.approvers or [])
+        if approver.get("user_id") is not None
+    }
+    is_participant = req.requester_user_id == current_user.id or is_candidate or current_user.id in legacy_approver_ids or any(
         s.resolved_approver_user_id == current_user.id for s in all_steps
     )
     steps = [s for s in all_steps if s.revision == req.current_revision]
@@ -960,14 +1042,40 @@ async def get_expense_request(
         steps=[
             {
                 "id": s.id, "step_no": s.step_no,
+                "name": s.name,
                 "approver_position_id": s.approver_position_id,
                 "approver_position_name": positions.get(s.approver_position_id),
                 "resolved_approver_user_id": s.resolved_approver_user_id,
                 "resolved_approver_name": users.get(s.resolved_approver_user_id) if s.resolved_approver_user_id else None,
                 "status": s.status, "comment": s.comment,
                 "decided_by": s.decided_by, "decided_at": s.decided_at,
+                "approvers": [{
+                    "user_id": s.resolved_approver_user_id,
+                    "name": users.get(s.resolved_approver_user_id),
+                    "position_name": positions.get(s.approver_position_id),
+                    "status": s.status,
+                    "comments": s.comment,
+                    "acted_at": s.decided_at,
+                }] if s.resolved_approver_user_id else [],
             }
             for s in steps
+        ] if steps else [
+            {
+                "id": -s.id,
+                "step_no": s.step_no,
+                "name": s.name,
+                "approver_position_id": None,
+                "approver_position_name": s.name,
+                "resolved_approver_user_id": (s.approvers or [{}])[0].get("user_id"),
+                "resolved_approver_name": (s.approvers or [{}])[0].get("name"),
+                "status": s.status,
+                "comment": (s.approvers or [{}])[0].get("comments"),
+                "decided_by": None,
+                "decided_at": (s.approvers or [{}])[0].get("acted_at") or s.completed_at,
+                "approvers": s.approvers or [],
+                "is_legacy": True,
+            }
+            for s in legacy_steps
         ],
         installment_siblings=[
             {
