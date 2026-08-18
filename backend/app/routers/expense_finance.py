@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse, Response
-from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from app.models.approval import ApprovalRequestStep, ExpenseRequest, ExpenseType
 from app.models.company import Company, UserCompany
 from app.models.expense_finance import (
     Department, ExpenseAttachmentRequirement, ExpensePayment, ExpenseRequestHistory,
+    ExpenseRequestLegacyApprovalStep,
     ExpenseSettlement, ExpenseWithholdingTaxCertificate, SystemNotification,
 )
 from app.models.user import User
@@ -69,8 +70,9 @@ async def _can_view(db: AsyncSession, req: ExpenseRequest, user: User, *, accoun
 
 
 ACCOUNTING_STATUSES = [
-    "accounting_review", "ready_to_pay", "partially_paid", "paid", "settlement_due",
-    "settlement_review", "completed",
+    "pending_approval", "pending_adjustment_approval", "accounting_review",
+    "ready_to_pay", "partially_paid", "paid", "settlement_due", "settlement_review",
+    "completed",
 ]
 
 
@@ -116,6 +118,36 @@ def _accounting_query(
     return stmt
 
 
+def _append_legacy_approval_steps(
+    steps_by_request: dict[str, list[dict]],
+    legacy_steps: list[ExpenseRequestLegacyApprovalStep],
+    current_revisions: dict[str, int],
+    native_step_request_ids: set[str],
+) -> None:
+    """Append every HR step only when the request has no native ACC route.
+
+    Checking ``steps_by_request`` inside the loop is incorrect because adding
+    the first legacy step makes the following legacy steps look like a native
+    route. Keep the native-request set captured before appending instead.
+    """
+    for step in legacy_steps:
+        if step.expense_request_id in native_step_request_ids:
+            continue
+        if step.revision != current_revisions.get(step.expense_request_id):
+            continue
+        steps_by_request[step.expense_request_id].append({
+            "id": -step.id,
+            "step_no": step.step_no,
+            "name": step.name,
+            "approver_position_name": None,
+            "approver_name": None,
+            "approvers": step.approvers,
+            "status": step.status,
+            "decided_at": step.completed_at,
+            "is_legacy": True,
+        })
+
+
 @router.get("/expense-requests/accounting/list")
 async def accounting_list(
     status: Optional[str] = None, query: Optional[str] = None,
@@ -131,9 +163,14 @@ async def accounting_list(
         date_from=date_from, date_to=date_to, withholding_only=withholding_only,
         query=query,
     )
-    rows = (await db.execute(stmt.order_by(ExpenseRequest.approved_at.desc().nullslast(), ExpenseRequest.updated_at.desc()).limit(limit).offset(offset))).scalars().all()
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await db.execute(stmt.order_by(
+        case((ExpenseRequest.status.in_(["pending_approval", "pending_adjustment_approval"]), 0), else_=1),
+        ExpenseRequest.approved_at.desc().nullslast(),
+        ExpenseRequest.updated_at.desc(),
+    ).limit(limit).offset(offset))).scalars().all()
     if not rows:
-        return []
+        return {"items": [], "total": total, "limit": limit, "offset": offset}
     request_ids = [row.id for row in rows]
     type_names = dict((await db.execute(select(ExpenseType.id, ExpenseType.name).where(
         ExpenseType.id.in_({row.expense_type_id for row in rows})
@@ -148,7 +185,57 @@ async def accounting_list(
         ExpenseSettlement.expense_request_id.in_(request_ids)
     ).order_by(ExpenseSettlement.created_at))).scalars().all()
     settlements = {item.expense_request_id: item for item in settlement_rows}
-    return [{
+    approval_steps = (await db.execute(select(ApprovalRequestStep).where(
+        ApprovalRequestStep.expense_request_id.in_(request_ids)
+    ).order_by(ApprovalRequestStep.expense_request_id, ApprovalRequestStep.step_no))).scalars().all()
+    current_revisions = {row.id: row.current_revision for row in rows}
+    approval_steps = [
+        step for step in approval_steps
+        if step.revision == current_revisions.get(step.expense_request_id)
+    ]
+    position_ids = {step.approver_position_id for step in approval_steps if step.approver_position_id is not None}
+    approver_user_ids = {step.resolved_approver_user_id for step in approval_steps if step.resolved_approver_user_id}
+    position_names = dict((await db.execute(select(Position.id, Position.name).where(
+        Position.id.in_(position_ids)
+    ))).all()) if position_ids else {}
+    approver_names = {
+        user_id: full_name or username
+        for user_id, full_name, username in (
+            await db.execute(select(User.id, User.full_name, User.username).where(User.id.in_(approver_user_ids)))
+        ).all()
+    } if approver_user_ids else {}
+    steps_by_request: dict[str, list[dict]] = {request_id: [] for request_id in request_ids}
+    for step in approval_steps:
+        position_name = position_names.get(step.approver_position_id)
+        steps_by_request[step.expense_request_id].append({
+            "id": step.id,
+            "step_no": step.step_no,
+            "name": step.name or position_name,
+            "approver_position_name": position_name,
+            "approver_name": approver_names.get(step.resolved_approver_user_id),
+            "approvers": [{
+                "user_id": step.resolved_approver_user_id,
+                "name": approver_names.get(step.resolved_approver_user_id),
+                "position_name": position_name,
+                "status": step.status,
+                "acted_at": step.decided_at,
+            }] if step.resolved_approver_user_id else [],
+            "status": step.status,
+            "decided_at": step.decided_at,
+        })
+    native_step_request_ids = {
+        request_id for request_id, steps in steps_by_request.items() if steps
+    }
+    legacy_steps = (await db.execute(select(ExpenseRequestLegacyApprovalStep).where(
+        ExpenseRequestLegacyApprovalStep.expense_request_id.in_(request_ids)
+    ).order_by(
+        ExpenseRequestLegacyApprovalStep.expense_request_id,
+        ExpenseRequestLegacyApprovalStep.step_no,
+    ))).scalars().all()
+    _append_legacy_approval_steps(
+        steps_by_request, legacy_steps, current_revisions, native_step_request_ids,
+    )
+    items = [{
         "id": r.id, "request_no": r.request_no, "request_date": r.request_date,
         "title": r.title, "recipient_name": r.recipient_name,
         "requester_name": r.requester_name_snapshot, "request_format": r.request_format,
@@ -164,7 +251,8 @@ async def accounting_list(
         "installment_no": r.installment_no, "installment_chain_root_id": r.installment_chain_root_id,
         "installment_chain_status": r.installment_chain_status,
         "installment_payment_amount": r.installment_payment_amount,
-        "settlement_due_date": r.settlement_due_date, "approved_at": r.approved_at,
+        "settlement_due_date": r.settlement_due_date, "submitted_at": r.submitted_at,
+        "approved_at": r.approved_at, "approval_steps": steps_by_request[r.id],
         "is_adjustment_transfer": (
             r.id in paid_request_ids and r.id in settlements
             and settlements[r.id].settlement_type == "additional"
@@ -178,6 +266,7 @@ async def accounting_list(
             else r.remaining_amount
         ),
     } for r in rows]
+    return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/expense-requests/accounting/stats", response_model=AccountingStatsOut)
@@ -186,9 +275,16 @@ async def accounting_stats(
     company: Company = Depends(get_current_company),
 ):
     rows = (await db.execute(_accounting_query(company))).scalars().all()
+    pending_approval_count = (await db.execute(
+        select(func.count()).select_from(ExpenseRequest).where(
+            ExpenseRequest.company_id == company.id,
+            ExpenseRequest.status.in_(["pending_approval", "pending_adjustment_approval"]),
+        )
+    )).scalar_one()
     today = datetime.now(timezone.utc).date()
     ready = [r for r in rows if r.status == "ready_to_pay"]
     return AccountingStatsOut(
+        pending_approval_count=pending_approval_count,
         accounting_review_count=sum(r.status == "accounting_review" for r in rows),
         ready_to_pay_count=len(ready), settlement_review_count=sum(r.status == "settlement_review" for r in rows),
         overdue_count=sum(r.status == "settlement_due" and r.settlement_due_date and r.settlement_due_date < today for r in rows),

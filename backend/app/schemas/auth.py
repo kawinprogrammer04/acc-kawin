@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class LoginRequest(BaseModel):
@@ -22,7 +22,7 @@ class UserCreate(BaseModel):
     role: str = "accountant"
     company_id: int | None = None
     department_id: int | None = None
-    position_ids: list[int] = []
+    position_ids: list[int] = Field(default_factory=list)
 
 
 class UserUpdate(BaseModel):

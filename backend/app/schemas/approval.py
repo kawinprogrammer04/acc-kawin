@@ -112,7 +112,7 @@ class RuleCreate(BaseModel):
 
 class RuleStepOut(BaseModel):
     step_no: int
-    approver_position_id: int
+    approver_position_id: Optional[int] = None
     approver_position_name: Optional[str] = None
 
 
@@ -166,7 +166,7 @@ class DelegationOut(BaseModel):
 # ── Route preview ────────────────────────────────────────────────────────────
 class RoutePreviewStep(BaseModel):
     step_no: int
-    approver_position_id: int
+    approver_position_id: Optional[int] = None
     approver_position_name: str
     resolved_approver_user_id: Optional[int] = None
     resolved_approver_name: Optional[str] = None
@@ -334,6 +334,7 @@ class ExpenseRequestOut(BaseModel):
     status: str
     current_step_no: Optional[int]
     submitted_at: Optional[datetime]
+    approved_at: Optional[datetime]
     decided_at: Optional[datetime]
     created_at: datetime
     model_config = {"from_attributes": True}
@@ -342,7 +343,8 @@ class ExpenseRequestOut(BaseModel):
 class ApprovalStepTimelineOut(BaseModel):
     id: int
     step_no: int
-    approver_position_id: int
+    name: Optional[str] = None
+    approver_position_id: Optional[int] = None
     approver_position_name: Optional[str] = None
     resolved_approver_user_id: Optional[int]
     resolved_approver_name: Optional[str] = None
@@ -350,6 +352,8 @@ class ApprovalStepTimelineOut(BaseModel):
     comment: Optional[str]
     decided_by: Optional[int]
     decided_at: Optional[datetime]
+    approvers: list[dict] = []
+    is_legacy: bool = False
     model_config = {"from_attributes": True}
 
 

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,16 +48,23 @@ async def find_matching_rule(
     requester_position_id: int,
     expense_type_id: int,
     amount: Decimal,
+    request_kind: Optional[str] = None,
 ) -> Optional[ApprovalRule]:
+    kind_filter = (
+        ApprovalRule.request_kind == request_kind
+        if request_kind in {"ot", "allowance"}
+        else or_(ApprovalRule.request_kind.is_(None), ApprovalRule.request_kind == request_kind)
+    )
     result = await db.execute(
         select(ApprovalRule).where(
             ApprovalRule.policy_version_id == policy_version_id,
             ApprovalRule.requester_position_id == requester_position_id,
             ApprovalRule.expense_type_id == expense_type_id,
             ApprovalRule.amount_range.contains(amount),
-        )
+            kind_filter,
+        ).order_by(ApprovalRule.priority, ApprovalRule.specificity.desc(), ApprovalRule.source_policy_id).limit(1)
     )
-    exact = result.scalar_one_or_none()
+    exact = result.scalars().first()
     if exact:
         return exact
     # HR matrix semantics: if an amount falls in a configured gap, escalate to
@@ -68,7 +75,9 @@ async def find_matching_rule(
             ApprovalRule.requester_position_id == requester_position_id,
             ApprovalRule.expense_type_id == expense_type_id,
             func.lower(ApprovalRule.amount_range) >= amount,
-        ).order_by(func.lower(ApprovalRule.amount_range)).limit(1)
+            kind_filter,
+        ).order_by(func.lower(ApprovalRule.amount_range), ApprovalRule.priority,
+                   ApprovalRule.specificity.desc(), ApprovalRule.source_policy_id).limit(1)
     )
     return fallback.scalar_one_or_none()
 
@@ -127,6 +136,8 @@ async def resolve_approver_for_position(
 
 
 async def _position_name(db: AsyncSession, position_id: int) -> str:
+    if position_id is None:
+        return "ผู้อนุมัติเฉพาะบุคคล"
     result = await db.execute(select(Position.name).where(Position.id == position_id))
     return result.scalar_one_or_none() or f"ตำแหน่ง #{position_id}"
 
@@ -137,6 +148,33 @@ async def _user_display_name(db: AsyncSession, user_id: int) -> str:
     if not row:
         return f"ผู้ใช้ #{user_id}"
     return row[0] or row[1]
+
+
+async def resolve_rule_step_approvers(
+    db: AsyncSession, step: ApprovalRuleStep, at_time: datetime
+) -> list[int]:
+    """Resolve both native ACC targets and exact HR policy targets."""
+    if step.target_type == "user":
+        if step.target_user_id is None:
+            return []
+        active = (await db.execute(select(User.id).where(
+            User.id == step.target_user_id, User.is_active.is_(True)
+        ))).scalar_one_or_none()
+        return [active] if active is not None else []
+    if step.target_type == "hr_position":
+        if step.approver_position_id is None:
+            return []
+        return list((await db.execute(
+            select(UserPosition.user_id)
+            .join(User, User.id == UserPosition.user_id)
+            .where(UserPosition.position_id == step.approver_position_id,
+                   UserPosition.is_active.is_(True), User.is_active.is_(True))
+            .distinct().order_by(UserPosition.user_id)
+        )).scalars().all())
+    if step.approver_position_id is None:
+        return []
+    user_id = await resolve_approver_for_position(db, step.approver_position_id, at_time)
+    return [user_id] if user_id is not None else []
 
 
 async def preview_route(
@@ -164,13 +202,15 @@ async def preview_route(
     rule_steps = await get_rule_steps(db, rule.id)
     steps = []
     for rs in rule_steps:
-        approver_user_id = await resolve_approver_for_position(db, rs.approver_position_id, at_time)
+        approver_user_ids = await resolve_rule_step_approvers(db, rs, at_time)
+        approver_user_id = approver_user_ids[0] if approver_user_ids else None
+        approver_names = [await _user_display_name(db, uid) for uid in approver_user_ids]
         steps.append({
             "step_no": rs.step_no,
             "approver_position_id": rs.approver_position_id,
-            "approver_position_name": await _position_name(db, rs.approver_position_id),
+            "approver_position_name": rs.name or await _position_name(db, rs.approver_position_id),
             "resolved_approver_user_id": approver_user_id,
-            "resolved_approver_name": await _user_display_name(db, approver_user_id) if approver_user_id else None,
+            "resolved_approver_name": ", ".join(approver_names) if approver_names else None,
             "warning": None if approver_user_id else "ยังไม่ได้กำหนดผู้อนุมัติหลักสำหรับตำแหน่งนี้",
         })
     return {"matched": True, "message": None, "rule_id": rule.id, "steps": steps}
@@ -199,7 +239,8 @@ async def submit_expense_request(db: AsyncSession, request: ExpenseRequest) -> E
         raise ValueError("บริษัทนี้ยังไม่มีสายอนุมัติที่เปิดใช้งาน (ACTIVE) กรุณาติดต่อผู้ดูแลระบบ")
 
     rule = await find_matching_rule(
-        db, policy_version.id, request.requester_position_id, request.expense_type_id, routing_amount(request)
+        db, policy_version.id, request.requester_position_id, request.expense_type_id,
+        routing_amount(request), request.request_format
     )
     if not rule:
         raise ValueError("ไม่พบกฎการอนุมัติสำหรับตำแหน่ง/ประเภทการเบิก/ยอดเงินนี้ กรุณาติดต่อผู้ดูแลระบบ")
@@ -208,13 +249,13 @@ async def submit_expense_request(db: AsyncSession, request: ExpenseRequest) -> E
     if not rule_steps:
         raise ValueError("กฎการอนุมัตินี้ยังไม่ได้กำหนดขั้นตอนผู้อนุมัติ")
 
-    resolved: list[tuple[ApprovalRuleStep, Optional[int]]] = []
+    resolved: list[tuple[ApprovalRuleStep, list[int]]] = []
     for rs in rule_steps:
-        approver_user_id = await resolve_approver_for_position(db, rs.approver_position_id, now)
-        if approver_user_id is None:
-            position_name = await _position_name(db, rs.approver_position_id)
-            raise ValueError(f"ยังไม่ได้กำหนดผู้อนุมัติหลักสำหรับตำแหน่ง '{position_name}' กรุณาติดต่อผู้ดูแลระบบก่อนส่งคำขอ")
-        resolved.append((rs, approver_user_id))
+        approver_user_ids = await resolve_rule_step_approvers(db, rs, now)
+        if not approver_user_ids:
+            step_name = rs.name or await _position_name(db, rs.approver_position_id)
+            raise ValueError(f"ไม่พบผู้อนุมัติสำหรับขั้น '{step_name}' กรุณาติดต่อผู้ดูแลระบบก่อนส่งคำขอ")
+        resolved.append((rs, approver_user_ids))
 
     request.policy_version_id = policy_version.id
     request.approval_rule_id = rule.id
@@ -223,14 +264,15 @@ async def submit_expense_request(db: AsyncSession, request: ExpenseRequest) -> E
     request.current_step_no = resolved[0][0].step_no
     request.submitted_at = now
 
-    for rs, approver_user_id in resolved:
+    for rs, approver_user_ids in resolved:
         db.add(ApprovalRequestStep(
             expense_request_id=request.id,
             revision=request.current_revision,
             step_no=rs.step_no,
-            name=await _position_name(db, rs.approver_position_id),
+            name=rs.name or await _position_name(db, rs.approver_position_id),
+            approve_mode=rs.approve_mode,
             approver_position_id=rs.approver_position_id,
-            resolved_approver_user_id=approver_user_id,
+            resolved_approver_user_id=approver_user_ids[0],
             status="pending" if rs.step_no == request.current_step_no else "waiting",
             activated_at=now if rs.step_no == request.current_step_no else None,
         ))
@@ -240,15 +282,18 @@ async def submit_expense_request(db: AsyncSession, request: ExpenseRequest) -> E
         ApprovalRequestStep.expense_request_id == request.id,
         ApprovalRequestStep.revision == request.current_revision,
     ))).scalars().all()
+    resolved_by_step = {rs.step_no: ids for rs, ids in resolved}
     for row in new_steps:
-        if row.resolved_approver_user_id:
+        for approver_user_id in resolved_by_step.get(row.step_no, []):
             db.add(ExpenseApprovalCandidate(
                 company_id=request.company_id, request_step_id=row.id,
-                user_id=row.resolved_approver_user_id, source_id=row.approver_position_id,
+                user_id=approver_user_id,
+                source_type="user" if row.approver_position_id is None else "position",
+                source_id=row.approver_position_id,
             ))
             if row.status == "pending":
                 db.add(SystemNotification(
-                    company_id=request.company_id, user_id=row.resolved_approver_user_id,
+                    company_id=request.company_id, user_id=approver_user_id,
                     expense_request_id=request.id, type="approval_requested",
                     title="มีรายการเบิกรออนุมัติ", message=f"{request.request_no}: {request.title}",
                     action_url=f"/expense-requests/{request.id}",
@@ -360,9 +405,13 @@ async def decide_step(
             next_step.status = "pending"
             next_step.activated_at = now
             request.current_step_no = next_step.step_no
-            if next_step.resolved_approver_user_id:
+            next_candidate_ids = list((await db.execute(select(ExpenseApprovalCandidate.user_id).where(
+                ExpenseApprovalCandidate.request_step_id == next_step.id,
+                ExpenseApprovalCandidate.status == "pending",
+            ))).scalars().all())
+            for next_user_id in next_candidate_ids:
                 db.add(SystemNotification(
-                    company_id=request.company_id, user_id=next_step.resolved_approver_user_id,
+                    company_id=request.company_id, user_id=next_user_id,
                     expense_request_id=request.id, type="approval_requested",
                     title="มีรายการเบิกรออนุมัติ", message=f"{request.request_no}: {request.title}",
                     action_url=f"/expense-requests/{request.id}",

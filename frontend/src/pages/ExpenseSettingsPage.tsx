@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useState } from "react";
 import { FileCheck2, Pencil, Plus, Trash2, Workflow } from "lucide-react";
 import { expenseSettingsApi, expenseTypesApi } from "@/api/approvals";
 import type { AttachmentRequirement, ExpenseType } from "@/api/approvals";
@@ -61,6 +61,57 @@ const requirementToDraft = (requirement: AttachmentRequirement): RequirementDraf
   sort_order: requirement.sort_order,
 });
 
+const KIND_OPTIONS = [
+  { value: "reimbursement", label: "เบิกค่าใช้จ่าย (คืนเงินภายหลัง)" },
+  { value: "advance", label: "ขอเงินทดรอง (สำรองจ่ายล่วงหน้า)" },
+  { value: "direct_payment", label: "ชำระตรงให้ผู้ขาย" },
+] as const;
+
+type TypeDraft = {
+  code: string;
+  name: string;
+  description: string;
+  allowed_kinds: string[];
+  requires_payment_proof: boolean;
+  may_require_withholding_tax: boolean;
+  settlement_days: number;
+  is_active: boolean;
+};
+
+const blankType = (): TypeDraft => ({
+  code: "",
+  name: "",
+  description: "",
+  allowed_kinds: ["reimbursement", "advance"],
+  requires_payment_proof: true,
+  may_require_withholding_tax: true,
+  settlement_days: 7,
+  is_active: true,
+});
+
+const typeToDraft = (type: ExpenseType): TypeDraft => ({
+  code: type.code,
+  name: type.name,
+  description: type.description ?? "",
+  allowed_kinds: [...type.allowed_kinds],
+  requires_payment_proof: type.requires_payment_proof,
+  may_require_withholding_tax: type.may_require_withholding_tax,
+  settlement_days: type.settlement_days,
+  is_active: type.is_active,
+});
+
+function FieldSection({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold">{title}</h3>
+        {subtitle && <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 export function ExpenseSettingsPage() {
   const [tab, setTab] = useState<"types" | "workflow">("types");
   const [types, setTypes] = useState<ExpenseType[]>([]);
@@ -73,10 +124,19 @@ export function ExpenseSettingsPage() {
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
 
+  const [editingType, setEditingType] = useState<ExpenseType | null>(null);
+  const [typeDraft, setTypeDraft] = useState<TypeDraft | null>(null);
+  const [savingType, setSavingType] = useState(false);
+  const [deletingTypeId, setDeletingTypeId] = useState<number | null>(null);
+  const [togglingTypeId, setTogglingTypeId] = useState<number | null>(null);
+  const [typeDialogError, setTypeDialogError] = useState<string | null>(null);
+
   const loadTypes = async () => {
-    const rows = await expenseTypesApi.list();
+    const rows: ExpenseType[] = await expenseTypesApi.list();
     setTypes(rows);
-    setSelectedType((current) => current ?? rows[0]?.id);
+    setSelectedType((current) =>
+      current && rows.some((row) => row.id === current) ? current : rows[0]?.id,
+    );
   };
 
   const loadRequirements = async (typeId: number) => {
@@ -191,6 +251,119 @@ export function ExpenseSettingsPage() {
     }
   };
 
+  const openCreateType = () => {
+    setEditingType(null);
+    setTypeDraft(blankType());
+    setMessage(null);
+    setTypeDialogError(null);
+  };
+
+  const openEditType = (type: ExpenseType) => {
+    setEditingType(type);
+    setTypeDraft(typeToDraft(type));
+    setMessage(null);
+    setTypeDialogError(null);
+  };
+
+  const closeTypeDialog = () => {
+    if (savingType) return;
+    setTypeDraft(null);
+    setEditingType(null);
+    setTypeDialogError(null);
+  };
+
+  const toggleAllowedKind = (kind: string, checked: boolean) => {
+    setTypeDraft((current) => {
+      if (!current) return current;
+      const allowed = checked
+        ? [...new Set([...current.allowed_kinds, kind])]
+        : current.allowed_kinds.filter((item) => item !== kind);
+      return { ...current, allowed_kinds: allowed };
+    });
+  };
+
+  const saveType = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!typeDraft) return;
+    if (!typeDraft.code.trim() || !typeDraft.name.trim()) {
+      setTypeDialogError("กรุณาระบุรหัสและชื่อประเภทค่าใช้จ่าย");
+      return;
+    }
+    if (!typeDraft.allowed_kinds.length) {
+      setTypeDialogError("กรุณาเลือกรูปแบบการเบิกอย่างน้อย 1 แบบ");
+      return;
+    }
+
+    setSavingType(true);
+    setMessage(null);
+    setTypeDialogError(null);
+    const payload = {
+      code: typeDraft.code.trim(),
+      name: typeDraft.name.trim(),
+      description: typeDraft.description.trim() || null,
+      allowed_kinds: typeDraft.allowed_kinds,
+      requires_payment_proof: typeDraft.requires_payment_proof,
+      may_require_withholding_tax: typeDraft.may_require_withholding_tax,
+      settlement_days: typeDraft.settlement_days,
+      is_active: typeDraft.is_active,
+    };
+
+    try {
+      if (editingType) {
+        await expenseTypesApi.update(editingType.id, payload);
+      } else {
+        const created = await expenseTypesApi.create(payload);
+        setSelectedType(created.id);
+      }
+      await loadTypes();
+      setTypeDraft(null);
+      setEditingType(null);
+      setMessage({ type: "success", text: editingType ? "แก้ไขประเภทค่าใช้จ่ายแล้ว" : "เพิ่มประเภทค่าใช้จ่ายแล้ว" });
+    } catch (error) {
+      setTypeDialogError(getApiErrorMessage(error, "บันทึกประเภทค่าใช้จ่ายไม่สำเร็จ"));
+    } finally {
+      setSavingType(false);
+    }
+  };
+
+  const deleteType = async (type: ExpenseType) => {
+    if (!window.confirm(`ลบประเภทค่าใช้จ่าย “${type.name}” หรือไม่?\nหากเคยมีการใช้เบิกด้วยประเภทนี้แล้ว ระบบจะปิดการใช้งานแทนการลบถาวร`)) return;
+
+    setDeletingTypeId(type.id);
+    setMessage(null);
+    try {
+      const result = await expenseTypesApi.delete(type.id);
+      await loadTypes();
+      setMessage({
+        type: "success",
+        text: result.deactivated
+          ? `ประเภท “${type.name}” เคยถูกใช้เบิกแล้ว ระบบจึงปิดการใช้งานแทนการลบ`
+          : `ลบประเภท “${type.name}” แล้ว`,
+      });
+    } catch (error) {
+      setMessage({ type: "error", text: getApiErrorMessage(error, "ลบประเภทค่าใช้จ่ายไม่สำเร็จ") });
+    } finally {
+      setDeletingTypeId(null);
+    }
+  };
+
+  const toggleTypeActive = async (type: ExpenseType, checked: boolean) => {
+    setTogglingTypeId(type.id);
+    setMessage(null);
+    try {
+      await expenseTypesApi.update(type.id, { is_active: checked });
+      await loadTypes();
+      setMessage({
+        type: "success",
+        text: checked ? `เปิดใช้งานประเภท “${type.name}” แล้ว` : `ปิดใช้งานประเภท “${type.name}” แล้ว`,
+      });
+    } catch (error) {
+      setMessage({ type: "error", text: getApiErrorMessage(error, "เปลี่ยนสถานะไม่สำเร็จ") });
+    } finally {
+      setTogglingTypeId(null);
+    }
+  };
+
   const tabs = [
     { key: "types", label: "ประเภทและเอกสาร", icon: FileCheck2 },
     { key: "workflow", label: "กฎอนุมัติและมอบหมาย", icon: Workflow },
@@ -235,21 +408,69 @@ export function ExpenseSettingsPage() {
         <div className="grid gap-5 lg:grid-cols-[320px,1fr]">
           <Card>
             <CardContent className="p-5">
-              <h2 className="mb-3 font-semibold">ประเภทค่าใช้จ่าย</h2>
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <h2 className="font-semibold">ประเภทค่าใช้จ่าย</h2>
+                <Button size="sm" onClick={openCreateType}>
+                  <Plus className="h-4 w-4" />
+                  เพิ่มประเภท
+                </Button>
+              </div>
               <div className="space-y-2">
+                {!types.length && (
+                  <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+                    ยังไม่มีประเภทค่าใช้จ่าย
+                  </div>
+                )}
                 {types.map((type) => (
-                  <button
+                  <div
                     key={type.id}
-                    onClick={() => setSelectedType(type.id)}
-                    className={`w-full rounded-lg border p-3 text-left ${
-                      selectedType === type.id ? "border-primary bg-primary/5" : "hover:bg-muted"
+                    className={`w-full rounded-lg border p-3 ${
+                      selectedType === type.id ? "border-primary bg-primary/5" : ""
                     }`}
                   >
-                    <p className="font-medium">{type.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {type.code} · เคลียร์ภายใน {type.settlement_days} วัน
-                    </p>
-                  </button>
+                    <button onClick={() => setSelectedType(type.id)} className="w-full text-left">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-medium">{type.name}</p>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                            type.is_active
+                              ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300"
+                              : "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+                          }`}
+                        >
+                          {type.is_active ? "เปิดใช้งาน" : "ปิดใช้งาน"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        {type.code} · เคลียร์ภายใน {type.settlement_days} วัน
+                      </p>
+                    </button>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Switch
+                          checked={type.is_active}
+                          disabled={togglingTypeId === type.id}
+                          onCheckedChange={(checked) => toggleTypeActive(type, checked)}
+                        />
+                        {type.is_active ? "ใช้งานได้" : "ปิดไว้ ไม่ให้เลือกในคำขอใหม่"}
+                      </label>
+                      <div className="flex gap-2">
+                        <Button variant="outline" size="sm" onClick={() => openEditType(type)}>
+                          <Pencil className="h-4 w-4" />
+                          แก้ไข
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          disabled={deletingTypeId === type.id}
+                          onClick={() => deleteType(type)}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          {deletingTypeId === type.id ? "กำลังลบ" : "ลบ"}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             </CardContent>
@@ -335,7 +556,8 @@ export function ExpenseSettingsPage() {
           </DialogHeader>
 
           {requirementDraft && (
-            <form className="space-y-5" onSubmit={saveRequirement}>
+            <form onSubmit={saveRequirement}>
+            <div className="space-y-5 p-6 pt-4">
               {dialogError && (
                 <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
                   {dialogError}
@@ -437,6 +659,7 @@ export function ExpenseSettingsPage() {
                   />
                 </label>
               </div>
+            </div>
 
               <DialogFooter>
                 <Button type="button" variant="outline" disabled={saving} onClick={closeRequirementDialog}>
@@ -444,6 +667,168 @@ export function ExpenseSettingsPage() {
                 </Button>
                 <Button type="submit" disabled={saving}>
                   {saving ? "กำลังบันทึก..." : "บันทึก"}
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!typeDraft} onOpenChange={(open) => !open && closeTypeDialog()}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editingType ? "แก้ไขประเภทค่าใช้จ่าย" : "เพิ่มประเภทค่าใช้จ่าย"}</DialogTitle>
+            <DialogDescription>ใช้กำหนดรูปแบบการเบิกและระยะเวลาเคลียร์เงินของประเภทนี้</DialogDescription>
+          </DialogHeader>
+
+          {typeDraft && (
+            <form onSubmit={saveType}>
+            <div className="space-y-6 p-6 pt-4">
+              {typeDialogError && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300">
+                  {typeDialogError}
+                </div>
+              )}
+
+              <FieldSection title="ข้อมูลพื้นฐาน" subtitle="รหัสและชื่อที่จะแสดงให้พนักงานเลือกตอนสร้างคำขอเบิก">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="type-code">รหัสประเภท *</Label>
+                    <Input
+                      id="type-code"
+                      value={typeDraft.code}
+                      maxLength={50}
+                      required
+                      autoFocus
+                      onChange={(event) => setTypeDraft({ ...typeDraft, code: event.target.value })}
+                      placeholder="เช่น TRAVEL"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="type-name">ชื่อประเภท *</Label>
+                    <Input
+                      id="type-name"
+                      value={typeDraft.name}
+                      maxLength={150}
+                      required
+                      onChange={(event) => setTypeDraft({ ...typeDraft, name: event.target.value })}
+                      placeholder="เช่น ค่าเดินทาง"
+                    />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="type-description">คำอธิบาย</Label>
+                  <textarea
+                    id="type-description"
+                    value={typeDraft.description}
+                    maxLength={2000}
+                    onChange={(event) => setTypeDraft({ ...typeDraft, description: event.target.value })}
+                    className="min-h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    placeholder="คำแนะนำสำหรับพนักงานเมื่อเลือกประเภทนี้ (ถ้ามี)"
+                  />
+                </div>
+              </FieldSection>
+
+              <div className="border-t pt-6">
+                <FieldSection title="เงื่อนไขการเบิก" subtitle="รูปแบบคำขอที่ใช้ประเภทนี้ได้ และกำหนดเวลาส่งเคลียร์เงิน">
+                  <div className="space-y-2">
+                    <Label>รูปแบบการเบิกที่ใช้ได้ *</Label>
+                    <div className="flex flex-wrap gap-2">
+                      {KIND_OPTIONS.map((kind) => {
+                        const checked = typeDraft.allowed_kinds.includes(kind.value);
+                        return (
+                          <label
+                            key={kind.value}
+                            className={`cursor-pointer rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                              checked ? "border-primary bg-primary text-primary-foreground" : "hover:bg-muted"
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="sr-only"
+                              checked={checked}
+                              onChange={(event) => toggleAllowedKind(kind.value, event.target.checked)}
+                            />
+                            {kind.label}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="max-w-48 space-y-2">
+                    <Label htmlFor="type-settlement-days">เคลียร์เงินภายใน (วัน) *</Label>
+                    <Input
+                      id="type-settlement-days"
+                      type="number"
+                      min={0}
+                      max={365}
+                      required
+                      value={typeDraft.settlement_days}
+                      onChange={(event) =>
+                        setTypeDraft({ ...typeDraft, settlement_days: Number(event.target.value) })
+                      }
+                    />
+                  </div>
+                </FieldSection>
+              </div>
+
+              <div className="border-t pt-6">
+                <FieldSection title="เอกสารและภาษี" subtitle="เงื่อนไขที่ระบบใช้ตรวจก่อนอนุมัติและเคลียร์เงิน">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="flex items-center justify-between gap-4 rounded-lg border p-3">
+                      <span>
+                        <span className="block text-sm font-medium">ต้องมีหลักฐานการจ่าย</span>
+                        <span className="block text-xs text-muted-foreground">บังคับแนบสลิป/ใบเสร็จก่อนเคลียร์</span>
+                      </span>
+                      <Switch
+                        checked={typeDraft.requires_payment_proof}
+                        onCheckedChange={(checked) =>
+                          setTypeDraft({ ...typeDraft, requires_payment_proof: checked })
+                        }
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-4 rounded-lg border p-3">
+                      <span>
+                        <span className="block text-sm font-medium">อาจต้องหัก ณ ที่จ่าย</span>
+                        <span className="block text-xs text-muted-foreground">ให้ผู้ขอระบุสถานะหักภาษีเอง</span>
+                      </span>
+                      <Switch
+                        checked={typeDraft.may_require_withholding_tax}
+                        onCheckedChange={(checked) =>
+                          setTypeDraft({ ...typeDraft, may_require_withholding_tax: checked })
+                        }
+                      />
+                    </label>
+                  </div>
+                </FieldSection>
+              </div>
+
+              {editingType && (
+                <div className="border-t pt-6">
+                  <FieldSection title="สถานะการใช้งาน">
+                    <label className="flex items-center justify-between gap-4 rounded-lg border p-3">
+                      <span>
+                        <span className="block text-sm font-medium">เปิดใช้งาน</span>
+                        <span className="block text-xs text-muted-foreground">
+                          ปิดไว้เพื่อไม่ให้เลือกประเภทนี้ในคำขอเบิกใหม่ โดยไม่กระทบคำขอเดิมที่เคยใช้แล้ว
+                        </span>
+                      </span>
+                      <Switch
+                        checked={typeDraft.is_active}
+                        onCheckedChange={(checked) => setTypeDraft({ ...typeDraft, is_active: checked })}
+                      />
+                    </label>
+                  </FieldSection>
+                </div>
+              )}
+            </div>
+
+              <DialogFooter>
+                <Button type="button" variant="outline" disabled={savingType} onClick={closeTypeDialog}>
+                  ยกเลิก
+                </Button>
+                <Button type="submit" disabled={savingType}>
+                  {savingType ? "กำลังบันทึก..." : "บันทึก"}
                 </Button>
               </DialogFooter>
             </form>

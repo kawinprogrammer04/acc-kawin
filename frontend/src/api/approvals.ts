@@ -44,7 +44,7 @@ export interface PolicyVersion {
 
 export interface RuleStep {
   step_no: number;
-  approver_position_id: number;
+  approver_position_id?: number | null;
   approver_position_name?: string;
 }
 
@@ -81,7 +81,7 @@ export interface Delegation {
 
 export interface RoutePreviewStep {
   step_no: number;
-  approver_position_id: number;
+  approver_position_id?: number | null;
   approver_position_name: string;
   resolved_approver_user_id?: number;
   resolved_approver_name?: string;
@@ -161,6 +161,7 @@ export interface ExpenseRequest {
   status: ExpenseRequestStatus;
   current_step_no?: number;
   submitted_at?: string;
+  approved_at?: string;
   decided_at?: string;
   created_at: string;
 }
@@ -198,7 +199,8 @@ export type ApprovalStepStatus = "waiting" | "pending" | "approved" | "rejected"
 export interface ApprovalStepTimeline {
   id: number;
   step_no: number;
-  approver_position_id: number;
+  name?: string;
+  approver_position_id?: number;
   approver_position_name?: string;
   resolved_approver_user_id?: number;
   resolved_approver_name?: string;
@@ -206,6 +208,11 @@ export interface ApprovalStepTimeline {
   comment?: string;
   decided_by?: number;
   decided_at?: string;
+  is_legacy?: boolean;
+  approvers?: Array<{
+    user_id?: number; name?: string; position_name?: string; status: string;
+    comments?: string; acted_at?: string;
+  }>;
 }
 
 export interface ExpenseInstallmentSibling {
@@ -258,12 +265,24 @@ export const userPositionsApi = {
 };
 
 // ── Expense types ──────────────────────────────────────────────────────────
+export interface ExpenseTypeInput {
+  code: string;
+  name: string;
+  description?: string | null;
+  allowed_kinds?: string[];
+  requires_payment_proof?: boolean;
+  may_require_withholding_tax?: boolean;
+  settlement_days?: number;
+  is_active?: boolean;
+}
+
 export const expenseTypesApi = {
   list: () => api.get("/expense-types").then((r) => r.data),
-  create: (data: { code: string; name: string; is_active?: boolean }) =>
-    api.post("/expense-types", data).then((r) => r.data),
-  update: (id: number, data: Partial<{ code: string; name: string; is_active: boolean }>) =>
+  create: (data: ExpenseTypeInput) => api.post("/expense-types", data).then((r) => r.data),
+  update: (id: number, data: Partial<ExpenseTypeInput>) =>
     api.patch(`/expense-types/${id}`, data).then((r) => r.data),
+  delete: (id: number): Promise<{ deactivated: boolean; expense_type?: ExpenseType }> =>
+    api.delete(`/expense-types/${id}`).then((r) => r.data),
 };
 
 // ── Policy versions & rules ────────────────────────────────────────────────
@@ -413,13 +432,27 @@ export interface AccountingRequest {
   id: string; request_no: string; request_date: string; title: string; recipient_name?: string;
   requester_name?: string; request_format: string; status: ExpenseRequestStatus;
   gross: number; vat: number; withholding: number; net: number; paid: number; remaining: number;
-  settlement_due_date?: string; approved_at?: string;
+  settlement_due_date?: string; submitted_at?: string; approved_at?: string;
   company_id: number; company_name?: string; department_id?: number; department_name?: string;
   expense_type_id: number; expense_type_name?: string; bank_name?: string;
   bank_account_name?: string; bank_account_number?: string;
   transfer_amount: number; is_adjustment_transfer: boolean; installment_enabled?: boolean;
   installment_no?: number; installment_chain_root_id?: string;
   installment_chain_status?: "in_progress" | "fully_disbursed"; installment_payment_amount?: number;
+  approval_steps: AccountingApprovalStep[];
+}
+
+export interface AccountingApprovalStep {
+  id: number; step_no: number; name?: string; approver_position_name?: string;
+  approver_name?: string; status: string; decided_at?: string; is_legacy?: boolean;
+  approvers?: Array<{
+    user_id?: number; name?: string; position_name?: string; status: string;
+    comments?: string; acted_at?: string;
+  }>;
+}
+
+export interface AccountingListResponse {
+  items: AccountingRequest[]; total: number; limit: number; offset: number;
 }
 
 export interface AccountingFilters {
@@ -456,7 +489,10 @@ export const expenseNotificationsApi = {
 };
 
 export const expenseAccountingApi = {
-  list: (params?: AccountingFilters) => api.get("/expense-requests/accounting/list", { params }).then(r => r.data),
+  list: (params?: AccountingFilters, page = 1, limit = 25): Promise<AccountingListResponse> =>
+    api.get("/expense-requests/accounting/list", {
+      params: { ...params, limit, offset: (page - 1) * limit },
+    }).then(r => r.data),
   stats: () => api.get("/expense-requests/accounting/stats").then(r => r.data),
   exportUrl: async (params?: AccountingFilters) => {
     const response = await api.get("/expense-requests/accounting/export", { params, responseType: "blob" });

@@ -62,6 +62,27 @@ class ExpenseApprovalCandidate(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ExpenseRequestLegacyApprovalStep(Base):
+    """Read-only approval trail imported from HR without affecting ACC workflow."""
+    __tablename__ = "expense_request_legacy_approval_steps"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id", ondelete="CASCADE"), nullable=False)
+    expense_request_id: Mapped[str] = mapped_column(
+        PG_UUID(as_uuid=False), ForeignKey("expense_requests.id", ondelete="CASCADE"), nullable=False
+    )
+    source_step_id: Mapped[Optional[int]] = mapped_column(BigInteger)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    step_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(180))
+    approve_mode: Mapped[str] = mapped_column(String(10), nullable=False, default="any")
+    status: Mapped[str] = mapped_column(String(30), nullable=False)
+    approvers: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    activated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ExpenseSignaturePlacement(Base):
     __tablename__ = "expense_signature_placements"
     id: Mapped[str] = mapped_column(PG_UUID(as_uuid=False), primary_key=True, server_default=func.uuid_generate_v4())

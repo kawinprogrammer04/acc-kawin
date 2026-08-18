@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { Building2, Loader2, Users, Plus, Pencil, Check, X, ShieldCheck, ShieldOff, Settings } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -27,6 +27,8 @@ interface UserCompanyMembership {
   role: string;
   department_id?: number;
   department_name?: string;
+  position_ids?: number[];
+  position_names?: string[];
 }
 
 const ROLE_COLORS: Record<string, string> = {
@@ -40,6 +42,7 @@ const emptyForm = { username: "", email: "", password: "", full_name: "", role: 
 
 export function UserManagementPage() {
   const { companies, currentCompany } = useCompany();
+  const currentCompanyId = currentCompany?.id;
   const [users, setUsers] = useState<UserOut[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -55,9 +58,8 @@ export function UserManagementPage() {
   const [loadingPositions, setLoadingPositions] = useState(false);
   const [userCompanies, setUserCompanies] = useState<UserCompanyMembership[]>([]);
   const [companyRoleDraft, setCompanyRoleDraft] = useState("viewer");
-  const [existingPositionRows, setExistingPositionRows] = useState<UserPositionRow[]>([]);
+  const [listPositionRows, setListPositionRows] = useState<UserPositionRow[]>([]);
   const [savingCompanyAccess, setSavingCompanyAccess] = useState(false);
-  const [togglingPositionId, setTogglingPositionId] = useState<number | null>(null);
   const [roles, setRoles] = useState<Role[]>([]);
   const [showRoleManager, setShowRoleManager] = useState(false);
   const [showOrganizationManager, setShowOrganizationManager] = useState(false);
@@ -68,8 +70,29 @@ export function UserManagementPage() {
     try {
       const res = await api.get("/auth/users");
       setUsers(res.data);
+      if (currentCompanyId) {
+        try {
+          const positionRes = await api.get("/user-positions", {
+            headers: { "X-Company-Id": currentCompanyId },
+          });
+          setListPositionRows(positionRes.data);
+        } catch {
+          setListPositionRows([]);
+        }
+      } else {
+        setListPositionRows([]);
+      }
     } finally { setLoading(false); }
-  }, []);
+  }, [currentCompanyId]);
+
+  const listPositionsByUser = useMemo(() => {
+    const grouped = new Map<number, UserPositionRow[]>();
+    for (const row of listPositionRows) {
+      if (!row.is_active) continue;
+      grouped.set(row.user_id, [...(grouped.get(row.user_id) ?? []), row]);
+    }
+    return grouped;
+  }, [listPositionRows]);
 
   const loadRoles = useCallback(async () => {
     setRoles(await rolesApi.list());
@@ -78,7 +101,12 @@ export function UserManagementPage() {
   useEffect(() => { load(); loadRoles(); }, [load, loadRoles]);
 
   useEffect(() => {
-    if (!form.company_id) { setPositions([]); setDepartments([]); setExistingPositionRows([]); return; }
+    if (!form.company_id) {
+      setPositions([]);
+      setDepartments([]);
+      setSelectedPositionIds([]);
+      return;
+    }
     let cancelled = false;
     setLoadingPositions(true);
     api.get("/positions", { headers: { "X-Company-Id": form.company_id } })
@@ -91,8 +119,16 @@ export function UserManagementPage() {
 
     if (editing) {
       api.get("/user-positions", { params: { user_id: editing.id }, headers: { "X-Company-Id": form.company_id } })
-        .then(res => { if (!cancelled) setExistingPositionRows(res.data); })
-        .catch(() => { if (!cancelled) setExistingPositionRows([]); });
+        .then(res => {
+          if (!cancelled) {
+            setSelectedPositionIds(res.data.filter((row: UserPositionRow) => row.is_active).map((row: UserPositionRow) => row.position_id));
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setSelectedPositionIds([]);
+          }
+        });
       const membership = userCompanies.find(c => c.company_id === Number(form.company_id));
       setCompanyRoleDraft(membership?.role ?? "viewer");
       setForm(current => ({
@@ -100,7 +136,7 @@ export function UserManagementPage() {
         department_id: membership?.department_id ? String(membership.department_id) : "",
       }));
     } else {
-      setExistingPositionRows([]);
+      setSelectedPositionIds([]);
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -138,29 +174,6 @@ export function UserManagementPage() {
     setSelectedPositionIds(ids => ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
   }
 
-  async function toggleExistingPosition(position: Position) {
-    if (!editing || !form.company_id) return;
-    setTogglingPositionId(position.id);
-    try {
-      const existingRow = existingPositionRows.find(r => r.position_id === position.id);
-      if (existingRow) {
-        await api.delete(`/user-positions/${existingRow.id}`, { headers: { "X-Company-Id": form.company_id } });
-      } else {
-        await api.post(
-          "/user-positions",
-          { user_id: editing.id, position_id: position.id },
-          { headers: { "X-Company-Id": form.company_id } }
-        );
-      }
-      const res = await api.get("/user-positions", { params: { user_id: editing.id }, headers: { "X-Company-Id": form.company_id } });
-      setExistingPositionRows(res.data);
-    } catch (e: unknown) {
-      setError(getApiErrorMessage(e));
-    } finally {
-      setTogglingPositionId(null);
-    }
-  }
-
   async function saveCompanyAccess() {
     if (!editing || !form.company_id) return;
     setSavingCompanyAccess(true); setError("");
@@ -169,6 +182,7 @@ export function UserManagementPage() {
         user_id: editing.id,
         role: companyRoleDraft,
         department_id: form.department_id ? Number(form.department_id) : null,
+        position_ids: selectedPositionIds,
       });
       const res = await api.get(`/auth/users/${editing.id}/companies`);
       setUserCompanies(res.data);
@@ -208,6 +222,7 @@ export function UserManagementPage() {
             user_id: editing.id,
             role: companyRoleDraft,
             department_id: form.department_id ? Number(form.department_id) : null,
+            position_ids: selectedPositionIds,
           });
         }
       } else {
@@ -429,13 +444,14 @@ export function UserManagementPage() {
                     <UserPositionChecklist
                       positions={positions}
                       loading={loadingPositions}
-                      immediate={!!editing}
-                      togglingId={togglingPositionId}
-                      selectedIds={editing
-                        ? existingPositionRows.map(r => r.position_id)
-                        : selectedPositionIds}
-                      onToggle={p => editing ? toggleExistingPosition(p) : togglePosition(p.id)}
+                      selectedIds={selectedPositionIds}
+                      onToggle={p => togglePosition(p.id)}
                     />
+                    {editing && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        เลือกได้มากกว่า 1 ตำแหน่ง การเปลี่ยนแปลงจะมีผลเมื่อกด “บันทึก”
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
@@ -472,7 +488,7 @@ export function UserManagementPage() {
               <table className="w-full text-sm">
                 <thead className="border-b bg-muted/30">
                   <tr>
-                    {["ชื่อผู้ใช้", "ชื่อ-นามสกุล", "อีเมล", "บทบาท", "สถานะ", ""].map(h => (
+                    {["ชื่อผู้ใช้", "ชื่อ-นามสกุล", "อีเมล", "ตำแหน่ง", "บทบาท", "สถานะ", ""].map(h => (
                       <th key={h} className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">{h}</th>
                     ))}
                   </tr>
@@ -483,6 +499,20 @@ export function UserManagementPage() {
                       <td className="px-4 py-2.5 font-medium">{u.username}</td>
                       <td className="px-4 py-2.5 text-muted-foreground">{u.full_name || "-"}</td>
                       <td className="px-4 py-2.5 text-muted-foreground text-xs">{u.email}</td>
+                      <td className="px-4 py-2.5">
+                        <div className="flex max-w-64 flex-wrap gap-1">
+                          {(listPositionsByUser.get(u.id)?.length ?? 0) > 0 ? (
+                            listPositionsByUser.get(u.id)!
+                              .map(row => (
+                                <span key={row.id} className="inline-flex rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+                                  {row.position_name || `ตำแหน่ง #${row.position_id}`}
+                                </span>
+                              ))
+                          ) : (
+                            <span className="text-xs text-muted-foreground">-</span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-2.5">
                         <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${ROLE_COLORS[u.role] || "bg-gray-100 text-gray-600"}`}>
                           {roles.find(r => r.code === u.role)?.label || u.role}

@@ -323,10 +323,19 @@ export function ExpenseRequestWizardPage() {
 
   const editable = !request || ["draft", "returned_for_correction"].includes(request.status);
   const availableKinds = useMemo(() => {
-    const configured = new Set(types.flatMap((type) => type.allowed_kinds || []));
+    const configured = new Set(types.filter((type) => type.is_active).flatMap((type) => type.allowed_kinds || []));
     return (["advance", "reimbursement"] as const).filter((kind) => configured.has(kind));
   }, [types]);
-  const visibleTypes = useMemo(() => types.filter((type) => type.allowed_kinds.includes(header.request_format)), [types, header.request_format]);
+  // ประเภทที่ปิดใช้งานแล้วจะไม่ให้เลือกใหม่ — ยกเว้นเป็นประเภทที่คำขอนี้เลือกไว้อยู่แล้ว
+  const visibleTypes = useMemo(
+    () =>
+      types.filter(
+        (type) =>
+          type.allowed_kinds.includes(header.request_format) &&
+          (type.is_active || type.id === Number(header.expense_type_id)),
+      ),
+    [types, header.request_format, header.expense_type_id],
+  );
   const selectedType = types.find((type) => type.id === Number(header.expense_type_id));
   const typeMayRequireWithholding = Boolean(selectedType?.may_require_withholding_tax);
   const wantsWithholding = typeMayRequireWithholding && tax.requester_withholding_status === "deduct";
