@@ -66,6 +66,7 @@ export function PermissionPage() {
   const [sets, setSets] = useState<PermissionSet[]>([]);
   const [routes, setRoutes] = useState<DiscoveredRoute[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
+  const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
   const [userCatalog, setUserCatalog] = useState<UserPermissionCatalog | null>(null);
   const [assignedSetIds, setAssignedSetIds] = useState<number[]>([]);
   const [positionCompanyId, setPositionCompanyId] = useState<number | null>(null);
@@ -89,6 +90,7 @@ export function PermissionPage() {
   const [routeError, setRouteError] = useState("");
 
   const selectedUser = users.find(row => row.id === selectedUserId) ?? null;
+  const allUsersSelected = users.length > 0 && selectedUserIds.size === users.length;
   const itemByKey = useMemo(() => new Map(items.map(item => [item.key, item])), [items]);
   const menuById = useMemo(() => new Map(menus.map(menu => [menu.id, menu])), [menus]);
 
@@ -110,9 +112,24 @@ export function PermissionPage() {
     }));
   }, [menuSearch, menus]);
 
+  const checkedMenuViewKeys = useMemo(() => {
+    const keys = selectedMenuIds
+      .map(menuId => menuById.get(menuId)?.key)
+      .filter(Boolean)
+      .map(key => `${key}.view`);
+    return new Set(keys);
+  }, [selectedMenuIds, menuById]);
+
   const groupedRoutes = useMemo(() => {
     const groups = new Map<string, DiscoveredRoute[]>();
     routes
+      // A menu's own "view" route is already granted by checking that menu in
+      // the Menus tab (see ensureMenuViewItem in savePermissionSetFromModal).
+      // Keeping it toggleable here too let someone uncheck it in this tab
+      // while the menu stayed checked — the menu re-added it on save, so the
+      // uncheck silently had no effect. Hide it here while the menu is checked
+      // so there's only one control for that permission at a time.
+      .filter(route => !checkedMenuViewKeys.has(route.permission_key))
       .filter(route => {
         if (!routeSearch.trim()) return true;
         return textMatches(`${route.action_label} ${route.method} ${route.path} ${route.menu_label ?? ""}`, routeSearch);
@@ -125,7 +142,7 @@ export function PermissionPage() {
       label,
       routes: groupRoutes.sort((a, b) => a.path.localeCompare(b.path) || a.action_key.localeCompare(b.action_key)),
     }));
-  }, [routeSearch, routes]);
+  }, [routeSearch, routes, checkedMenuViewKeys]);
 
   const loadRoutes = useCallback(async () => {
     setRouteLoading(true);
@@ -259,11 +276,29 @@ export function PermissionPage() {
     setCreateOpen(true);
   }
 
+  // Unchecking a menu should also drop any routes already selected for it —
+  // otherwise routes pulled in when the edit dialog opened (e.g. from an
+  // existing set that already covers most/all menus) stay selected forever,
+  // since nothing else ever clears them. Without this, "uncheck 29 of 30
+  // menus, keep 1" silently keeps all 29 menus' routes and the edit appears
+  // to do nothing when saved.
+  function removeRoutesForMenuKeys(menuKeys: (string | undefined)[]) {
+    const keys = new Set(menuKeys.filter(Boolean));
+    if (!keys.size) return;
+    setSelectedRouteKeys(current => current.filter(routeKey => {
+      const route = routes.find(r => r.permission_key === routeKey);
+      return !(route?.menu_key && keys.has(route.menu_key));
+    }));
+  }
+
   function toggleMenu(menuId: number, checked: boolean) {
     setSelectedMenuIds(current => checked
       ? Array.from(new Set([...current, menuId]))
       : current.filter(id => id !== menuId)
     );
+    if (!checked) {
+      removeRoutesForMenuKeys([menuById.get(menuId)?.key]);
+    }
   }
 
   function toggleRoute(permissionKey: string, checked: boolean) {
@@ -273,12 +308,27 @@ export function PermissionPage() {
     );
   }
 
+  function toggleUserSelection(id: number) {
+    setSelectedUserIds(current => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllUsers() {
+    setSelectedUserIds(current => current.size === users.length ? new Set() : new Set(users.map(row => row.id)));
+  }
+
   function setGroupMenus(groupMenus: AppMenu[], checked: boolean) {
     const ids = groupMenus.map(menu => menu.id);
     setSelectedMenuIds(current => checked
       ? Array.from(new Set([...current, ...ids]))
       : current.filter(id => !ids.includes(id))
     );
+    if (!checked) {
+      removeRoutesForMenuKeys(groupMenus.map(menu => menu.key));
+    }
   }
 
   function setGroupRoutes(groupRoutes: DiscoveredRoute[], checked: boolean) {
@@ -295,16 +345,26 @@ export function PermissionPage() {
         .map(menuId => menuById.get(menuId)?.key)
         .filter(Boolean)
     );
+    // These buttons are meant to fill in routes for the menus already ticked
+    // above. With none ticked, `selectedMenus.size` is 0 and the old
+    // `!selectedMenus.size || ...` guard passed every route regardless of
+    // menu — so clicking a preset with no menu selected silently replaced
+    // whatever the admin had hand-picked with routes from every menu in the
+    // whole system. Require at least one menu instead of falling back to "all".
+    if (!selectedMenus.size) {
+      setError("เลือกเมนูอย่างน้อย 1 เมนูก่อน ค่อยกดตัวช่วยเลือก route — ไม่งั้นจะไม่รู้ว่าจะเลือก route ของเมนูไหน");
+      return;
+    }
     const workActions = new Set(["view", "create", "update", "export", "export_pdf", "export_xlsx", "lookup", "upload", "download"]);
     const nextKeys = routes
-      .filter(route => !selectedMenus.size || (route.menu_key && selectedMenus.has(route.menu_key)))
+      .filter(route => route.menu_key && selectedMenus.has(route.menu_key))
       .filter(route => {
         if (mode === "readonly") return route.action_key === "view" || route.method === "GET";
         if (mode === "work") return workActions.has(route.action_key);
         return true;
       })
       .map(route => route.permission_key);
-    setSelectedRouteKeys(Array.from(new Set(nextKeys)));
+    setSelectedRouteKeys(current => Array.from(new Set([...current, ...nextKeys])));
   }
 
   async function ensureMenuViewItem(menu: AppMenu, currentItems: PermissionItem[]) {
@@ -364,6 +424,24 @@ export function PermissionPage() {
         ? current.map(set => set.id === editingSetId ? res.data : set)
         : [...current, res.data]
       );
+
+      // Editing a shared set's items changes what every user/position holding
+      // it can do, but nothing here reloads that automatically: the logged-in
+      // admin's own menu access is cached in AuthContext since login, and the
+      // "effective permissions" figure shown for whichever user/position is
+      // open on the other tabs was fetched before this edit. Without these
+      // refetches the change is genuinely saved (confirmed server-side) but
+      // looks like it "did nothing" until a manual reload or re-login.
+      await refreshUser();
+      if (selectedUserId) {
+        const catalogRes = await api.get(`/permissions/users/${selectedUserId}/catalog`);
+        setUserCatalog(catalogRes.data);
+      }
+      if (selectedPositionId) {
+        const positionCatalogRes = await api.get(`/permissions/positions/${selectedPositionId}/catalog`);
+        setPositionCatalog(positionCatalogRes.data);
+      }
+
       setCreateOpen(false);
       resetCreateForm();
       setSaved(editingSetId ? "แก้ไขสิทธิ์เรียบร้อยแล้ว" : "สร้างสิทธิ์เรียบร้อยแล้ว");
@@ -392,18 +470,38 @@ export function PermissionPage() {
   }
 
   async function saveUserCatalog() {
-    if (!selectedUserId) return;
+    const targetUserIds = selectedUserIds.size > 0
+      ? Array.from(selectedUserIds)
+      : (selectedUserId ? [selectedUserId] : []);
+    if (!targetUserIds.length) return;
     setBusy(true);
     setError("");
     setSaved("");
     try {
-      const res = await api.put(`/permissions/users/${selectedUserId}/catalog`, {
-        permission_set_ids: assignedSetIds,
-        overrides: [],
-      });
-      setUserCatalog(res.data);
-      if (selectedUserId === user?.id) await refreshUser();
-      setSaved("กำหนดสิทธิ์ผู้ใช้เรียบร้อยแล้ว");
+      // Bulk-save hits the backend one small batch at a time — firing every
+      // request in parallel (Promise.all) trips nginx's per-IP connection
+      // and request-rate limits once more than a handful of users are
+      // selected, which surfaces to the user as a 503.
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < targetUserIds.length; i += BATCH_SIZE) {
+        const batch = targetUserIds.slice(i, i + BATCH_SIZE);
+        await Promise.all(batch.map(id =>
+          api.put(`/permissions/users/${id}/catalog`, {
+            permission_set_ids: assignedSetIds,
+            overrides: [],
+          })
+        ));
+      }
+      if (selectedUserId && targetUserIds.includes(selectedUserId)) {
+        const res = await api.get(`/permissions/users/${selectedUserId}/catalog`);
+        setUserCatalog(res.data);
+      }
+      if (user?.id && targetUserIds.includes(user.id)) await refreshUser();
+      setSaved(
+        targetUserIds.length > 1
+          ? `กำหนดสิทธิ์ให้ผู้ใช้ ${targetUserIds.length} คนเรียบร้อยแล้ว`
+          : "กำหนดสิทธิ์ผู้ใช้เรียบร้อยแล้ว"
+      );
     } catch (e: unknown) {
       setError(getApiErrorMessage(e));
     } finally {
@@ -532,15 +630,38 @@ export function PermissionPage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
+              <div className="flex items-center justify-between gap-2 border-b pb-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={allUsersSelected}
+                    onChange={toggleSelectAllUsers}
+                  />
+                  เลือกทั้งหมด
+                </label>
+                {selectedUserIds.size > 0 && (
+                  <span className="text-xs font-medium text-primary">เลือกแล้ว {selectedUserIds.size} คน</span>
+                )}
+              </div>
               {users.map(row => (
-                <button
+                <div
                   key={row.id}
-                  onClick={() => setSelectedUserId(row.id)}
-                  className={`w-full rounded-md border px-3 py-2 text-left text-sm ${selectedUserId === row.id ? "border-primary bg-primary/5 text-primary" : "hover:bg-muted"}`}
+                  className={`flex items-center gap-2 rounded-md border px-3 py-2 text-sm ${selectedUserId === row.id ? "border-primary bg-primary/5" : ""}`}
                 >
-                  <div className="font-medium">{row.full_name || row.username}</div>
-                  <div className="text-xs text-muted-foreground">{row.email}</div>
-                </button>
+                  <input
+                    type="checkbox"
+                    checked={selectedUserIds.has(row.id)}
+                    onChange={() => toggleUserSelection(row.id)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setSelectedUserId(row.id)}
+                    className={`min-w-0 flex-1 text-left ${selectedUserId === row.id ? "text-primary" : ""}`}
+                  >
+                    <div className="truncate font-medium">{row.full_name || row.username}</div>
+                    <div className="truncate text-xs text-muted-foreground">{row.email}</div>
+                  </button>
+                </div>
               ))}
             </CardContent>
           </Card>
@@ -549,11 +670,17 @@ export function PermissionPage() {
             <CardHeader className="flex-row items-center justify-between border-b pb-3">
               <CardTitle className="flex items-center gap-2 text-sm">
                 <ShieldCheck className="h-4 w-4" />
-                {selectedUser ? `สิทธิ์ของ ${selectedUser.full_name || selectedUser.username}` : "กำหนดสิทธิ์ผู้ใช้"}
+                {selectedUserIds.size > 1
+                  ? `สิทธิ์ที่จะใช้กับผู้ใช้ที่เลือก ${selectedUserIds.size} คน`
+                  : selectedUser ? `สิทธิ์ของ ${selectedUser.full_name || selectedUser.username}` : "กำหนดสิทธิ์ผู้ใช้"}
               </CardTitle>
-              <button onClick={saveUserCatalog} disabled={busy || !selectedUserId} className="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50">
+              <button
+                onClick={saveUserCatalog}
+                disabled={busy || (!selectedUserId && !selectedUserIds.size)}
+                className="flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
+              >
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-                บันทึกสิทธิ์ผู้ใช้
+                {selectedUserIds.size > 1 ? `บันทึกสิทธิ์ผู้ใช้ (${selectedUserIds.size} คน)` : "บันทึกสิทธิ์ผู้ใช้"}
               </button>
             </CardHeader>
             <CardContent className="space-y-4 pt-4">
@@ -565,6 +692,11 @@ export function PermissionPage() {
                 <div className="mt-2 text-xs text-muted-foreground">
                   สิทธิ์รวมหลังบันทึกครั้งล่าสุด: {userCatalog?.effective_permission_keys.length ?? 0} รายการ
                 </div>
+                {selectedUserIds.size > 1 && (
+                  <div className="mt-2 text-xs text-amber-700">
+                    กำลังเลือกไว้ {selectedUserIds.size} คน — กด “บันทึกสิทธิ์ผู้ใช้” จะแทนที่สิทธิ์ของผู้ใช้ทุกคนที่เลือกด้วยรายการด้านล่างนี้ทั้งหมด
+                  </div>
+                )}
               </div>
 
               <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
@@ -695,6 +827,12 @@ export function PermissionPage() {
               ตั้งชื่อ เลือกเมนู แล้วใช้ตัวช่วยเลือก route ตามรูปแบบงานได้ทันที
             </DialogDescription>
           </DialogHeader>
+
+          {error && (
+            <div className="mx-6 rounded-md border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-700">
+              {error}
+            </div>
+          )}
 
           <div className="space-y-3 px-6 pt-4">
             <div className="grid gap-3 md:grid-cols-2">
