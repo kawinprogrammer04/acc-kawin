@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, getApiErrorMessage } from "./client";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -401,12 +401,29 @@ export const expenseRequestsApi = {
   deleteAttachment: (id: string, attachmentId: string) =>
     api.delete(`/expense-requests/${id}/attachments/${attachmentId}`),
   openAttachment: async (id: string, attachmentId: string, signed = true) => {
-    const response = await api.get(`/expense-requests/${id}/attachments/${attachmentId}`, {
-      params: { signed: signed ? 1 : 0 }, responseType: "blob",
-    });
-    const url = URL.createObjectURL(response.data);
-    window.open(url, "_blank", "noopener,noreferrer");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    // Open synchronously while this call still belongs to the user's click.
+    // Opening only after the awaited API request is treated as an unsolicited
+    // popup by production browsers, even though the file request succeeds.
+    const previewWindow = window.open("about:blank", "_blank");
+    if (previewWindow) previewWindow.opener = null;
+    try {
+      const response = await api.get(`/expense-requests/${id}/attachments/${attachmentId}`, {
+        params: { signed: signed ? 1 : 0 }, responseType: "blob",
+      });
+      const url = URL.createObjectURL(response.data);
+      if (previewWindow && !previewWindow.closed) {
+        previewWindow.location.replace(url);
+      } else {
+        // Strict popup blockers can still refuse the pre-opened tab. Falling
+        // back to the current tab guarantees that the user can view the file.
+        window.location.assign(url);
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+    } catch (error) {
+      if (previewWindow && !previewWindow.closed) previewWindow.close();
+      window.alert(getApiErrorMessage(error, "ไม่สามารถเปิดไฟล์แนบนี้ได้"));
+      throw error;
+    }
   },
   attachmentBlob: (id: string, attachmentId: string, signed = true) =>
     api.get(`/expense-requests/${id}/attachments/${attachmentId}`, {
