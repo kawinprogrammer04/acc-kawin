@@ -534,6 +534,30 @@ def _asset_target(
     return Path(settings.EXPENSE_REQUEST_UPLOAD_DIR) / request_id / f"{safe_label}-{asset_hash[:24]}{suffix}"
 
 
+def _match_upload_dir_ownership(path: Path) -> None:
+    """Make an imported file/dir readable+writable the same way the app's own
+    uploads are, regardless of which OS user ran this command.
+
+    Incident 2026-08-19: this importer was run as root, and shutil.copy2
+    preserves the *source* file's mode (0600/0640, tightened deliberately for
+    the staging bundle's secrets) onto the copy. Combined with root
+    ownership, the backend process (runs as `appuser`, not root) could not
+    read its own uploaded attachments, and could not create new sibling
+    files/dirs either. Force both mode and ownership to match the existing
+    upload root after every write, best-effort — if this process isn't
+    privileged enough to chown, the file was written by that same user and
+    is already correctly owned.
+    """
+    reference = Path(settings.EXPENSE_REQUEST_UPLOAD_DIR)
+    mode = 0o755 if path.is_dir() else 0o644
+    path.chmod(mode)
+    try:
+        ref_stat = reference.stat()
+        os.chown(path, ref_stat.st_uid, ref_stat.st_gid)
+    except (PermissionError, FileNotFoundError):
+        pass
+
+
 def _copy_asset(bundle: Path, asset_hash: str, meta: dict[str, Any], target: Path, apply: bool) -> None:
     source = (bundle / meta["path"]).resolve()
     if _sha256(source) != asset_hash or source.stat().st_size != int(meta["size"]):
@@ -544,9 +568,11 @@ def _copy_asset(bundle: Path, asset_hash: str, meta: dict[str, Any], target: Pat
         return
     if apply:
         target.parent.mkdir(parents=True, exist_ok=True)
+        _match_upload_dir_ownership(target.parent)
         shutil.copy2(source, target)
         if _sha256(target) != asset_hash:
             raise ValueError(f"production file failed post-copy hash check: {target}")
+        _match_upload_dir_ownership(target)
 
 
 def _assert_count(label: str, actual: int, expected: int) -> None:

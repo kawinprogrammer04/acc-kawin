@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import uuid
 from datetime import datetime
@@ -40,6 +41,20 @@ def _timestamp(value: str | None) -> datetime | None:
         return None
     parsed = datetime.fromisoformat(value)
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=THAILAND)
+
+
+def _match_upload_dir_ownership(path: Path, reference: Path) -> None:
+    """See the identical helper in hr_production_bundle.py: force mode+owner
+    of imported files/dirs to match the existing uploads root, best-effort,
+    so a root-run import can't leave `appuser` (the backend's runtime user)
+    unable to read or write its own upload tree (incident 2026-08-19)."""
+    mode = 0o755 if path.is_dir() else 0o644
+    path.chmod(mode)
+    try:
+        ref_stat = reference.stat()
+        os.chown(path, ref_stat.st_uid, ref_stat.st_gid)
+    except (PermissionError, FileNotFoundError):
+        pass
 
 
 def _attachment_id(row: dict) -> str:
@@ -128,8 +143,10 @@ async def run(state_path: Path, manifest_path: Path, source_root: Path) -> None:
             source = _source_path(row, source_root)
             suffix = source.suffix.lower()
             stored_name = f"hr-{row['sha256'][:24]}{suffix}"
-            target_dir = Path("/app/uploads/expense_requests") / target["request_id"]
+            uploads_root = Path("/app/uploads/expense_requests")
+            target_dir = uploads_root / target["request_id"]
             target_dir.mkdir(parents=True, exist_ok=True)
+            _match_upload_dir_ownership(target_dir, uploads_root)
             target_path = target_dir / stored_name
             if target_path.is_file() and hashlib.sha256(target_path.read_bytes()).hexdigest() == row["sha256"]:
                 reused_files += 1
@@ -138,6 +155,7 @@ async def run(state_path: Path, manifest_path: Path, source_root: Path) -> None:
                 if hashlib.sha256(target_path.read_bytes()).hexdigest() != row["sha256"]:
                     raise ValueError(f"copied file failed hash verification: {row['key']}")
                 copied_files += 1
+            _match_upload_dir_ownership(target_path, uploads_root)
 
             is_request_document = row["kind"] == "request_document"
             source_attachment = attachments_by_id.get(int(row["source_attachment_id"])) \
