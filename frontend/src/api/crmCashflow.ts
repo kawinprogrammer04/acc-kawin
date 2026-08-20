@@ -61,6 +61,17 @@ export interface CrmCashflowStatement {
   user_name: string;
 }
 
+export interface CrmCashflowDashboardSummary {
+  sum_revenue: number;
+  sum_expenses: number;
+  verified_count: number;
+  pending_count: number;
+  verified_revenue: number;
+  verified_expenses: number;
+  pending_revenue: number;
+  pending_expenses: number;
+}
+
 export interface CrmStatementInput {
   cfstate_date: string;
   cfcat_id: number;
@@ -259,7 +270,13 @@ export const crmCashflowApi = {
   deleteDepartment: (id: number) => api.delete(`/crm-cashflow/departments/${id}`),
 
   statements: (params: CrmCashflowStatementFilters) =>
-    api.get<{ items: CrmCashflowStatement[]; sum_revenue: number; sum_expenses: number; total: number }>(
+    api.get<{
+      items: CrmCashflowStatement[];
+      sum_revenue: number;
+      sum_expenses: number;
+      total: number;
+      dashboard: CrmCashflowDashboardSummary;
+    }>(
       "/crm-cashflow/statements", { params }
     ).then((response) => response.data),
   invoices: (params: { start_date?: string; end_date?: string; cfcat_id?: number }) =>
@@ -286,6 +303,13 @@ export const crmCashflowApi = {
       responseType: "blob",
     });
     downloadBlob(response.data, `cashflow_statement_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  },
+  exportStatementFiles: async (params: CrmCashflowStatementFilters) => {
+    const response = await api.get<Blob>("/crm-cashflow/statements/attachments/export", {
+      params,
+      responseType: "blob",
+    });
+    downloadBlob(response.data, `crm_cashflow_files_${new Date().toISOString().slice(0, 10)}.zip`);
   },
 
   previewImport: (file: File, headerRow: boolean, useExistingData: boolean, templateId?: number) =>
