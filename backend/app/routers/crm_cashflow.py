@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -1074,14 +1075,63 @@ async def list_statements(
         verification_status=verification_status,
         invoice_status=invoice_status,
     )
+    # Keep the table filter intact, but calculate the dashboard verification
+    # counts from the complete matching period so both statuses remain
+    # visible when the table is filtered to one status.
+    summary_rows = rows
+    if verification_status is not None:
+        summary_rows = await _list_statements(
+            db, company.id, start_date, end_date, cfcat_id,
+            invoice_status=invoice_status,
+        )
     items = [_serialize_statement(row) for row in rows]
     sum_revenue = sum(item["cfstate_amount"] for item in items if item["cfstate_amount"] > 0)
     sum_expenses = sum(item["cfstate_amount"] for item in items if item["cfstate_amount"] <= 0)
+    dashboard_revenue = sum(
+        float(item["cfstate_amount"])
+        for item in summary_rows
+        if item["cfstate_amount"] > 0
+    )
+    dashboard_expenses = sum(
+        abs(float(item["cfstate_amount"]))
+        for item in summary_rows
+        if item["cfstate_amount"] < 0
+    )
+    verified_revenue = sum(
+        float(item["cfstate_amount"])
+        for item in summary_rows
+        if item["cfstate_verified"] == 1 and item["cfstate_amount"] > 0
+    )
+    verified_expenses = sum(
+        abs(float(item["cfstate_amount"]))
+        for item in summary_rows
+        if item["cfstate_verified"] == 1 and item["cfstate_amount"] < 0
+    )
+    pending_revenue = sum(
+        float(item["cfstate_amount"])
+        for item in summary_rows
+        if item["cfstate_verified"] == 0 and item["cfstate_amount"] > 0
+    )
+    pending_expenses = sum(
+        abs(float(item["cfstate_amount"]))
+        for item in summary_rows
+        if item["cfstate_verified"] == 0 and item["cfstate_amount"] < 0
+    )
     return {
         "items": items,
         "sum_revenue": sum_revenue,
         "sum_expenses": sum_expenses,
         "total": len(items),
+        "dashboard": {
+            "sum_revenue": dashboard_revenue,
+            "sum_expenses": dashboard_expenses,
+            "verified_count": sum(1 for item in summary_rows if item["cfstate_verified"] == 1),
+            "pending_count": sum(1 for item in summary_rows if item["cfstate_verified"] == 0),
+            "verified_revenue": verified_revenue,
+            "verified_expenses": verified_expenses,
+            "pending_revenue": pending_revenue,
+            "pending_expenses": pending_expenses,
+        },
     }
 
 
@@ -2038,6 +2088,88 @@ ALLOWED_ATTACHMENT_TYPES = {
     "image/jpeg", "image/png", "application/pdf",
 }
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
+
+def _safe_zip_part(value: object, fallback: str) -> str:
+    cleaned = re.sub(r'[\\/:*?"<>|\r\n]+', "_", str(value or "")).strip(" ._")
+    return (cleaned[:80] or fallback)
+
+
+@router.get("/statements/attachments/export", dependencies=[Depends(require_viewer)])
+async def export_statement_files(
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+    cfcat_id: Optional[int] = None,
+    verification_status: Optional[VerificationStatus] = None,
+    invoice_status: Optional[InvoiceStatus] = None,
+    db: AsyncSession = Depends(get_db),
+    company: Company = Depends(get_current_company),
+):
+    """Download matching statement images and PDFs as a ZIP with meaningful filenames."""
+    rows = await _list_statements(
+        db, company.id, start_date, end_date, cfcat_id,
+        verification_status=verification_status,
+        invoice_status=invoice_status,
+    )
+    if not rows:
+        raise HTTPException(404, "ไม่พบรายการตามตัวกรองที่เลือก")
+
+    statement_ids = [row["cfstate_id"] for row in rows]
+    attachments = (
+        await db.execute(
+            select(CrmCashflowStatementAttachment)
+            .where(
+                CrmCashflowStatementAttachment.comp_id == company.id,
+                CrmCashflowStatementAttachment.cfstate_id.in_(statement_ids),
+                CrmCashflowStatementAttachment.content_type.in_(
+                    ["image/jpeg", "image/png", "application/pdf"]
+                ),
+            )
+            .order_by(CrmCashflowStatementAttachment.created_at, CrmCashflowStatementAttachment.id)
+        )
+    ).scalars().all()
+    if not attachments:
+        raise HTTPException(404, "ไม่พบไฟล์รูปภาพหรือ PDF ตามตัวกรองที่เลือก")
+
+    rows_by_id = {row["cfstate_id"]: row for row in rows}
+    used_names: set[str] = set()
+    buffer = io.BytesIO()
+    file_count = 0
+    extension_by_type = {"image/jpeg": ".jpg", "image/png": ".png", "application/pdf": ".pdf"}
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for attachment in attachments:
+            file_path = Path(attachment.file_path)
+            row = rows_by_id.get(attachment.cfstate_id)
+            if row is None or not file_path.is_file():
+                continue
+
+            amount = Decimal(row["cfstate_amount"])
+            direction = "รับ" if amount > 0 else "จ่าย"
+            date_part = row["cfstate_date"].strftime("%Y-%m-%d")
+            note_part = _safe_zip_part(row["cflist_name"], "ไม่มี_note")
+            amount_part = f"{abs(amount):.2f}"
+            extension = extension_by_type.get(
+                attachment.content_type, Path(attachment.file_name).suffix.lower() or ".img"
+            )
+            base_name = f"{date_part}_{note_part}_{direction}_{amount_part}"
+            file_name = f"{base_name}{extension}"
+            suffix = 2
+            while file_name in used_names:
+                file_name = f"{base_name}_{suffix}{extension}"
+                suffix += 1
+            used_names.add(file_name)
+            archive.writestr(file_name, file_path.read_bytes())
+            file_count += 1
+
+    if file_count == 0:
+        raise HTTPException(404, "ไม่พบไฟล์รูปภาพหรือ PDF ที่พร้อมดาวน์โหลด")
+    buffer.seek(0)
+    filename = f"crm_cashflow_files_{date.today():%Y%m%d}.zip"
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/statements/{statement_id}/attachments", dependencies=[Depends(require_viewer)])

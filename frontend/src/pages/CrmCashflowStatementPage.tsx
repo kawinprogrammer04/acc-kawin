@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  Check, Download, FileSpreadsheet, FileText, Import, Pencil, Plus,
-  RefreshCw, Save, Settings2, Trash2,
+  ArrowDownCircle, ArrowUpCircle, Check, CheckCircle2, Clock3, Download,
+  FileSpreadsheet, FileText, Import, Pencil, Plus, RefreshCw, Save,
+  Settings2, Trash2,
 } from "lucide-react";
 
 import {
@@ -10,6 +11,7 @@ import {
   type CheckDuplicatesResult,
   type CrmCashflowAttachment,
   type CrmCashflowCategory,
+  type CrmCashflowDashboardSummary,
   type CrmCashflowDepartment,
   type CrmCashflowImportTemplate,
   type CrmCashflowInvoiceStatus,
@@ -44,6 +46,17 @@ const money = (value: number) => new Intl.NumberFormat("th-TH", {
 const displayCrmTerms = (value: string) => value
   .replace(/รายละเอียด/g, "Description")
   .replace(/แหล่งที่มา/g, "note");
+
+const emptyDashboard: CrmCashflowDashboardSummary = {
+  sum_revenue: 0,
+  sum_expenses: 0,
+  verified_count: 0,
+  pending_count: 0,
+  verified_revenue: 0,
+  verified_expenses: 0,
+  pending_revenue: 0,
+  pending_expenses: 0,
+};
 
 function errorMessage(error: any) {
   const detail = error?.response?.data?.detail;
@@ -104,12 +117,14 @@ export function CrmCashflowStatementPage() {
   const [rows, setRows] = useState<CrmCashflowStatement[]>([]);
   const [sumRevenue, setSumRevenue] = useState(0);
   const [sumExpenses, setSumExpenses] = useState(0);
+  const [dashboard, setDashboard] = useState<CrmCashflowDashboardSummary>(emptyDashboard);
   const [dateStart, setDateStart] = useState(today());
   const [dateEnd, setDateEnd] = useState(today());
   const [categoryFilter, setCategoryFilter] = useState("");
   const [verificationFilter, setVerificationFilter] = useState<"" | CrmCashflowVerificationStatus>("");
   const [invoiceFilter, setInvoiceFilter] = useState<"" | CrmCashflowInvoiceStatus>("");
   const [loading, setLoading] = useState(false);
+  const [downloadingFiles, setDownloadingFiles] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [toastKey, setToastKey] = useState(0);
@@ -208,6 +223,7 @@ export function CrmCashflowStatementPage() {
       setRows(result.items);
       setSumRevenue(result.sum_revenue);
       setSumExpenses(result.sum_expenses);
+      setDashboard(result.dashboard ?? emptyDashboard);
     } catch (requestError) {
       showError(errorMessage(requestError));
     } finally {
@@ -580,6 +596,67 @@ export function CrmCashflowStatementPage() {
     () => new Map(categories.map((item) => [item.cfcat_id, item.cfcat_name])), [categories],
   );
 
+  const dashboardCards = [
+    {
+      label: "ยอดรายรับ",
+      value: money(dashboard.sum_revenue),
+      icon: <ArrowUpCircle className="h-5 w-5" />,
+      iconClass: "bg-emerald-50 text-emerald-600",
+      valueClass: "text-emerald-700",
+    },
+    {
+      label: "ยอดรายจ่าย",
+      value: money(dashboard.sum_expenses),
+      icon: <ArrowDownCircle className="h-5 w-5" />,
+      iconClass: "bg-red-50 text-red-600",
+      valueClass: "text-red-700",
+    },
+    {
+      label: "ตรวจสอบแล้ว",
+      value: dashboard.verified_count.toLocaleString("th-TH"),
+      details: [
+        `รายรับ ${money(dashboard.verified_revenue)}`,
+        `รายจ่าย ${money(dashboard.verified_expenses)}`,
+      ],
+      icon: <CheckCircle2 className="h-5 w-5" />,
+      iconClass: "bg-blue-50 text-blue-600",
+      valueClass: "text-blue-700",
+    },
+    {
+      label: "ยังไม่ตรวจสอบ",
+      value: dashboard.pending_count.toLocaleString("th-TH"),
+      details: [
+        `รายรับ ${money(dashboard.pending_revenue)}`,
+        `รายจ่าย ${money(dashboard.pending_expenses)}`,
+      ],
+      icon: <Clock3 className="h-5 w-5" />,
+      iconClass: "bg-amber-50 text-amber-600",
+      valueClass: "text-amber-700",
+    },
+  ];
+
+  const downloadStatementFiles = async () => {
+    setDownloadingFiles(true);
+    try {
+      await crmCashflowApi.exportStatementFiles({
+        start_date: dateStart,
+        end_date: dateEnd,
+        cfcat_id: categoryFilter ? Number(categoryFilter) : undefined,
+        verification_status: verificationFilter || undefined,
+        invoice_status: invoiceFilter || undefined,
+      });
+      showNotice("ดาวน์โหลด ZIP ไฟล์แนบเรียบร้อยแล้ว");
+    } catch (requestError: any) {
+      if (requestError?.response?.status === 404) {
+        showError("ไม่พบไฟล์รูปภาพหรือ PDF ตามตัวกรองที่เลือก");
+      } else {
+        showError(errorMessage(requestError));
+      }
+    } finally {
+      setDownloadingFiles(false);
+    }
+  };
+
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="รายรับ-รายจ่าย (CRM)" description="รูปแบบการทำงานเดียวกับ crm-kawin พร้อมใช้ผู้ใช้งานและบริษัทของ acc-kawin">
@@ -590,6 +667,9 @@ export function CrmCashflowStatementPage() {
             verification_status: verificationFilter || undefined,
             invoice_status: invoiceFilter || undefined,
           })}><FileSpreadsheet className="h-4 w-4" />Excel</Button>
+          <Button variant="outline" onClick={downloadStatementFiles} disabled={downloadingFiles}>
+            <Download className="h-4 w-4" />{downloadingFiles ? "กำลังสร้าง ZIP..." : "Export ไฟล์แนบ"}
+          </Button>
         </Can>
         <Can menuKey={MENU_KEY} action="create">
           <Button variant="outline" onClick={() => { setImportPreview(null); setImportOpen(true); }}>
@@ -670,10 +750,47 @@ export function CrmCashflowStatementPage() {
           </Can>
         </CardContent></Card>
 
-        <Card><CardContent className="overflow-x-auto pt-6">
-          <table className="w-full min-w-[1180px] text-sm">
-            <thead><tr className="border-b bg-muted/40 text-left text-xs">
-              {['#','วันที่','หัวข้อ','Description','note','ใบกำกับภาษี','ตรวจสอบแล้ว','คำนวณต้นทุน','ยอดรับ','ยอดจ่าย','แผนก','ผู้บันทึก','จัดการ'].map((head) => <th key={head} className="px-3 py-2">{head}</th>)}
+        <section aria-label="Dashboard รายรับ-รายจ่าย">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-base font-semibold">Dashboard สรุปภาพรวม</h2>
+            <span className="text-xs text-muted-foreground">ตามตัวกรองที่เลือก</span>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {dashboardCards.map((card) => (
+              <Card key={card.label}>
+                <CardContent className="flex items-start justify-between gap-3 p-5">
+                  <div className="min-w-0">
+                    <p className="text-sm text-muted-foreground">{card.label}</p>
+                  <p className={cn("mt-2 truncate text-2xl font-bold", card.valueClass)}>{card.value}</p>
+                  {card.details && (
+                    <div className="mt-3 space-y-1 text-xs text-muted-foreground">
+                      {card.details.map((detail) => <p key={detail}>{detail}</p>)}
+                    </div>
+                  )}
+                  </div>
+                  <div className={cn("rounded-xl p-2.5", card.iconClass)}>{card.icon}</div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </section>
+
+        <Card><CardContent className="max-h-[70vh] overflow-auto">
+          <table className="w-full min-w-[1370px] table-fixed border-separate border-spacing-0 text-sm">
+            <thead><tr className="text-left text-xs">
+              {[
+                ['#', 50], ['วันที่', 90], ['หัวข้อ', 110], ['Description', 220], ['note', 140],
+                ['ใบกำกับภาษี', 110], ['ตรวจสอบแล้ว', 90], ['คำนวณต้นทุน', 100], ['ยอดรับ', 100],
+                ['ยอดจ่าย', 100], ['แผนก', 80], ['ผู้บันทึก', 100], ['จัดการ', 90],
+              ].map(([head, width]) => (
+                <th
+                  key={head}
+                  style={{ width }}
+                  className="sticky top-0 z-10 border-b bg-muted px-3 py-2 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]"
+                >
+                  {head}
+                </th>
+              ))}
             </tr></thead>
             <tbody>{rows.map((row, index) => <tr key={row.cfstate_id} className="border-b align-top">
               <td className="px-3 py-2">{index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td>
