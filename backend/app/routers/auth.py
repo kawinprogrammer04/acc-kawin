@@ -302,7 +302,10 @@ async def sso_hr_login(payload: HrSsoLoginRequest, db: AsyncSession = Depends(ge
         status_code = exc.status_code if exc.status_code in (401, 403) else status.HTTP_502_BAD_GATEWAY
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
-    result = await db.execute(select(User).where(User.hr_employee_id == employee.employee_id))
+    # The HR employee id is the accounting username by contract.  This keeps
+    # SSO automatic: an active accounting user whose username matches the
+    # employee id returned by HR may sign in without a separate manual link.
+    result = await db.execute(select(User).where(User.username == employee.employee_id))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(

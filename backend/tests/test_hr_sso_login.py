@@ -18,16 +18,16 @@ class _Result:
         return self._scalar
 
 
-def _linked_user(*, is_active: bool = True) -> User:
+def _hr_username_user(*, is_active: bool = True) -> User:
     return User(
         id=5,
-        username="mongkol",
+        username="0106006",
         email="mongkol@example.invalid",
         password_hash="unused",
         role="accountant",
         is_platform_admin=False,
         is_active=is_active,
-        hr_employee_id="0106006",
+        hr_employee_id=None,
     )
 
 
@@ -36,9 +36,9 @@ def _employee(employee_id: str = "0106006") -> HrEmployee:
 
 
 class HrSsoLoginTests(unittest.IsolatedAsyncioTestCase):
-    async def test_happy_path_returns_token_for_linked_active_user(self):
+    async def test_happy_path_returns_token_for_active_hr_username(self):
         db = AsyncMock()
-        user = _linked_user()
+        user = _hr_username_user()
         db.execute.return_value = _Result(scalar=user)
 
         with patch("app.routers.auth.fetch_employee_me", AsyncMock(return_value=_employee())):
@@ -86,7 +86,7 @@ class HrSsoLoginTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(raised.exception.status_code, 502)
 
-    async def test_employee_not_linked_to_any_user_returns_403(self):
+    async def test_employee_username_not_found_returns_403(self):
         db = AsyncMock()
         db.execute.return_value = _Result(scalar=None)
 
@@ -98,9 +98,9 @@ class HrSsoLoginTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("ไม่มีสิทธิ์", raised.exception.detail)
         db.commit.assert_not_awaited()
 
-    async def test_linked_but_inactive_user_returns_403(self):
+    async def test_matching_hr_username_but_inactive_user_returns_403(self):
         db = AsyncMock()
-        db.execute.return_value = _Result(scalar=_linked_user(is_active=False))
+        db.execute.return_value = _Result(scalar=_hr_username_user(is_active=False))
 
         with patch("app.routers.auth.fetch_employee_me", AsyncMock(return_value=_employee())):
             with self.assertRaises(HTTPException) as raised:
