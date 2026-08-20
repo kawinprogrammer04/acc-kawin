@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     CRM_KAWIN_API_KEY: str | None = None
     CRM_KAWIN_TIMEOUT_SECONDS: float = 15.0
 
+    # hr-kawin SSO login. The HR system issues a short-lived token when someone
+    # clicks "ระบบบัญชี" in the HR menu; we exchange it here for our own session
+    # by asking HR who the token belongs to — never trust an employee id passed
+    # directly in the URL. Leave HR_KAWIN_BASE_URL blank to hard-fail SSO login
+    # locally (there is no meaningful mock for identity verification).
+    HR_KAWIN_BASE_URL: str | None = None
+    HR_KAWIN_ME_PATH: str = "/api/employees/me"
+    HR_KAWIN_TIMEOUT_SECONDS: float = 10.0
+
     # Internal PHP/Dompdf service used for tax-invoice preview and PDF export.
     DOMPDF_RENDERER_URL: str = "http://tax_invoice_renderer:8090"
     DOMPDF_TIMEOUT_SECONDS: float = 30.0

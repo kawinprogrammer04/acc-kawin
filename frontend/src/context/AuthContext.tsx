@@ -6,6 +6,7 @@ interface AuthContextValue {
   user: User | null;
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
+  loginWithHrToken: (hrToken: string) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
   can: (menuKey: string, action?: PermissionAction) => boolean;
@@ -41,6 +42,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await refreshUser();
   };
 
+  const loginWithHrToken = async (hrToken: string) => {
+    const res = await authApi.ssoLoginHr(hrToken);
+    localStorage.setItem("token", res.access_token);
+    await refreshUser();
+  };
+
   const refreshUser = async () => {
     const me = await authApi.me();
     setUser(me);
@@ -64,7 +71,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return Boolean(permission?.[field]);
   };
 
-  return <AuthContext.Provider value={{ user, loading, login, logout, refreshUser, can }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ user, loading, login, loginWithHrToken, logout, refreshUser, can }}>{children}</AuthContext.Provider>;
 }
 
 export const useAuth = () => useContext(AuthContext);

@@ -27,7 +27,9 @@ from app.models.permission import (
 )
 from app.models.user import User
 from app.services import expense_signature_service
+from app.services.hr_kawin import HrTokenError, fetch_employee_me
 from app.schemas.auth import (
+    HrSsoLoginRequest,
     LoginRequest,
     RoleCreate,
     RoleOut,
@@ -288,6 +290,33 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     return TokenResponse(access_token=token, user_id=user.id, username=user.username, role=user.role)
 
 
+@router.post("/sso/hr-login", response_model=TokenResponse)
+async def sso_hr_login(payload: HrSsoLoginRequest, db: AsyncSession = Depends(get_db)):
+    """Exchange a short-lived HR token (from the "ระบบบัญชี" button in HR) for
+    our own session. Identity comes ONLY from HR's response to this token —
+    never from anything the caller claims directly — so a forged employee id
+    can't be smuggled in."""
+    try:
+        employee = await fetch_employee_me(payload.token)
+    except HrTokenError as exc:
+        status_code = exc.status_code if exc.status_code in (401, 403) else status.HTTP_502_BAD_GATEWAY
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    result = await db.execute(select(User).where(User.hr_employee_id == employee.employee_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="ไม่มีสิทธิ์เข้าใช้งานระบบบัญชี กรุณาติดต่อผู้ดูแลระบบ",
+        )
+
+    user.last_login = datetime.now(timezone.utc)
+    await db.commit()
+
+    token = create_access_token({"sub": str(user.id), "role": user.role})
+    return TokenResponse(access_token=token, user_id=user.id, username=user.username, role=user.role)
+
+
 @router.get("/me", response_model=UserMeOut)
 async def get_me(
     current_user: User = Depends(get_current_user),
@@ -418,6 +447,13 @@ async def create_user(
     if payload.position_ids and payload.company_id is None:
         raise HTTPException(status_code=400, detail="ต้องเลือกบริษัทก่อนจึงจะกำหนดตำแหน่งได้")
 
+    if payload.hr_employee_id:
+        conflict = await db.execute(
+            select(User.id).where(User.hr_employee_id == payload.hr_employee_id)
+        )
+        if conflict.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="employee_id นี้ถูกผูกกับผู้ใช้งานอื่นแล้ว")
+
     if payload.position_ids:
         if len(set(payload.position_ids)) != len(payload.position_ids):
             raise HTTPException(status_code=400, detail="พบตำแหน่งซ้ำในรายการที่เลือก")
@@ -438,6 +474,7 @@ async def create_user(
         password_hash=hash_password(payload.password),
         full_name=payload.full_name,
         role=payload.role,
+        hr_employee_id=payload.hr_employee_id or None,
     )
     db.add(user)
     await db.flush()
@@ -517,6 +554,18 @@ async def update_user(
         user.is_active = payload.is_active
     if payload.password:
         user.password_hash = hash_password(payload.password)
+    if payload.hr_employee_id is not None:
+        new_hr_employee_id = payload.hr_employee_id or None
+        if new_hr_employee_id:
+            conflict = await db.execute(
+                select(User.id).where(
+                    User.hr_employee_id == new_hr_employee_id,
+                    User.id != user.id,
+                )
+            )
+            if conflict.scalar_one_or_none():
+                raise HTTPException(status_code=409, detail="employee_id นี้ถูกผูกกับผู้ใช้งานอื่นแล้ว")
+        user.hr_employee_id = new_hr_employee_id
     await db.commit()
     await db.refresh(user)
     return user
