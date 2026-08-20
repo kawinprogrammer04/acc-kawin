@@ -18,6 +18,7 @@ interface UserOut {
   full_name?: string;
   role: string;
   is_active: boolean;
+  hr_employee_id?: string | null;
 }
 
 interface UserCompanyMembership {
@@ -38,7 +39,7 @@ const ROLE_COLORS: Record<string, string> = {
   viewer: "bg-gray-100 text-gray-600",
 };
 
-const emptyForm = { username: "", email: "", password: "", full_name: "", role: "accountant", company_id: "", department_id: "" };
+const emptyForm = { username: "", email: "", password: "", full_name: "", role: "accountant", company_id: "", department_id: "", hr_employee_id: "" };
 
 export function UserManagementPage() {
   const { companies, currentCompany } = useCompany();
@@ -48,7 +49,7 @@ export function UserManagementPage() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<UserOut | null>(null);
   const [form, setForm] = useState<{
-    username: string; email: string; password: string; full_name: string; role: string; company_id: string; department_id: string;
+    username: string; email: string; password: string; full_name: string; role: string; company_id: string; department_id: string; hr_employee_id: string;
   }>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -153,7 +154,7 @@ export function UserManagementPage() {
 
   async function openEdit(u: UserOut) {
     setEditing(u);
-    setForm({ username: u.username, email: u.email, password: "", full_name: u.full_name ?? "", role: u.role, company_id: "", department_id: "" });
+    setForm({ username: u.username, email: u.email, password: "", full_name: u.full_name ?? "", role: u.role, company_id: "", department_id: "", hr_employee_id: u.hr_employee_id ?? "" });
     setSelectedPositionIds([]);
     setError("");
     setShowForm(true);
@@ -214,7 +215,11 @@ export function UserManagementPage() {
     setSaving(true); setError("");
     try {
       if (editing) {
-        const payload: Record<string, string | undefined> = { full_name: form.full_name, role: form.role };
+        const payload: Record<string, string | undefined | null> = {
+          full_name: form.full_name,
+          role: form.role,
+          hr_employee_id: form.hr_employee_id || null,
+        };
         if (form.password) payload.password = form.password;
         await api.patch(`/auth/users/${editing.id}`, payload);
         if (form.company_id) {
@@ -302,6 +307,18 @@ export function UserManagementPage() {
                   onChange={e => setForm(f => ({ ...f, full_name: e.target.value }))}
                   placeholder="ชื่อ-นามสกุล"
                 />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">HR Employee ID</label>
+                <input
+                  className="mt-1 w-full rounded-md border px-3 py-2 text-sm"
+                  value={form.hr_employee_id}
+                  onChange={e => setForm(f => ({ ...f, hr_employee_id: e.target.value }))}
+                  placeholder={'เช่น 0106006 (ผูกกับปุ่ม "ระบบบัญชี" ใน HR)'}
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  ผูกบัญชีนี้กับรหัสพนักงานใน HR เพื่อให้กดปุ่ม "ระบบบัญชี" แล้วเข้าใช้งานได้เลย — เว้นว่างถ้ายังไม่ผูก
+                </p>
               </div>
               <div>
                 <label className="text-xs font-medium text-muted-foreground">
@@ -496,7 +513,12 @@ export function UserManagementPage() {
                 <tbody className="divide-y">
                   {users.map(u => (
                     <tr key={u.id} className="hover:bg-muted/20">
-                      <td className="px-4 py-2.5 font-medium">{u.username}</td>
+                      <td className="px-4 py-2.5 font-medium">
+                        {u.username}
+                        <div className="text-[11px] font-normal text-muted-foreground">
+                          {u.hr_employee_id ? `HR: ${u.hr_employee_id}` : "ยังไม่ผูก HR"}
+                        </div>
+                      </td>
                       <td className="px-4 py-2.5 text-muted-foreground">{u.full_name || "-"}</td>
                       <td className="px-4 py-2.5 text-muted-foreground text-xs">{u.email}</td>
                       <td className="px-4 py-2.5">

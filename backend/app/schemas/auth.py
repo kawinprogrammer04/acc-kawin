@@ -23,6 +23,7 @@ class UserCreate(BaseModel):
     company_id: int | None = None
     department_id: int | None = None
     position_ids: list[int] = Field(default_factory=list)
+    hr_employee_id: str | None = None
 
 
 class UserUpdate(BaseModel):
@@ -30,6 +31,7 @@ class UserUpdate(BaseModel):
     role: str | None = None
     is_active: bool | None = None
     password: str | None = None
+    hr_employee_id: str | None = None
 
 
 class UserOut(BaseModel):
@@ -40,8 +42,13 @@ class UserOut(BaseModel):
     role: str
     is_platform_admin: bool = False
     is_active: bool
+    hr_employee_id: str | None = None
 
     model_config = {"from_attributes": True}
+
+
+class HrSsoLoginRequest(BaseModel):
+    token: str
 
 
 class RoleCreate(BaseModel):
