@@ -25,7 +25,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import column_index_from_string, get_column_letter
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -46,7 +46,11 @@ from app.models.crm_cashflow import (
     CrmCashflowStatementAttachment,
 )
 from app.models.user import User
-from app.services.crm_cashflow_rules import classify_crm_cashflow_note
+from app.services.crm_cashflow_rules import (
+    CRM_CASHFLOW_PAY_NOTE,
+    classify_crm_cashflow_note,
+    should_auto_verify_crm_cashflow_note,
+)
 
 
 router = APIRouter(prefix="/crm-cashflow", tags=["CRM Cashflow"])
@@ -492,9 +496,15 @@ async def _list_statements(
     if pending_verification_only:
         # Invoice tracking is only relevant to money paid out. Keep every
         # "ใบเสร็จ" status (0/1/null), but exclude positive receipt amounts.
+        # PAY-prefixed rows are administrative expenses, not invoice-tracking
+        # items; hide them by note without marking them as verified.
         stmt = stmt.where(
             CrmCashflowStatement.cfstate_verified == 0,
             CrmCashflowStatement.cfstate_amount <= 0,
+            or_(
+                CrmCashflowStatement.cfstate_note.is_(None),
+                CrmCashflowStatement.cfstate_note != CRM_CASHFLOW_PAY_NOTE,
+            ),
         )
     stmt = stmt.order_by(
         CrmCashflowStatement.cfstate_date.desc(),
@@ -1261,7 +1271,8 @@ async def create_statements(
                 auto_note = classify_crm_cashflow_note(item.cfstate_detail)
                 if auto_note:
                     existing.cfstate_note = auto_note
-                    existing.cfstate_verified = 1
+                    if should_auto_verify_crm_cashflow_note(auto_note):
+                        existing.cfstate_verified = 1
                 updated += 1
             elif payload.duplicate_action == "create":
                 auto_note = classify_crm_cashflow_note(item.cfstate_detail)
@@ -1272,7 +1283,7 @@ async def create_statements(
                         user_id=current_user.id,
                         comp_id=company.id,
                         cfstate_note=auto_note,
-                        cfstate_verified=1 if auto_note else 0,
+                        cfstate_verified=1 if should_auto_verify_crm_cashflow_note(auto_note) else 0,
                     )
                 )
                 created += 1
@@ -1287,7 +1298,7 @@ async def create_statements(
                 user_id=current_user.id,
                 comp_id=company.id,
                 cfstate_note=auto_note,
-                cfstate_verified=1 if auto_note else 0,
+                cfstate_verified=1 if should_auto_verify_crm_cashflow_note(auto_note) else 0,
             )
         )
         created += 1
@@ -1910,7 +1921,8 @@ async def import_statements(
                     auto_note = classify_crm_cashflow_note(data["detail"])
                     if auto_note:
                         existing.cfstate_note = auto_note
-                        existing.cfstate_verified = 1
+                        if should_auto_verify_crm_cashflow_note(auto_note):
+                            existing.cfstate_verified = 1
                     updated += 1
                     continue
                 # duplicate_action == "create" falls through and inserts a new row
@@ -1926,7 +1938,7 @@ async def import_statements(
                 cfstate_refrain=data["refrain"],
                 cfstate_invoice=data["invoice"],
                 cfstate_document_type=None,
-                cfstate_verified=1 if auto_note else 0,
+                cfstate_verified=1 if should_auto_verify_crm_cashflow_note(auto_note) else 0,
                 cfstate_detail=data["detail"] or None,
                 cfstate_note=auto_note,
                 cfstate_status=1,

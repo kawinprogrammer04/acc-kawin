@@ -12,6 +12,7 @@ from app.routers.crm_cashflow import (
     classify_crm_cashflow_note,
     create_statements,
 )
+from app.services.crm_cashflow_rules import should_auto_verify_crm_cashflow_note
 
 
 class _Result:
@@ -57,8 +58,12 @@ class CrmCashflowDescriptionRuleTests(unittest.TestCase):
     def test_matching_is_case_insensitive_and_trims_outer_whitespace(self):
         self.assertEqual(classify_crm_cashflow_note("  kbank X7675 transaction  "), "ADS AMEX")
 
-    def test_pay_is_a_substring_rule(self):
+    def test_pay_is_a_prefix_rule(self):
         self.assertEqual(classify_crm_cashflow_note("PAYMENT PROVIDER"), "รายการอื่นๆ")
+        self.assertEqual(classify_crm_cashflow_note("  pay transfer  "), "รายการอื่นๆ")
+        self.assertIsNone(classify_crm_cashflow_note("EPAYMENT PROVIDER"))
+        self.assertFalse(should_auto_verify_crm_cashflow_note("รายการอื่นๆ"))
+        self.assertTrue(should_auto_verify_crm_cashflow_note("ADS SCB"))
 
     def test_ads_rule_takes_priority_over_pay(self):
         self.assertEqual(classify_crm_cashflow_note("SCB x699 PAY"), "ค่า ADS Shopee")
@@ -95,6 +100,12 @@ class CrmCashflowCreateClassificationTests(unittest.IsolatedAsyncioTestCase):
         _, statement = await self._create("ค่าเช่าสำนักงาน")
 
         self.assertIsNone(statement.cfstate_note)
+        self.assertEqual(statement.cfstate_verified, 0)
+
+    async def test_pay_statement_is_hidden_from_invoices_but_remains_pending(self):
+        _, statement = await self._create("PAYMENT PROVIDER")
+
+        self.assertEqual(statement.cfstate_note, "รายการอื่นๆ")
         self.assertEqual(statement.cfstate_verified, 0)
 
 
