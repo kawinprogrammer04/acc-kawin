@@ -6,6 +6,7 @@ import {
   type CrmCashflowAttachment,
   type CrmCashflowCategory,
   type CrmCashflowDocumentType,
+  type CrmCashflowInvoiceDashboardSummary,
   type CrmCashflowInvoiceStatus,
   type CrmCashflowStatement,
 } from "@/api/crmCashflow";
@@ -54,6 +55,26 @@ const DATE_PRESETS: { value: DatePreset; label: string }[] = [
   { value: "last_month", label: "เดือนที่แล้ว" },
 ];
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
+const emptyInvoiceDashboard: CrmCashflowInvoiceDashboardSummary = {
+  total_count: 0,
+  verified_count: 0,
+  pending_count: 0,
+  total_amount: 0,
+  pending_amount: 0,
+};
+const invoiceDashboardFromItems = (
+  items: CrmCashflowStatement[],
+): CrmCashflowInvoiceDashboardSummary => {
+  const expenseItems = items.filter((row) => row.cfstate_amount <= 0);
+  const pendingItems = expenseItems.filter((row) => row.cfstate_verified === 0);
+  return {
+    total_count: expenseItems.length,
+    verified_count: expenseItems.filter((row) => row.cfstate_verified === 1).length,
+    pending_count: pendingItems.length,
+    total_amount: expenseItems.reduce((sum, row) => sum + (row.cfstate_amount < 0 ? Math.abs(row.cfstate_amount) : 0), 0),
+    pending_amount: pendingItems.reduce((sum, row) => sum + (row.cfstate_amount < 0 ? Math.abs(row.cfstate_amount) : 0), 0),
+  };
+};
 const addDays = (base: Date, delta: number) => {
   const next = new Date(base);
   next.setDate(next.getDate() + delta);
@@ -64,18 +85,18 @@ function effectiveInvoiceStatus(row: CrmCashflowStatement): CrmCashflowInvoiceSt
   if (row.cfstate_invoice == null) return "none";
   return row.cfstate_invoice === 1 ? "received" : "pending";
 }
-type VerificationDialog =
-  | { type: "blocked"; reason: string }
-  | { type: "confirm"; statementId: number };
+type VerificationDialog = { type: "blocked"; reason: string };
 
 export function CrmCashflowInvoicePage() {
   const { can } = useAuth();
   const [categories, setCategories] = useState<CrmCashflowCategory[]>([]);
   const [rows, setRows] = useState<CrmCashflowStatement[]>([]);
+  const [dashboard, setDashboard] = useState(emptyInvoiceDashboard);
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
   const [datePreset, setDatePreset] = useState<DatePreset>("custom");
   const [categoryId, setCategoryId] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
   const [noteQuery, setNoteQuery] = useState("");
   const [detailQuery, setDetailQuery] = useState("");
   const [incomeMin, setIncomeMin] = useState("");
@@ -142,7 +163,18 @@ export function CrmCashflowInvoicePage() {
         start_date: dateStart || undefined, end_date: dateEnd || undefined,
         cfcat_id: categoryId ? Number(categoryId) : undefined,
       });
-      setRows(result.items.filter((row) => row.cfstate_amount <= 0));
+      const items = result.items ?? [];
+      // Older API responses did not include dashboard. Derive the values from
+      // the returned rows so the cards never show zero while the table has data.
+      const itemDashboard = invoiceDashboardFromItems(items);
+      const apiDashboard = result.dashboard;
+      const apiDashboardIsEmpty = items.length > 0
+        && apiDashboard
+        && apiDashboard.total_count === 0
+        && apiDashboard.verified_count === 0
+        && apiDashboard.pending_count === 0;
+      setDashboard(apiDashboardIsEmpty ? itemDashboard : { ...itemDashboard, ...(apiDashboard ?? {}) });
+      setRows(items.filter((row) => row.cfstate_amount <= 0));
     } catch (requestError) { showError(String(message(requestError))); }
     finally { setLoading(false); }
   }, [dateStart, dateEnd, categoryId]);
@@ -178,6 +210,7 @@ export function CrmCashflowInvoicePage() {
     setDatePreset("custom");
     setDateStart(""); setDateEnd("");
     setCategoryId("");
+    setSearchQuery("");
     setNoteQuery(""); setDetailQuery("");
     setIncomeMin(""); setIncomeMax("");
     setExpenseMin(""); setExpenseMax("");
@@ -185,6 +218,7 @@ export function CrmCashflowInvoicePage() {
   };
 
   const filteredRows = useMemo(() => {
+    const search = searchQuery.trim().toLowerCase();
     const note = noteQuery.trim().toLowerCase();
     const detail = detailQuery.trim().toLowerCase();
     const incomeMinNum = incomeMin === "" ? null : Number(incomeMin);
@@ -192,6 +226,23 @@ export function CrmCashflowInvoicePage() {
     const expenseMinNum = expenseMin === "" ? null : Number(expenseMin);
     const expenseMaxNum = expenseMax === "" ? null : Number(expenseMax);
     return rows.filter((row) => {
+      // Search the complete dataset loaded from the API. Pagination is applied
+      // only after this filter, so a match on page 2+ is still discoverable
+      // when the table is configured to show 50 rows per page.
+      if (search) {
+        const searchableText = [
+          row.cfstate_id,
+          row.cfstate_date,
+          row.cfcat_name,
+          row.cflist_name,
+          row.cfstate_detail,
+          row.cfstate_amount_str,
+          row.cfstate_amount,
+          row.user_name,
+          effectiveInvoiceStatus(row),
+        ].map((value) => String(value ?? "").toLowerCase()).join(" ");
+        if (!searchableText.includes(search)) return false;
+      }
       if (note && !(row.cflist_name || "").toLowerCase().includes(note)) return false;
       if (detail && !(row.cfstate_detail || "").toLowerCase().includes(detail)) return false;
       if (incomeMinNum !== null || incomeMaxNum !== null) {
@@ -208,11 +259,11 @@ export function CrmCashflowInvoicePage() {
       if (invoiceStatusFilter && effectiveInvoiceStatus(row) !== invoiceStatusFilter) return false;
       return true;
     });
-  }, [rows, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter]);
+  }, [rows, searchQuery, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter]);
 
   useEffect(() => {
     setPage(1);
-  }, [rows, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter, pageSize]);
+  }, [rows, searchQuery, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter, pageSize]);
 
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filteredRows.length / pageSize)) : 1;
   const currentPage = Math.min(page, totalPages);
@@ -221,7 +272,7 @@ export function CrmCashflowInvoicePage() {
     ? filteredRows.slice(rowNumberOffset, rowNumberOffset + pageSize)
     : filteredRows;
 
-  const requestVerification = (id: number) => {
+  const requestVerification = async (id: number) => {
     if (attachments.length === 0 || !attachmentStatement?.cfstate_document_type) {
       setVerificationDialog({
         type: "blocked",
@@ -229,15 +280,10 @@ export function CrmCashflowInvoicePage() {
       });
       return;
     }
-    setVerificationDialog({ type: "confirm", statementId: id });
-  };
-
-  const confirmVerification = async () => {
-    if (verificationDialog?.type !== "confirm" || savingVerification) return;
+    if (savingVerification) return;
     setSavingVerification(true);
     try {
-      await crmCashflowApi.updateStatement(verificationDialog.statementId, { cfstate_verified: 1 });
-      setVerificationDialog(null);
+      await crmCashflowApi.updateStatement(id, { cfstate_verified: 1 });
       showNotice("บันทึกว่าตรวจสอบแล้ว");
       closeAttachmentsDialog();
       await loadRows();
@@ -499,6 +545,28 @@ export function CrmCashflowInvoicePage() {
     )}
 
     <div className="flex-1 space-y-4 overflow-auto p-6">
+      <Card>
+        <CardContent className="space-y-3 pt-6">
+          <h2 className="text-base font-semibold">Dashboard สรุปการตรวจสอบ</h2>
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-lg border bg-muted/20 p-4">
+              <p className="text-sm text-muted-foreground">รายการทั้งหมด</p>
+              <p className="mt-1 text-2xl font-semibold">{dashboard.total_count.toLocaleString("th-TH")} รายการ</p>
+              <p className="mt-1 text-xs text-muted-foreground">ยอดรวม {money(dashboard.total_amount)}</p>
+            </div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+              <p className="text-sm text-emerald-700">ตรวจสอบแล้ว</p>
+              <p className="mt-1 text-2xl font-semibold text-emerald-800">{dashboard.verified_count.toLocaleString("th-TH")} รายการ</p>
+              <p className="mt-1 text-xs text-emerald-700">ตามช่วงวันที่และหัวข้อที่เลือก</p>
+            </div>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <p className="text-sm text-amber-700">เหลือต้องตรวจสอบ</p>
+              <p className="mt-1 text-2xl font-semibold text-amber-800">{dashboard.pending_count.toLocaleString("th-TH")} รายการ</p>
+              <p className="mt-1 text-xs text-amber-700">ยอดที่รอตรวจสอบ {money(dashboard.pending_amount)}</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
       <Card><CardContent className="flex flex-wrap items-end gap-3 pt-6">
         <label className="min-w-36 space-y-1 text-xs">ช่วงวันที่
           <select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={datePreset} onChange={(event) => applyDatePreset(event.target.value as DatePreset)}>
@@ -508,6 +576,7 @@ export function CrmCashflowInvoicePage() {
         <div className="space-y-1 text-xs">วันที่เริ่มต้น<DatePicker value={dateStart} onChange={changeDateStart} /></div>
         <div className="space-y-1 text-xs">วันที่สิ้นสุด<DatePicker value={dateEnd} onChange={changeDateEnd} /></div>
         <label className="min-w-56 space-y-1 text-xs">หัวข้อ<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">ทั้งหมด</option>{categories.map((item) => <option key={item.cfcat_id} value={item.cfcat_id}>{item.cfcat_name}</option>)}</select></label>
+        <label className="min-w-56 space-y-1 text-xs">ค้นหาทั้งหมด<Input className="h-9" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="ค้นหาทุกคอลัมน์ ทุกหน้า" /></label>
         <label className="min-w-48 space-y-1 text-xs">note<Input className="h-9" value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="ค้นหา note" /></label>
         <label className="min-w-48 space-y-1 text-xs">Description<Input className="h-9" value={detailQuery} onChange={(event) => setDetailQuery(event.target.value)} placeholder="ค้นหา Description" /></label>
         <div className="space-y-1 text-xs hidden">ยอดรับ (ต่ำสุด–สูงสุด)
@@ -531,10 +600,13 @@ export function CrmCashflowInvoicePage() {
         <Button variant="outline" onClick={loadRows}><RefreshCw className="h-4 w-4" />ดูรายงาน</Button>
         <Button variant="ghost" onClick={resetFilters}>ล้างตัวกรอง</Button>
       </CardContent></Card>
-      <Card><CardContent className="overflow-x-auto pt-6"><table className="w-full min-w-[1140px] text-sm">
-        <thead><tr className="border-b bg-muted/40 text-left text-xs">{['#','วันที่','หัวข้อ','Description','note','ยอดรับ','ยอดจ่าย','ใบกำกับภาษี','ผู้บันทึก','จัดการ'].map((head) => <th key={head} className="px-3 py-2">{head}</th>)}</tr></thead>
+      <Card><CardContent className="max-h-[70vh] overflow-auto"><table className="w-full min-w-[1280px] table-fixed border-separate border-spacing-0 text-sm">
+        <thead><tr className="text-left text-xs">{[
+          ['#', 50], ['วันที่', 90], ['หัวข้อ', 110], ['Description', 220], ['note', 140], ['หมายเหตุ', 140],
+          ['ยอดรับ', 100], ['ยอดจ่าย', 100], ['ใบกำกับภาษี', 110], ['ผู้บันทึก', 100], ['จัดการ', 90],
+        ].map(([head, width]) => <th key={head} style={{ width }} className="sticky top-0 z-10 border-b bg-muted px-3 py-2 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]">{head}</th>)}</tr></thead>
         <tbody>{pagedRows.map((row, index) => <tr key={row.cfstate_id} className="border-b">
-          <td className="px-3 py-2">{rowNumberOffset + index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td><td className="px-3 py-2">{row.cfcat_name}</td><td className="max-w-60 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td><td className="px-3 py-2">{row.cflist_name}</td>
+          <td className="px-3 py-2">{rowNumberOffset + index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td><td className="px-3 py-2">{row.cfcat_name}</td><td className="max-w-60 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td><td className="px-3 py-2">{row.cflist_name}</td><td className="px-3 py-2">{row.cfstate_note || "-"}</td>
           <td className="px-3 py-2 text-right text-emerald-700">{row.cfstate_amount > 0 ? money(row.cfstate_amount) : "0.00"}</td><td className="px-3 py-2 text-right text-red-700">{row.cfstate_amount < 0 ? money(row.cfstate_amount) : "0.00"}</td>
           <td className="px-3 py-2"><InvoiceStatusBadge invoice={row.cfstate_invoice} documentType={row.cfstate_document_type} /></td><td className="px-3 py-2">{row.user_name}</td>
           <td className="px-3 py-2">
@@ -578,24 +650,11 @@ export function CrmCashflowInvoicePage() {
     <Dialog open={!!verificationDialog} onOpenChange={(open) => !open && setVerificationDialog(null)}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>{verificationDialog?.type === "blocked" ? "ไม่สามารถตรวจสอบได้" : "ยืนยันการตรวจสอบ"}</DialogTitle>
-          <DialogDescription>
-            {verificationDialog?.type === "blocked"
-              ? verificationDialog.reason
-              : "ยืนยันว่าคุณตรวจสอบไฟล์แนบของรายการนี้เรียบร้อยแล้วใช่หรือไม่?"}
-          </DialogDescription>
+          <DialogTitle>ไม่สามารถตรวจสอบได้</DialogTitle>
+          <DialogDescription>{verificationDialog?.reason}</DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          {verificationDialog?.type === "confirm" ? (
-            <>
-              <Button variant="outline" disabled={savingVerification} onClick={() => setVerificationDialog(null)}>ยกเลิก</Button>
-              <Button disabled={savingVerification} onClick={confirmVerification}>
-                {savingVerification ? "กำลังบันทึก..." : "ยืนยันว่าตรวจสอบแล้ว"}
-              </Button>
-            </>
-          ) : (
-            <Button onClick={() => setVerificationDialog(null)}>ตกลง</Button>
-          )}
+          <Button onClick={() => setVerificationDialog(null)}>ตกลง</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -729,10 +788,10 @@ export function CrmCashflowInvoicePage() {
           <Button variant="outline" disabled={discardingExit} onClick={attemptCloseAttachments}>ปิด</Button>
           <Can menuKey={MENU_KEY} action="update">
             <Button
-              disabled={attachments.length === 0 || !attachmentStatement?.cfstate_document_type}
-              onClick={() => attachmentStatement && requestVerification(attachmentStatement.cfstate_id)}
+              disabled={savingVerification || attachments.length === 0 || !attachmentStatement?.cfstate_document_type}
+              onClick={() => attachmentStatement && void requestVerification(attachmentStatement.cfstate_id)}
             >
-              ตรวจสอบแล้ว
+              {savingVerification ? "กำลังบันทึก..." : "ตรวจสอบแล้ว"}
             </Button>
           </Can>
         </DialogFooter>

@@ -46,6 +46,7 @@ from app.models.crm_cashflow import (
     CrmCashflowStatementAttachment,
 )
 from app.models.user import User
+from app.services.crm_cashflow_rules import classify_crm_cashflow_note
 
 
 router = APIRouter(prefix="/crm-cashflow", tags=["CRM Cashflow"])
@@ -433,6 +434,7 @@ def _statement_select():
             CrmCashflowStatement.cfstate_document_type,
             CrmCashflowStatement.cfstate_verified,
             CrmCashflowStatement.cfstate_detail,
+            CrmCashflowStatement.cfstate_note,
             CrmCashflowStatement.cfstate_status,
             CrmCashflowStatement.cfstate_dep_id,
             CrmCashflowStatement.cfstate_ref,
@@ -1143,11 +1145,37 @@ async def list_pending_invoices(
     db: AsyncSession = Depends(get_db),
     company: Company = Depends(get_current_company),
 ):
+    all_rows = await _list_statements(
+        db, company.id, start_date, end_date, cfcat_id
+    )
     rows = await _list_statements(
         db, company.id, start_date, end_date, cfcat_id, pending_verification_only=True
     )
     items = [_serialize_statement(row) for row in rows]
-    return {"items": items, "total": len(items)}
+    expense_rows = [row for row in all_rows if row["cfstate_amount"] <= 0]
+    total_amount = sum(
+        abs(float(row["cfstate_amount"]))
+        for row in expense_rows
+        if row["cfstate_amount"] < 0
+    )
+    pending_amount = sum(
+        abs(float(row["cfstate_amount"]))
+        for row in rows
+        if row["cfstate_amount"] < 0
+    )
+    return {
+        "items": items,
+        "total": len(items),
+        "dashboard": {
+            "total_count": len(expense_rows),
+            "verified_count": sum(
+                1 for row in expense_rows if row["cfstate_verified"] == 1
+            ),
+            "pending_count": len(rows),
+            "total_amount": total_amount,
+            "pending_amount": pending_amount,
+        },
+    }
 
 
 @router.get("/statements/export", dependencies=[Depends(require_viewer)])
@@ -1170,7 +1198,7 @@ async def export_statements(
     sheet.title = "Cashflow Statement"
     headers = [
         "#", "แผนก", "วันที่", "หัวข้อ", "แหล่งที่มา", "รายละเอียด",
-        "ใบกำกับภาษี", "คำนวณต้นทุน", "รายรับ", "รายจ่าย",
+        "หมายเหตุ", "ใบกำกับภาษี", "คำนวณต้นทุน", "รายรับ", "รายจ่าย",
     ]
     sheet.append(headers)
     for cell in sheet[1]:
@@ -1184,6 +1212,7 @@ async def export_statements(
             row.cfcat_name,
             row.cflist_name,
             row.cfstate_detail or "",
+            row.cfstate_note or "",
             _invoice_status_label(row.cfstate_invoice, row.cfstate_document_type),
             "ON" if row.cfstate_refrain == 1 else "OFF",
             amount if amount > 0 else Decimal("0"),
@@ -1229,26 +1258,36 @@ async def create_statements(
                     existing_id, company.id, "ไม่พบรายการ",
                 )
                 existing.user_id = current_user.id
+                auto_note = classify_crm_cashflow_note(item.cfstate_detail)
+                if auto_note:
+                    existing.cfstate_note = auto_note
+                    existing.cfstate_verified = 1
                 updated += 1
             elif payload.duplicate_action == "create":
+                auto_note = classify_crm_cashflow_note(item.cfstate_detail)
                 db.add(
                     CrmCashflowStatement(
                         **item.model_dump(),
                         cfstate_status=1,
                         user_id=current_user.id,
                         comp_id=company.id,
+                        cfstate_note=auto_note,
+                        cfstate_verified=1 if auto_note else 0,
                     )
                 )
                 created += 1
             else:
                 skipped += 1
             continue
+        auto_note = classify_crm_cashflow_note(item.cfstate_detail)
         db.add(
             CrmCashflowStatement(
                 **item.model_dump(),
                 cfstate_status=1,
                 user_id=current_user.id,
                 comp_id=company.id,
+                cfstate_note=auto_note,
+                cfstate_verified=1 if auto_note else 0,
             )
         )
         created += 1
@@ -1868,10 +1907,15 @@ async def import_statements(
                         duplicate_id, company.id, "ไม่พบรายการ",
                     )
                     existing.user_id = current_user.id
+                    auto_note = classify_crm_cashflow_note(data["detail"])
+                    if auto_note:
+                        existing.cfstate_note = auto_note
+                        existing.cfstate_verified = 1
                     updated += 1
                     continue
                 # duplicate_action == "create" falls through and inserts a new row
 
+            auto_note = classify_crm_cashflow_note(data["detail"])
             db.add(CrmCashflowStatement(
                 cfstate_date=data["cfstate_date"],
                 cfcat_id=category.cfcat_id,
@@ -1882,8 +1926,9 @@ async def import_statements(
                 cfstate_refrain=data["refrain"],
                 cfstate_invoice=data["invoice"],
                 cfstate_document_type=None,
-                cfstate_verified=0,
+                cfstate_verified=1 if auto_note else 0,
                 cfstate_detail=data["detail"] or None,
+                cfstate_note=auto_note,
                 cfstate_status=1,
                 cfstate_dep_id=department.cfstate_dep_id if department else None,
                 cfstate_ref=data["ref"] or None,
