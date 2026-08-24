@@ -776,10 +776,10 @@ export function CrmCashflowStatementPage() {
         </section>
 
         <Card><CardContent className="max-h-[70vh] overflow-auto">
-          <table className="w-full min-w-[1370px] table-fixed border-separate border-spacing-0 text-sm">
+          <table className="w-full min-w-[1510px] table-fixed border-separate border-spacing-0 text-sm">
             <thead><tr className="text-left text-xs">
               {[
-                ['#', 50], ['วันที่', 90], ['หัวข้อ', 110], ['Description', 220], ['note', 140],
+                ['#', 50], ['วันที่', 90], ['หัวข้อ', 110], ['Description', 220], ['note', 140], ['หมายเหตุ', 140],
                 ['ใบกำกับภาษี', 110], ['ตรวจสอบแล้ว', 90], ['คำนวณต้นทุน', 100], ['ยอดรับ', 100],
                 ['ยอดจ่าย', 100], ['แผนก', 80], ['ผู้บันทึก', 100], ['จัดการ', 90],
               ].map(([head, width]) => (
@@ -797,6 +797,7 @@ export function CrmCashflowStatementPage() {
               <td className="px-3 py-2">{row.cfcat_name}</td>
               <td className="max-w-56 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td>
               <td className="px-3 py-2">{row.cflist_name}</td>
+              <td className="px-3 py-2">{row.cfstate_note || "-"}</td>
               <td className="px-3 py-2"><InvoiceStatusBadge invoice={row.cfstate_invoice} documentType={row.cfstate_document_type} /></td>
               <td className="px-3 py-2 text-center">{row.cfstate_verified === 1 && <Check className="mx-auto h-4 w-4 text-emerald-600" />}</td>
               <td className="px-3 py-2"><Switch checked={row.cfstate_refrain === 1} onCheckedChange={(checked) => updateFlag(row.cfstate_id, { cfstate_refrain: checked ? 1 : 0 })} /></td>
@@ -814,7 +815,7 @@ export function CrmCashflowStatementPage() {
                 </div>
               </td>
             </tr>)}</tbody>
-            <tfoot><tr className="bg-muted/30 font-semibold"><td colSpan={7} className="px-3 py-3 text-center">รวม {rows.length} รายการ</td><td className="px-3 py-3 text-right text-emerald-700">{money(sumRevenue)}</td><td className="px-3 py-3 text-right text-red-700">{money(sumExpenses)}</td><td colSpan={3} /></tr></tfoot>
+            <tfoot><tr className="bg-muted/30 font-semibold"><td colSpan={9} className="px-3 py-3 text-center">รวม {rows.length} รายการ</td><td className="px-3 py-3 text-right text-emerald-700">{money(sumRevenue)}</td><td className="px-3 py-3 text-right text-red-700">{money(sumExpenses)}</td><td colSpan={3} /></tr></tfoot>
           </table>
           {loading && <p className="py-8 text-center text-sm text-muted-foreground">กำลังโหลด...</p>}
           {!loading && rows.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">ไม่พบรายการ</p>}

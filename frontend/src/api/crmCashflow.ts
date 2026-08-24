@@ -51,6 +51,7 @@ export interface CrmCashflowStatement {
   cfstate_document_type: CrmCashflowDocumentType | null;
   cfstate_verified: 0 | 1;
   cfstate_detail?: string | null;
+  cfstate_note?: string | null;
   cfstate_status: 0 | 1;
   cfstate_dep_id?: number | null;
   cfstate_ref?: string | null;
@@ -70,6 +71,14 @@ export interface CrmCashflowDashboardSummary {
   verified_expenses: number;
   pending_revenue: number;
   pending_expenses: number;
+}
+
+export interface CrmCashflowInvoiceDashboardSummary {
+  total_count: number;
+  verified_count: number;
+  pending_count: number;
+  total_amount: number;
+  pending_amount: number;
 }
 
 export interface CrmStatementInput {
@@ -280,7 +289,11 @@ export const crmCashflowApi = {
       "/crm-cashflow/statements", { params }
     ).then((response) => response.data),
   invoices: (params: { start_date?: string; end_date?: string; cfcat_id?: number }) =>
-    api.get<{ items: CrmCashflowStatement[]; total: number }>("/crm-cashflow/invoices", { params })
+    api.get<{
+      items: CrmCashflowStatement[];
+      total: number;
+      dashboard?: CrmCashflowInvoiceDashboardSummary;
+    }>("/crm-cashflow/invoices", { params })
       .then((response) => response.data),
   createStatements: (items: CrmStatementInput[], duplicateAction: DuplicateAction = "skip") =>
     api.post<CreateStatementsResult>("/crm-cashflow/statements/batch", {

@@ -74,11 +74,12 @@ class CrmCashflowStatement(Base):
     cfstate_refrain: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     cfstate_invoice: Mapped[Optional[int]] = mapped_column(SmallInteger)
     cfstate_document_type: Mapped[Optional[str]] = mapped_column(String(30))
-    # Set automatically once the invoice is marked "ได้รับแล้ว" from
-    # /crm-cashflow/invoices — a separate, sticky "ตรวจสอบแล้ว" flag shown on
-    # /crm-cashflow/statements (not user-editable there).
+    # Set automatically by the Description classification rules or once the
+    # invoice is marked "ได้รับแล้ว" from /crm-cashflow/invoices — a separate,
+    # sticky "ตรวจสอบแล้ว" flag shown on /crm-cashflow/statements.
     cfstate_verified: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
     cfstate_detail: Mapped[Optional[str]] = mapped_column(Text)
+    cfstate_note: Mapped[Optional[str]] = mapped_column(Text)
     cfstate_status: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=1)
     cfstate_dep_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("cashflow_statement_department.cfstate_dep_id")
