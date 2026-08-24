@@ -29,7 +29,7 @@ from app.models.approval import (
     UserPosition,
 )
 from app.models.user import User
-from app.models.expense_finance import ExpenseApprovalCandidate, ExpenseRequestHistory, SystemNotification
+from app.models.expense_finance import Department, ExpenseApprovalCandidate, ExpenseRequestHistory, SystemNotification
 
 
 async def get_active_policy_version(db: AsyncSession, company_id: int) -> Optional[ApprovalPolicyVersion]:
@@ -58,6 +58,7 @@ async def find_matching_rule(
     result = await db.execute(
         select(ApprovalRule).where(
             ApprovalRule.policy_version_id == policy_version_id,
+            ApprovalRule.is_active.is_(True),
             ApprovalRule.requester_position_id == requester_position_id,
             ApprovalRule.expense_type_id == expense_type_id,
             ApprovalRule.amount_range.contains(amount),
@@ -72,6 +73,7 @@ async def find_matching_rule(
     fallback = await db.execute(
         select(ApprovalRule).where(
             ApprovalRule.policy_version_id == policy_version_id,
+            ApprovalRule.is_active.is_(True),
             ApprovalRule.requester_position_id == requester_position_id,
             ApprovalRule.expense_type_id == expense_type_id,
             func.lower(ApprovalRule.amount_range) >= amount,
@@ -161,9 +163,27 @@ async def resolve_rule_step_approvers(
             User.id == step.target_user_id, User.is_active.is_(True)
         ))).scalar_one_or_none()
         return [active] if active is not None else []
-    if step.target_type == "hr_position":
+    if step.target_type == "direct_supervisor":
+        if step.approval_rule_id is None:
+            return []
+        requester_position_id = (await db.execute(
+            select(ApprovalRule.requester_position_id).where(ApprovalRule.id == step.approval_rule_id)
+        )).scalar_one_or_none()
+        department_id = (await db.execute(
+            select(Position.department_id).where(Position.id == requester_position_id)
+        )).scalar_one_or_none()
+        manager_id = (await db.execute(
+            select(Department.manager_user_id).where(Department.id == department_id)
+        )).scalar_one_or_none()
+        active_manager_id = (await db.execute(
+            select(User.id).where(User.id == manager_id, User.is_active.is_(True))
+        )).scalar_one_or_none() if manager_id is not None else None
+        return [active_manager_id] if active_manager_id is not None else []
+    if step.target_type in {"position", "hr_position"}:
         if step.approver_position_id is None:
             return []
+        # HR semantics: a position resolves to every active holder of that
+        # position; approve_mode (any/all) decides how many must act.
         return list((await db.execute(
             select(UserPosition.user_id)
             .join(User, User.id == UserPosition.user_id)

@@ -15,7 +15,9 @@ REQUIRED_TABLES = {
     "system_notifications", "expense_signature_placements",
 }
 PRIMARY_COMPANY_CODE = os.getenv("EXPENSE_PRIMARY_COMPANY_CODE", "KAWIN_BROTHERS")
-EXPECTED_ACTIVE_RULES = int(os.getenv("EXPENSE_EXPECTED_ACTIVE_RULES", "72"))
+# The production matrix is synchronized from kawin_hr. Override this when HR
+# publishes a new matrix with a different expanded rule count.
+EXPECTED_ACTIVE_RULES = int(os.getenv("EXPENSE_EXPECTED_ACTIVE_RULES", "86"))
 
 
 async def main() -> None:

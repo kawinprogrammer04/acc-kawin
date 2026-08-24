@@ -85,7 +85,7 @@ WITH next_version AS (
 )
 INSERT INTO approval_policy_versions(company_id,version_no,status,effective_from,notes,created_at,updated_at)
 SELECT 1,version_no,'draft',current_date,
-       'ซิงก์กฎอนุมัติจาก kawin_hr (84 active; เฉพาะ 82 กฎในเมนูการเงิน)',now(),now()
+       'ซิงก์กฎอนุมัติจาก kawin_hr ปัจจุบัน (เฉพาะ policy ที่มีขั้นตอนและรองรับเมนูการเงิน)',now(),now()
 FROM next_version;
 
 CREATE TEMP TABLE new_policy_version ON COMMIT DROP AS

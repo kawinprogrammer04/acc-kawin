@@ -99,7 +99,12 @@ class PolicyVersionOut(BaseModel):
 # ── Rule + steps ──────────────────────────────────────────────────────────────
 class RuleStepIn(BaseModel):
     step_no: int = Field(gt=0)
-    approver_position_id: int
+    name: Optional[str] = None
+    target_type: str = Field(default="position", pattern="^(direct_supervisor|position|user|hr_position)$")
+    target_id: Optional[int] = Field(default=None, gt=0)
+    approve_mode: str = Field(default="any", pattern="^(any|all)$")
+    # Kept for backwards compatibility with the original ACC matrix editor.
+    approver_position_id: Optional[int] = Field(default=None, gt=0)
 
 
 class RuleCreate(BaseModel):
@@ -107,11 +112,31 @@ class RuleCreate(BaseModel):
     expense_type_id: int
     amount_min: Decimal = Field(ge=0)
     amount_max: Optional[Decimal] = None  # None = unbounded above
+    name: Optional[str] = Field(default=None, max_length=255)
+    request_kind: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment)?$")
+    priority: int = Field(default=100, ge=1, le=999999)
     steps: list[RuleStepIn] = Field(min_length=1)
+
+
+class RuleUpdate(BaseModel):
+    requester_position_id: Optional[int] = None
+    expense_type_id: Optional[int] = None
+    amount_min: Optional[Decimal] = Field(default=None, ge=0)
+    amount_max: Optional[Decimal] = None
+    name: Optional[str] = Field(default=None, max_length=255)
+    request_kind: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment)?$")
+    priority: Optional[int] = Field(default=None, ge=1, le=999999)
+    is_active: Optional[bool] = None
+    steps: Optional[list[RuleStepIn]] = Field(default=None, min_length=1)
 
 
 class RuleStepOut(BaseModel):
     step_no: int
+    name: Optional[str] = None
+    target_type: str = "position"
+    target_id: Optional[int] = None
+    target_name: Optional[str] = None
+    approve_mode: str = "any"
     approver_position_id: Optional[int] = None
     approver_position_name: Optional[str] = None
 
@@ -120,10 +145,19 @@ class RuleOut(BaseModel):
     id: int
     requester_position_id: int
     requester_position_name: Optional[str] = None
+    requester_department_id: Optional[int] = None
+    requester_department_name: Optional[str] = None
     expense_type_id: int
     expense_type_name: Optional[str] = None
     amount_min: Decimal
     amount_max: Optional[Decimal]
+    name: Optional[str] = None
+    request_kind: Optional[str] = None
+    priority: int = 100
+    specificity: int = 0
+    source_system: Optional[str] = None
+    source_policy_id: Optional[int] = None
+    is_active: bool = True
     steps: list[RuleStepOut] = []
 
 

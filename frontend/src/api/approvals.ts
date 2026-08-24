@@ -44,6 +44,11 @@ export interface PolicyVersion {
 
 export interface RuleStep {
   step_no: number;
+  name?: string;
+  target_type?: "direct_supervisor" | "position" | "user" | "hr_position";
+  target_id?: number | null;
+  target_name?: string;
+  approve_mode?: "any" | "all";
   approver_position_id?: number | null;
   approver_position_name?: string;
 }
@@ -52,10 +57,19 @@ export interface Rule {
   id: number;
   requester_position_id: number;
   requester_position_name?: string;
+  requester_department_id?: number | null;
+  requester_department_name?: string | null;
   expense_type_id: number;
   expense_type_name?: string;
   amount_min: number;
   amount_max?: number | null;
+  name?: string | null;
+  request_kind?: string | null;
+  priority?: number;
+  specificity?: number;
+  source_system?: string | null;
+  source_policy_id?: number | null;
+  is_active: boolean;
   steps: RuleStep[];
 }
 
@@ -303,9 +317,37 @@ export const rulesApi = {
       expense_type_id: number;
       amount_min: number;
       amount_max?: number | null;
-      steps: { step_no: number; approver_position_id: number }[];
+      name?: string | null;
+      request_kind?: string | null;
+      priority?: number;
+      steps: {
+        step_no: number;
+        name?: string;
+        target_type?: "direct_supervisor" | "position" | "user" | "hr_position";
+        target_id?: number | null;
+        approve_mode?: "any" | "all";
+        approver_position_id?: number | null;
+      }[];
     }
   ) => api.post(`/approval-policy-versions/${versionId}/rules`, data).then((r) => r.data),
+  update: (ruleId: number, data: {
+    requester_position_id?: number;
+    expense_type_id?: number;
+    amount_min?: number;
+    amount_max?: number | null;
+    name?: string | null;
+    request_kind?: string | null;
+    priority?: number;
+    is_active?: boolean;
+    steps?: {
+      step_no: number;
+      name?: string;
+      target_type?: "direct_supervisor" | "position" | "user" | "hr_position";
+      target_id?: number | null;
+      approve_mode?: "any" | "all";
+      approver_position_id?: number | null;
+    }[];
+  }) => api.patch(`/approval-rules/${ruleId}`, data).then((r) => r.data),
   delete: (ruleId: number) => api.delete(`/approval-rules/${ruleId}`),
 };
 
