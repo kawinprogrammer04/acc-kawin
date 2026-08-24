@@ -16,7 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { ApprovalMatrixPage } from "@/pages/ApprovalMatrixPage";
+import { HrStyleApprovalSettings } from "@/pages/HrStyleApprovalSettings";
 
 const MIME_OPTIONS = [
   { value: "application/pdf", label: "PDF" },
@@ -542,7 +542,7 @@ export function ExpenseSettingsPage() {
 
       {tab === "workflow" && (
         <div className="-mx-6 -mt-4">
-          <ApprovalMatrixPage />
+          <HrStyleApprovalSettings />
         </div>
       )}
 

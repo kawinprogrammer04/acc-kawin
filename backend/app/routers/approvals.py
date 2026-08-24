@@ -73,6 +73,7 @@ from app.schemas.approval import (
     RoutePreviewOut,
     RuleCreate,
     RuleOut,
+    RuleUpdate,
     RuleStepOut,
     UserPositionCreate,
     UserPositionOut,
@@ -147,32 +148,109 @@ def _amount_range(amount_min: Decimal, amount_max: Optional[Decimal]) -> Range:
 
 async def _rule_to_out(db: AsyncSession, rule: ApprovalRule, company_id: int) -> RuleOut:
     steps = await approval_service.get_rule_steps(db, rule.id)
-    positions = {
-        p.id: p.name
-        for p in (await db.execute(select(Position).where(Position.company_id == company_id))).scalars().all()
-    }
+    position_rows = list((await db.execute(select(Position).where(Position.company_id == company_id))).scalars().all())
+    positions = {p.id: p.name for p in position_rows}
+    position_departments = {p.id: p.department_id for p in position_rows}
+    department_ids = {p.department_id for p in position_rows if p.department_id is not None}
+    departments = {
+        d.id: d.name
+        for d in (await db.execute(select(Department).where(Department.id.in_(department_ids)))).scalars().all()
+    } if department_ids else {}
+    user_rows = list((await db.execute(
+        select(User).join(UserCompany, UserCompany.user_id == User.id).where(
+            User.is_active.is_(True), UserCompany.company_id == company_id, UserCompany.is_active.is_(True),
+        )
+    )).scalars().all())
+    users = {u.id: (u.full_name or u.username) for u in user_rows}
     expense_type = await db.get(ExpenseType, rule.expense_type_id)
     amount_min = rule.amount_range.lower or Decimal("0")
     amount_max = rule.amount_range.upper
+    requester_department_id = position_departments.get(rule.requester_position_id)
+    target_name = lambda step: (
+        "หัวหน้าของผู้ขอ" if step.target_type == "direct_supervisor"
+        else users.get(step.target_user_id) if step.target_type == "user"
+        else positions.get(step.approver_position_id) or step.name
+    )
     return RuleOut(
         id=rule.id,
         requester_position_id=rule.requester_position_id,
         requester_position_name=positions.get(rule.requester_position_id),
+        requester_department_id=requester_department_id,
+        requester_department_name=departments.get(requester_department_id),
         expense_type_id=rule.expense_type_id,
         expense_type_name=expense_type.name if expense_type else None,
         # asyncpg decodes numrange bounds via a (sign, digits, exponent) tuple, which
         # can yield round numbers like Decimal('1E+4') — quantize back to money's 2dp.
         amount_min=amount_min.quantize(Decimal("0.01")),
         amount_max=amount_max.quantize(Decimal("0.01")) if amount_max is not None else None,
+        name=rule.source_policy_name,
+        request_kind=rule.request_kind,
+        priority=rule.priority,
+        specificity=rule.specificity,
+        source_system=rule.source_system,
+        source_policy_id=rule.source_policy_id,
+        is_active=rule.is_active,
         steps=[
             RuleStepOut(
                 step_no=s.step_no,
+                name=s.name or target_name(s),
+                target_type=s.target_type,
+                target_id=s.target_user_id if s.target_type == "user" else s.approver_position_id,
+                target_name=target_name(s),
+                approve_mode=s.approve_mode,
                 approver_position_id=s.approver_position_id,
-                approver_position_name=positions.get(s.approver_position_id),
+                approver_position_name=positions.get(s.approver_position_id) or s.name,
             )
             for s in steps
         ],
     )
+
+
+async def _normalize_rule_steps(db: AsyncSession, steps, company_id: int) -> list[dict]:
+    step_nos = [step.step_no for step in steps]
+    if len(set(step_nos)) != len(step_nos) or sorted(step_nos) != list(range(1, len(step_nos) + 1)):
+        raise HTTPException(400, "ลำดับขั้นตอนต้องเรียง 1, 2, 3, ... ต่อเนื่องกันโดยไม่ซ้ำ")
+
+    normalized = []
+    for step in steps:
+        target_id = step.target_id or step.approver_position_id
+        if step.target_type == "direct_supervisor":
+            target_id = None
+            position_id = None
+            user_id = None
+            default_name = "หัวหน้าของผู้ขอ"
+        elif step.target_type in {"position", "hr_position"}:
+            if not target_id:
+                raise HTTPException(400, "กรุณาเลือกตำแหน่งผู้อนุมัติให้ครบทุกขั้น")
+            await _get_company_row(db, Position, target_id, company_id, "ไม่พบตำแหน่งผู้อนุมัติ")
+            position_id = target_id
+            user_id = None
+            default_name = "ตำแหน่งผู้อนุมัติ"
+        elif step.target_type == "user":
+            if not target_id:
+                raise HTTPException(400, "กรุณาเลือกผู้อนุมัติให้ครบทุกขั้น")
+            user = (await db.execute(
+                select(User).join(UserCompany, UserCompany.user_id == User.id).where(
+                    User.id == target_id, User.is_active.is_(True),
+                    UserCompany.company_id == company_id, UserCompany.is_active.is_(True),
+                )
+            )).scalar_one_or_none()
+            if not user:
+                raise HTTPException(400, "ผู้อนุมัติที่เลือกไม่พร้อมใช้งาน")
+            position_id = None
+            user_id = target_id
+            default_name = user.full_name or user.username
+        else:
+            raise HTTPException(400, "ชนิดผู้อนุมัติไม่ถูกต้อง")
+        normalized.append({
+            "step_no": step.step_no,
+            "name": step.name or default_name,
+            "approve_mode": step.approve_mode,
+            "target_type": step.target_type,
+            "approver_position_id": position_id,
+            "target_user_id": user_id,
+        })
+    return normalized
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -542,24 +620,27 @@ async def create_rule(
     current_user: User = Depends(settings_create),
     company: Company = Depends(get_current_company),
 ):
-    await _get_company_row(db, ApprovalPolicyVersion, version_id, company.id, "ไม่พบเวอร์ชันสายอนุมัตินี้")
-    await _get_company_row(db, Position, payload.requester_position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
+    version = await _get_company_row(db, ApprovalPolicyVersion, version_id, company.id, "ไม่พบเวอร์ชันสายอนุมัตินี้")
+    if version.status == "retired":
+        raise HTTPException(400, "ไม่สามารถเพิ่มกฎในเวอร์ชันที่ปิดใช้งานแล้ว")
+    requester_position = await _get_company_row(db, Position, payload.requester_position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
     await _get_company_row(db, ExpenseType, payload.expense_type_id, company.id, "ไม่พบประเภทการเบิก")
-    for step in payload.steps:
-        await _get_company_row(db, Position, step.approver_position_id, company.id, "ไม่พบตำแหน่งผู้อนุมัติ")
 
     if payload.amount_max is not None and payload.amount_max <= payload.amount_min:
         raise HTTPException(400, "ยอดเงินสูงสุดต้องมากกว่ายอดเงินต่ำสุด")
 
-    step_nos = [s.step_no for s in payload.steps]
-    if len(set(step_nos)) != len(step_nos) or sorted(step_nos) != list(range(1, len(step_nos) + 1)):
-        raise HTTPException(400, "ลำดับขั้นตอนต้องเรียง 1, 2, 3, ... ต่อเนื่องกันโดยไม่ซ้ำ")
+    normalized_steps = await _normalize_rule_steps(db, payload.steps, company.id)
 
     rule = ApprovalRule(
         policy_version_id=version_id,
         requester_position_id=payload.requester_position_id,
         expense_type_id=payload.expense_type_id,
         amount_range=_amount_range(payload.amount_min, payload.amount_max),
+        source_system="acc",
+        source_policy_name=payload.name or f"{requester_position.name} / กฎอนุมัติ",
+        priority=payload.priority,
+        specificity=3 + int(payload.request_kind is not None),
+        request_kind=payload.request_kind,
     )
     db.add(rule)
     try:
@@ -570,11 +651,62 @@ async def create_rule(
             raise HTTPException(409, "ช่วงยอดเงินนี้ทับซ้อนกับกฎที่มีอยู่แล้วสำหรับตำแหน่ง/ประเภทการเบิกเดียวกัน")
         raise
 
-    for step in payload.steps:
-        db.add(ApprovalRuleStep(
-            approval_rule_id=rule.id, step_no=step.step_no, approver_position_id=step.approver_position_id
-        ))
+    for step in normalized_steps:
+        db.add(ApprovalRuleStep(approval_rule_id=rule.id, **step))
     await db.commit()
+    await db.refresh(rule)
+    return await _rule_to_out(db, rule, company.id)
+
+
+@router.patch("/approval-rules/{rule_id}", response_model=RuleOut)
+async def update_rule(
+    rule_id: int,
+    payload: RuleUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(settings_update),
+    company: Company = Depends(get_current_company),
+):
+    rule = (await db.execute(select(ApprovalRule).where(ApprovalRule.id == rule_id))).scalar_one_or_none()
+    if not rule:
+        raise HTTPException(404, "ไม่พบกฎนี้")
+    version = await db.get(ApprovalPolicyVersion, rule.policy_version_id)
+    if not version or version.company_id != company.id:
+        raise HTTPException(404, "ไม่พบกฎนี้")
+    if version.status == "retired":
+        raise HTTPException(400, "ไม่สามารถแก้ไขกฎในเวอร์ชันที่ปิดใช้งานแล้ว")
+
+    requester_position_id = payload.requester_position_id if "requester_position_id" in payload.model_fields_set else rule.requester_position_id
+    expense_type_id = payload.expense_type_id if "expense_type_id" in payload.model_fields_set else rule.expense_type_id
+    amount_min = payload.amount_min if "amount_min" in payload.model_fields_set else (rule.amount_range.lower or Decimal("0"))
+    amount_max = payload.amount_max if "amount_max" in payload.model_fields_set else rule.amount_range.upper
+    await _get_company_row(db, Position, requester_position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
+    await _get_company_row(db, ExpenseType, expense_type_id, company.id, "ไม่พบประเภทการเบิก")
+    if amount_max is not None and amount_max <= amount_min:
+        raise HTTPException(400, "ยอดเงินสูงสุดต้องมากกว่ายอดเงินต่ำสุด")
+
+    if payload.steps is not None:
+        normalized_steps = await _normalize_rule_steps(db, payload.steps, company.id)
+        await db.execute(delete(ApprovalRuleStep).where(ApprovalRuleStep.approval_rule_id == rule.id))
+        for step in normalized_steps:
+            db.add(ApprovalRuleStep(approval_rule_id=rule.id, **step))
+
+    rule.requester_position_id = requester_position_id
+    rule.expense_type_id = expense_type_id
+    rule.amount_range = _amount_range(amount_min, amount_max)
+    if "name" in payload.model_fields_set:
+        rule.source_policy_name = payload.name
+    if "request_kind" in payload.model_fields_set:
+        rule.request_kind = payload.request_kind
+    if "priority" in payload.model_fields_set and payload.priority is not None:
+        rule.priority = payload.priority
+    if "is_active" in payload.model_fields_set and payload.is_active is not None:
+        rule.is_active = payload.is_active
+    rule.specificity = 3 + int(rule.request_kind is not None)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "กฎนี้มีช่วงยอดเงินทับซ้อนกับกฎอื่น") from exc
     await db.refresh(rule)
     return await _rule_to_out(db, rule, company.id)
 
