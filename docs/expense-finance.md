@@ -8,8 +8,9 @@ The module is isolated from `expense_entries` and cash-flow transactions. Record
 2. Run `alembic upgrade head` in the backend image.
 3. For the `KAWIN_BROTHERS` deployment, sync the current HR matrix with
    `HR_DB_PASSWORD='...' php scripts/export_hr_approval_policies_sql.php | docker compose exec -T db psql -U postgres -d accounting_db -v ON_ERROR_STOP=1`.
-   The sync creates a new active version, retires the previous active version, and
-   currently imports 86 expanded rules with 131 approval steps.
+   The sync creates a new active version, retires the previous active version, keeps
+   old versions for historical requests, and currently imports 86 expanded rules
+   with 131 approval steps.
 4. Assign production users to positions (or configure primary approvers), then run
    the preflight check before accepting requests.
 5. Run `python -m app.commands.expense_backfill_hashes` once (safe to replay).

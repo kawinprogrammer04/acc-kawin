@@ -111,6 +111,7 @@ JOIN hr_policy_stage s ON s.policy_id=r.source_policy_id
 LEFT JOIN positions p ON p.company_id=1 AND p.name=s.target_position_name
 WHERE s.request_kind IS NULL OR s.request_kind IN ('reimbursement','advance','direct_payment');
 
+-- Keep old versions for historical requests; only switch which version is active.
 UPDATE approval_policy_versions SET status='retired',updated_at=now()
 WHERE company_id=1 AND status='active';
 UPDATE approval_policy_versions SET status='active',updated_at=now()
