@@ -8,7 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { authApi, getApiErrorMessage } from "@/api/client";
 import { approvalInboxApi, expenseRequestsApi } from "@/api/approvals";
 import { expenseAccountingApi } from "@/api/approvals";
-import type { ExpenseHistory, ExpenseRequestDetail, ExpenseSettlement, ExpensePaymentRecord } from "@/api/approvals";
+import type { ApprovalStepTimeline, ExpenseHistory, ExpenseRequestDetail, ExpenseSettlement, ExpensePaymentRecord } from "@/api/approvals";
 import { SignaturePad } from "@/components/expense/SignaturePad";
 import { PdfSignatureWorkspace, initialPlacement } from "@/components/expense/PdfSignatureWorkspace";
 import type { SignaturePlacement } from "@/components/expense/PdfSignatureWorkspace";
@@ -49,8 +49,55 @@ const recipientTypeLabel: Record<string, string> = {
 
 const stepStatusLabel: Record<string, string> = {
   waiting: "รอตามลำดับ", active: "กำลังอนุมัติ", pending: "รอพิจารณา", approved: "อนุมัติแล้ว",
-  rejected: "ไม่อนุมัติ", skipped: "ข้ามขั้นตอน",
+  rejected: "ไม่อนุมัติ", returned: "ส่งคืนแก้ไข", returned_for_correction: "ส่งคืนแก้ไข", skipped: "ข้ามขั้นตอน",
 };
+
+const completedStepStatuses = ["approved", "completed", "skipped"];
+
+function getStepApprovers(step: ApprovalStepTimeline) {
+  return step.approvers?.length
+    ? step.approvers
+    : [{ name: step.resolved_approver_name, status: step.status, acted_at: step.decided_at }];
+}
+
+function ApprovalPath({ steps, currentStepNo, approvedAt }: { steps: ApprovalStepTimeline[]; currentStepNo?: number; approvedAt?: string }) {
+  const orderedSteps = [...steps].sort((left, right) => left.step_no - right.step_no);
+  const currentStep = (currentStepNo ? orderedSteps.find((step) => step.step_no === currentStepNo) : undefined)
+    || orderedSteps.find((step) => ["pending", "active"].includes(step.status))
+    || orderedSteps.find((step) => !completedStepStatuses.includes(step.status) && step.status !== "waiting")
+    || orderedSteps.find((step) => !completedStepStatuses.includes(step.status));
+
+  if (orderedSteps.length === 0) {
+    return <p className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">{approvedAt ? "อนุมัติครบแล้ว แต่ไม่มีรายละเอียดเส้นทาง" : "ยังไม่ส่งอนุมัติ"}</p>;
+  }
+
+  return <div className="space-y-4">
+    <div className={`rounded-xl border px-4 py-3 ${currentStep ? "border-amber-200 bg-amber-50/70 dark:border-amber-800 dark:bg-amber-950/30" : "border-emerald-200 bg-emerald-50/70 dark:border-emerald-800 dark:bg-emerald-950/30"}`}>
+      {currentStep
+        ? <><p className="text-xs font-bold text-amber-700 dark:text-amber-300">กำลังดำเนินการ · ขั้นที่ {currentStep.step_no} จาก {orderedSteps.length}</p><p className="mt-1 font-black">{currentStep.name || currentStep.approver_position_name || `ขั้นตอนที่ ${currentStep.step_no}`}</p><p className="mt-1 text-sm text-muted-foreground">ผู้อนุมัติ: {getStepApprovers(currentStep).filter((approver) => !completedStepStatuses.includes(approver.status)).map((approver) => approver.name).filter(Boolean).join(", ") || "ยังไม่ระบุผู้อนุมัติ"}</p></>
+        : <><p className="text-xs font-bold text-emerald-700 dark:text-emerald-300">อนุมัติครบทุกขั้นตอน</p>{approvedAt && <p className="mt-1 text-sm text-muted-foreground">อนุมัติครบเมื่อ {formatDateTime(approvedAt)}</p>}</>}
+    </div>
+    <ol className="space-y-0">
+      {orderedSteps.map((step, index) => {
+        const isCompleted = completedStepStatuses.includes(step.status);
+        const isCurrent = currentStep?.id === step.id;
+        const isRejected = ["rejected", "returned", "returned_for_correction"].includes(step.status);
+        const people = getStepApprovers(step);
+        return <li key={step.id} className="relative flex gap-3 pb-5 last:pb-0">
+          {index < orderedSteps.length - 1 && <span className={`absolute left-[11px] top-7 h-[calc(100%-1.25rem)] w-0.5 ${isCompleted ? "bg-emerald-300" : "bg-border"}`} aria-hidden="true" />}
+          <span className={`relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 text-[10px] font-black ${isCompleted ? "border-emerald-500 bg-emerald-500 text-white" : isRejected ? "border-rose-500 bg-rose-50 text-rose-600" : isCurrent ? "border-amber-500 bg-amber-100 text-amber-700" : "border-muted-foreground/30 bg-background text-muted-foreground"}`}>
+            {isCompleted ? <CheckCircle2 className="h-3.5 w-3.5" /> : step.step_no}
+          </span>
+          <div className={`min-w-0 flex-1 rounded-xl border px-4 py-3 ${isCurrent ? "border-amber-300 bg-amber-50/50 shadow-sm dark:border-amber-700 dark:bg-amber-950/20" : isCompleted ? "border-emerald-100 bg-emerald-50/30 dark:border-emerald-900 dark:bg-emerald-950/10" : "bg-background"}`}>
+            <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-xs font-bold text-muted-foreground">ขั้นที่ {step.step_no} จาก {orderedSteps.length}</p><p className="mt-0.5 font-bold">{step.name || step.approver_position_name || `ขั้นตอนที่ ${step.step_no}`}</p></div><span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${isCompleted ? "bg-emerald-100 text-emerald-700" : isRejected ? "bg-rose-100 text-rose-700" : isCurrent ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground"}`}>{isCurrent ? "ขั้นตอนปัจจุบัน" : stepStatusLabel[step.status] || step.status}</span></div>
+            <div className="mt-2 space-y-1.5">{people.map((approver, approverIndex) => <p key={`${step.id}-${approver.user_id || approverIndex}`} className="text-sm text-muted-foreground"><span className="font-medium text-foreground">{approver.name || "ยังไม่ระบุผู้อนุมัติ"}</span> · {stepStatusLabel[approver.status] || approver.status}{approver.acted_at && <span className="ml-1 text-xs">· {formatDate(approver.acted_at)}</span>}</p>)}</div>
+            {step.comment && <p className="mt-2 border-t pt-2 text-sm text-muted-foreground">หมายเหตุ: {step.comment}</p>}
+          </div>
+        </li>;
+      })}
+    </ol>
+  </div>;
+}
 
 function Field({ label, value }: { label: string; value?: React.ReactNode }) {
   return <div><p className="text-xs text-muted-foreground">{label}</p><div className="mt-1 font-medium">{value || "-"}</div></div>;
@@ -492,7 +539,7 @@ export function ExpenseRequestDetailPage() {
     {settlements.length > 0 && <Card><CardContent className="space-y-4 p-6"><SectionTitle>รายการเคลียร์เงิน</SectionTitle>{settlements.map(row => <div key={row.id} className="grid gap-3 rounded-lg border p-4 sm:grid-cols-4"><Field label="ประเภท" value={row.settlement_type === "equal" ? "ใช้เท่ากัน" : row.settlement_type === "refund" ? "คืนเงิน" : "ขอส่วนต่างเพิ่ม"} /><Field label="ยอดใช้จริง" value={formatCurrency(row.actual_amount)} /><Field label="ส่วนต่าง" value={formatCurrency(row.difference_amount)} /><Field label="สถานะ" value={row.status} /></div>)}</CardContent></Card>}
 
     <div className="grid gap-5 lg:grid-cols-2">
-      <Card><CardContent className="space-y-5 p-6"><SectionTitle>เส้นทางอนุมัติ</SectionTitle>{request.steps.length ? <ol className="space-y-3">{request.steps.map((step) => <li key={step.id} className="flex gap-3 rounded-lg border p-4"><div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-semibold">{step.step_no}</div><div className="min-w-0 flex-1"><p className="font-medium">{step.name || step.approver_position_name || `ขั้นตอนที่ ${step.step_no}`}</p>{step.approvers?.length ? <div className="mt-1 space-y-1">{step.approvers.map((approver, index) => <p key={`${step.id}-${approver.user_id || index}`} className="text-sm text-muted-foreground">{approver.name || "ยังไม่ระบุผู้อนุมัติ"} · {stepStatusLabel[approver.status] || approver.status}{approver.acted_at && <span className="ml-2 text-xs">{formatDate(approver.acted_at)}</span>}</p>)}</div> : <p className="text-sm text-muted-foreground">{step.resolved_approver_name || "ยังไม่ระบุผู้อนุมัติ"} · {stepStatusLabel[step.status] || step.status}</p>}{step.comment && <p className="mt-1 text-sm">{step.comment}</p>}</div></li>)}</ol> : <p className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">ยังไม่ส่งอนุมัติ</p>}</CardContent></Card>
+      <Card><CardContent className="space-y-5 p-6"><SectionTitle description="แสดงขั้นตอนปัจจุบัน ผู้อนุมัติจริง และลำดับที่จะดำเนินการต่อ">เส้นทางอนุมัติ</SectionTitle><ApprovalPath steps={request.steps} currentStepNo={request.current_step_no} approvedAt={request.approved_at} /></CardContent></Card>
       <Card><CardContent className="space-y-5 p-6"><SectionTitle>ประวัติและ Audit</SectionTitle><ol className="space-y-4">
         <li className="flex gap-3"><Clock3 className="mt-0.5 h-5 w-5 text-muted-foreground" /><div><p className="font-medium">สร้างคำขอ</p><p className="text-sm text-muted-foreground">{formatDate(request.created_at)} · {request.requester_name}</p></div></li>
         {request.submitted_at && <li className="flex gap-3"><Send className="mt-0.5 h-5 w-5 text-amber-600" /><div><p className="font-medium">ส่งอนุมัติ</p><p className="text-sm text-muted-foreground">{formatDate(request.submitted_at)}</p></div></li>}
