@@ -334,26 +334,98 @@ async def review_settlement(db: AsyncSession, settlement: ExpenseSettlement, act
     return settlement
 
 
-def excel_bytes(rows: list[ExpenseRequest]) -> bytes:
+def excel_bytes(
+    rows: list[ExpenseRequest],
+    *,
+    expense_type_names: dict[int, str] | None = None,
+    department_names: dict[int, str] | None = None,
+    payments_by_request_id: dict[str, list[ExpensePayment]] | None = None,
+    settlements_by_request_id: dict[str, ExpenseSettlement] | None = None,
+    company_name: str | None = None,
+) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Expense Requests"
-    ws.append(["เลขที่", "วันที่", "ผู้ขอ", "บัญชีสำหรับ SCB", "รายการ", "ประเภท", "สถานะ", "ยอดรวม", "VAT", "หัก ณ ที่จ่าย", "ยอดสุทธิ", "จ่ายแล้ว", "คงเหลือ"])
+    ws.append([
+        "เลขที่คำขอ", "วันที่ส่ง", "ประเภทคำขอ", "หมวดค่าใช้จ่าย", "บริษัท", "แผนก", "รายการ",
+        "ผู้ขอ", "ผู้รับเงิน", "ธนาคาร", "ชื่อบัญชี", "เลขบัญชี", "ยอดอนุมัติ",
+        "ภาษีหัก ณ ที่จ่าย", "ผลพิจารณาภาษี", "ยอดโอนสุทธิ", "ยอดส่วนต่างเงินทดรอง",
+        "จ่ายแล้ว", "คงเหลือ", "สถานะ", "วันที่จ่ายล่าสุด", "เลขอ้างอิง",
+    ])
     dangerous = ("=", "+", "-", "@", "\t", "\r")
+
     def safe(value):
         if isinstance(value, str) and value.startswith(dangerous):
             return "'" + value
         return value
+
+    def local_datetime(value: datetime | None, with_time: bool = False) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is not None:
+            value = value.astimezone(ZoneInfo("Asia/Bangkok"))
+        return value.strftime("%d/%m/%Y %H:%M" if with_time else "%d/%m/%Y")
+
+    request_format_labels = {
+        "reimbursement": "เบิกค่าใช้จ่าย",
+        "advance": "สำรองจ่าย",
+        "direct_payment": "ชำระตรงให้ผู้ขาย",
+    }
+    withholding_decision_labels = {
+        "none": "ไม่หัก",
+        "deduct": "บัญชีหักจากยอดจ่าย",
+        "already_withheld": "ผู้ขอหักและนำส่งแล้ว ไม่หักซ้ำ",
+    }
+    expense_type_names = expense_type_names or {}
+    department_names = department_names or {}
+    payments_by_request_id = payments_by_request_id or {}
+    settlements_by_request_id = settlements_by_request_id or {}
+
     for r in rows:
-        bank_line = " · ".join(part for part in (r.bank_name, r.bank_account_name) if part) or "-"
         account_number = decrypt_account_number(r.bank_account_number_encrypted) or "-"
-        ws.append([safe(r.request_no), r.request_date.isoformat(), safe(r.requester_name_snapshot),
-                   safe(f"{bank_line}\n{account_number}"), safe(r.title),
-                   safe(r.request_format), safe(r.status), float(money(r.gross_amount)), float(money(r.vat_amount)),
-                   float(money(r.withholding_amount)), float(money(r.net_amount)), float(money(r.paid_amount)),
-                   float(money(r.remaining_amount))])
-        ws.cell(row=ws.max_row, column=4).alignment = Alignment(wrapText=True, vertical="top")
-    ws.column_dimensions["D"].width = 32
+        payments = payments_by_request_id.get(r.id, [])
+        latest_payment = payments[-1] if payments else None
+        settlement = settlements_by_request_id.get(r.id)
+        additional_payment = (
+            settlement is not None
+            and settlement.settlement_type == "additional"
+            and money(settlement.difference_amount) > 0
+        )
+        ws.append([
+            safe(r.request_no),
+            local_datetime(r.submitted_at, with_time=True),
+            safe(request_format_labels.get(r.request_format, r.request_format)),
+            safe(expense_type_names.get(r.expense_type_id)),
+            safe(r.company_name_snapshot or company_name),
+            safe(r.department_name_snapshot or department_names.get(r.department_id)),
+            safe(r.title),
+            safe(r.requester_name_snapshot),
+            safe(r.recipient_name),
+            safe(r.bank_name),
+            safe(r.bank_account_name),
+            safe(account_number),
+            float(money(r.gross_amount)),
+            float(money(r.withholding_amount)),
+            safe(withholding_decision_labels.get(r.withholding_decision, "รอบัญชีพิจารณา")),
+            float(money(r.net_amount)),
+            float(money(settlement.difference_amount)) if additional_payment else 0,
+            float(money(r.paid_amount)),
+            float(money(r.remaining_amount)),
+            safe(r.status),
+            local_datetime(latest_payment.paid_at) if latest_payment else None,
+            safe(latest_payment.reference_no) if latest_payment else None,
+        ])
+
+        for column in (7, 8, 9, 10, 11, 12, 15, 20, 21, 22):
+            ws.cell(row=ws.max_row, column=column).alignment = Alignment(wrapText=True, vertical="top")
+
+    for column in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
+        ws.column_dimensions[chr(64 + column)].width = 20
+    ws.column_dimensions["G"].width = 32
+    ws.column_dimensions["J"].width = 24
+    ws.column_dimensions["K"].width = 24
+    ws.column_dimensions["L"].width = 20
+    ws.freeze_panes = "A2"
     stream = io.BytesIO()
     wb.save(stream)
     return stream.getvalue()

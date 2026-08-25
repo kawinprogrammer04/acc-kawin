@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Building2, ChevronLeft, ChevronRight, Clipboard, Download, Eraser, Eye, FileSignature,
+  Building2, ChevronLeft, ChevronRight, Clipboard, Eraser, Eye, FileSignature, FileSpreadsheet,
   Filter, Landmark, Loader2, RotateCcw, Settings2, UserCheck, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -261,7 +261,7 @@ export function ExpenseAccountingPage() {
 
     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
       <div className="flex items-start gap-4"><div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg"><Landmark className="h-7 w-7" /></div><div><h1 className="text-3xl font-black">บัญชีจ่ายเงิน</h1><p className="mt-1 text-sm text-muted-foreground">ตรวจรายการที่กำลังอนุมัติและรายการที่อนุมัติครบแล้ว พร้อมตรวจสอบผู้อนุมัติจริงก่อนจ่ายเงิน</p></div></div>
-      <button type="button" onClick={exportExcel} disabled={exporting} className="group inline-flex h-11 items-center justify-center gap-2 rounded-md bg-gradient-to-r from-emerald-500 to-teal-600 px-8 text-sm font-black text-white shadow-lg shadow-emerald-500/30 transition hover:-translate-y-0.5 hover:shadow-emerald-500/50 disabled:opacity-60">{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4 transition-transform group-hover:scale-110" />} ส่งออก Excel</button>
+      <button type="button" onClick={exportExcel} disabled={exporting} aria-busy={exporting} className="group relative flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-emerald-500/50 disabled:cursor-wait disabled:opacity-60 md:w-auto">{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4 transition-transform group-hover:scale-110" />}ส่งออก Excel</button>
     </div>
 
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
