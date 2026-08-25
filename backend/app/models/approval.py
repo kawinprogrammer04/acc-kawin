@@ -82,8 +82,8 @@ class ApprovalRule(Base):
     policy_version_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("approval_policy_versions.id"), nullable=False
     )
-    requester_position_id: Mapped[int] = mapped_column(Integer, ForeignKey("positions.id"), nullable=False)
-    expense_type_id: Mapped[int] = mapped_column(Integer, ForeignKey("expense_types.id"), nullable=False)
+    requester_position_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("positions.id"))
+    expense_type_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("expense_types.id"))
     amount_range = mapped_column(NUMRANGE, nullable=False)
     source_system: Mapped[Optional[str]] = mapped_column(String(20))
     source_policy_id: Mapped[Optional[int]] = mapped_column(BigInteger)

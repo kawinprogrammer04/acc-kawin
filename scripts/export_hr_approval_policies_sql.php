@@ -61,32 +61,35 @@ SELECT DISTINCT s.policy_id,s.policy_name,s.request_kind,s.minimum_amount,s.maxi
          'request_kind',s.request_kind
        ) source_scope
 FROM hr_policy_stage s
-JOIN positions rp ON rp.company_id=1 AND rp.is_active
+LEFT JOIN positions rp ON rp.company_id=1 AND rp.is_active
  AND ((s.requester_position_name IS NOT NULL AND rp.name=s.requester_position_name)
    OR (s.requester_position_name IS NULL AND s.department_name IS NOT NULL
        AND rp.department_id=(SELECT id FROM departments WHERE company_id=1 AND name=s.department_name LIMIT 1)))
-JOIN expense_types et ON et.company_id=1 AND et.is_active
- AND (s.expense_type_code IS NULL OR et.code=CASE s.expense_type_code
+LEFT JOIN expense_types et ON et.company_id=1 AND et.is_active
+ AND s.expense_type_code IS NOT NULL
+ AND et.code=CASE s.expense_type_code
       WHEN 'GENERAL' THEN 'general'
       WHEN 'REVIEW_INFLUENCER' THEN 'review_influencer'
       WHEN 'PURCHASE' THEN 'purchase_order'
-      ELSE lower(s.expense_type_code) END)
-WHERE s.request_kind IS NULL OR s.request_kind IN ('reimbursement','advance','direct_payment');
+      ELSE lower(s.expense_type_code) END
+WHERE (s.request_kind IS NULL OR s.request_kind IN ('reimbursement','advance','direct_payment','ot','allowance'))
+  AND ((s.requester_position_name IS NULL AND s.department_name IS NULL) OR rp.id IS NOT NULL)
+  AND (s.expense_type_code IS NULL OR et.id IS NOT NULL);
 
 DO $$
 DECLARE expected int; expanded int; bad_targets int;
 BEGIN
   SELECT count(DISTINCT policy_id) INTO expected FROM hr_policy_stage
-   WHERE request_kind IS NULL OR request_kind IN ('reimbursement','advance','direct_payment');
+   WHERE request_kind IS NULL OR request_kind IN ('reimbursement','advance','direct_payment','ot','allowance');
   SELECT count(DISTINCT policy_id) INTO expanded FROM hr_policy_expanded;
   IF expected <> expanded THEN
     RAISE EXCEPTION 'HR policy mapping incomplete: expected %, mapped %', expected, expanded;
   END IF;
   SELECT count(*) INTO bad_targets FROM hr_policy_stage s
-   WHERE (s.request_kind IS NULL OR s.request_kind IN ('reimbursement','advance','direct_payment'))
+   WHERE (s.request_kind IS NULL OR s.request_kind IN ('reimbursement','advance','direct_payment','ot','allowance'))
      AND ((s.target_type='position' AND NOT EXISTS(SELECT 1 FROM positions p WHERE p.company_id=1 AND p.name=s.target_position_name))
        OR (s.target_type='user' AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id=s.target_id AND u.is_active))
-       OR s.target_type NOT IN ('position','user'));
+       OR s.target_type NOT IN ('position','user','direct_supervisor'));
   IF bad_targets > 0 THEN RAISE EXCEPTION 'HR approver target mapping incomplete: % step(s)', bad_targets; END IF;
 END $$;
 
@@ -115,13 +118,13 @@ INSERT INTO approval_rule_steps(approval_rule_id,step_no,approver_position_id,na
 SELECT r.id,s.step_order,
        CASE WHEN s.target_type='position' THEN p.id END,
        s.step_name,COALESCE(s.approve_mode,'any'),
-       CASE WHEN s.target_type='position' THEN 'hr_position' ELSE 'user' END,
+       CASE s.target_type WHEN 'position' THEN 'hr_position' WHEN 'user' THEN 'user' ELSE 'direct_supervisor' END,
        CASE WHEN s.target_type='user' THEN s.target_id::int END
 FROM approval_rules r
 JOIN new_policy_version v ON v.id=r.policy_version_id
 JOIN hr_policy_stage s ON s.policy_id=r.source_policy_id
 LEFT JOIN positions p ON p.company_id=1 AND p.name=s.target_position_name
-WHERE s.request_kind IS NULL OR s.request_kind IN ('reimbursement','advance','direct_payment');
+WHERE s.request_kind IS NULL OR s.request_kind IN ('reimbursement','advance','direct_payment','ot','allowance');
 
 -- Keep old versions for historical requests; only switch which version is active.
 UPDATE approval_policy_versions SET status='retired',updated_at=now()

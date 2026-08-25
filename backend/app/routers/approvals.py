@@ -633,8 +633,11 @@ async def create_rule(
     version = await _get_company_row(db, ApprovalPolicyVersion, version_id, company.id, "ไม่พบเวอร์ชันสายอนุมัตินี้")
     if version.status == "retired":
         raise HTTPException(400, "ไม่สามารถเพิ่มกฎในเวอร์ชันที่ปิดใช้งานแล้ว")
-    requester_position = await _get_company_row(db, Position, payload.requester_position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
-    await _get_company_row(db, ExpenseType, payload.expense_type_id, company.id, "ไม่พบประเภทการเบิก")
+    requester_position = None
+    if payload.requester_position_id is not None:
+        requester_position = await _get_company_row(db, Position, payload.requester_position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
+    if payload.expense_type_id is not None:
+        await _get_company_row(db, ExpenseType, payload.expense_type_id, company.id, "ไม่พบประเภทการเบิก")
 
     if payload.amount_max is not None and payload.amount_max <= payload.amount_min:
         raise HTTPException(400, "ยอดเงินสูงสุดต้องมากกว่ายอดเงินต่ำสุด")
@@ -648,7 +651,7 @@ async def create_rule(
         amount_range=_amount_range(payload.amount_min, payload.amount_max),
         source_system=payload.source_system or "acc",
         source_policy_id=payload.source_policy_id,
-        source_policy_name=payload.name or f"{requester_position.name} / กฎอนุมัติ",
+        source_policy_name=payload.name or f"{requester_position.name if requester_position else 'ทุกตำแหน่ง'} / กฎอนุมัติ",
         logical_group_key=payload.logical_group_key or f"acc:{uuid.uuid4()}",
         source_scope=payload.source_scope,
         priority=payload.priority,
@@ -692,8 +695,10 @@ async def update_rule(
     expense_type_id = payload.expense_type_id if "expense_type_id" in payload.model_fields_set else rule.expense_type_id
     amount_min = payload.amount_min if "amount_min" in payload.model_fields_set else (rule.amount_range.lower or Decimal("0"))
     amount_max = payload.amount_max if "amount_max" in payload.model_fields_set else rule.amount_range.upper
-    await _get_company_row(db, Position, requester_position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
-    await _get_company_row(db, ExpenseType, expense_type_id, company.id, "ไม่พบประเภทการเบิก")
+    if requester_position_id is not None:
+        await _get_company_row(db, Position, requester_position_id, company.id, "ไม่พบตำแหน่งผู้เบิก")
+    if expense_type_id is not None:
+        await _get_company_row(db, ExpenseType, expense_type_id, company.id, "ไม่พบประเภทการเบิก")
     if amount_max is not None and amount_max <= amount_min:
         raise HTTPException(400, "ยอดเงินสูงสุดต้องมากกว่ายอดเงินต่ำสุด")
 
@@ -880,7 +885,7 @@ async def preview_route(
     requester_position_id: int,
     expense_type_id: int,
     amount: Decimal,
-    request_kind: Optional[str] = Query(default=None, pattern="^(reimbursement|advance|direct_payment)?$"),
+    request_kind: Optional[str] = Query(default=None, pattern="^(reimbursement|advance|direct_payment|ot|allowance)?$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),

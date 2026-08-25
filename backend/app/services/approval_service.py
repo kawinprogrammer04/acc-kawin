@@ -55,8 +55,10 @@ async def find_matching_rule(
         select(ApprovalRule).where(
             ApprovalRule.policy_version_id == policy_version_id,
             ApprovalRule.is_active.is_(True),
-            ApprovalRule.requester_position_id == requester_position_id,
-            ApprovalRule.expense_type_id == expense_type_id,
+            or_(ApprovalRule.requester_position_id == requester_position_id,
+                ApprovalRule.requester_position_id.is_(None)),
+            or_(ApprovalRule.expense_type_id == expense_type_id,
+                ApprovalRule.expense_type_id.is_(None)),
             ApprovalRule.amount_range.contains(amount),
             kind_filter,
         ).order_by(ApprovalRule.priority, ApprovalRule.specificity.desc(), ApprovalRule.source_policy_id).limit(1)
@@ -70,8 +72,10 @@ async def find_matching_rule(
         select(ApprovalRule).where(
             ApprovalRule.policy_version_id == policy_version_id,
             ApprovalRule.is_active.is_(True),
-            ApprovalRule.requester_position_id == requester_position_id,
-            ApprovalRule.expense_type_id == expense_type_id,
+            or_(ApprovalRule.requester_position_id == requester_position_id,
+                ApprovalRule.requester_position_id.is_(None)),
+            or_(ApprovalRule.expense_type_id == expense_type_id,
+                ApprovalRule.expense_type_id.is_(None)),
             func.lower(ApprovalRule.amount_range) >= amount,
             kind_filter,
         ).order_by(func.lower(ApprovalRule.amount_range), ApprovalRule.priority,

@@ -13,12 +13,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 type TargetType = "direct_supervisor" | "position" | "user";
-type RequestKind = "" | "reimbursement" | "advance" | "direct_payment";
+type RequestKind = "" | "reimbursement" | "advance" | "direct_payment" | "ot" | "allowance";
 type CompanyUser = { user_id: number; username: string; full_name: string | null; role: string };
 type DraftStep = { name: string; target_type: TargetType; target_id: string; approve_mode: "any" | "all" };
 type RuleDraft = {
   name: string;
-  requester_mode: "position" | "department";
+  requester_mode: "position" | "department" | "all";
   requester_position_id: string;
   department_id: string;
   expense_type_id: string;
@@ -35,6 +35,8 @@ const kindLabels: Record<string, string> = {
   reimbursement: "เบิกค่าใช้จ่าย",
   advance: "สำรองจ่าย",
   direct_payment: "ชำระตรง",
+  ot: "OT",
+  allowance: "เบี้ยเลี้ยง",
 };
 const targetLabels: Record<TargetType, string> = {
   direct_supervisor: "หัวหน้าของผู้ขอ",
@@ -78,12 +80,14 @@ function ruleToDraft(rule: Rule, departments: Department[]): RuleDraft {
   const isDepartmentScope = Boolean(
     rule.source_scope && !rule.source_scope.requester_position_name && sourceDepartment,
   );
+  const isGlobalRequesterScope = rule.requester_position_id == null
+    && !rule.source_scope?.requester_position_name && !sourceDepartment;
   return {
     name: rule.name ?? "",
-    requester_mode: isDepartmentScope ? "department" : "position",
-    requester_position_id: String(rule.requester_position_id),
+    requester_mode: isGlobalRequesterScope ? "all" : isDepartmentScope ? "department" : "position",
+    requester_position_id: rule.requester_position_id == null ? "" : String(rule.requester_position_id),
     department_id: department ? String(department.id) : (rule.requester_department_id ? String(rule.requester_department_id) : ""),
-    expense_type_id: String(rule.expense_type_id),
+    expense_type_id: rule.expense_type_id == null ? "" : String(rule.expense_type_id),
     request_kind: (rule.request_kind ?? "") as RequestKind,
     amount_min: String(rule.amount_min),
     amount_max: rule.amount_max == null ? "" : String(rule.amount_max),
@@ -216,11 +220,12 @@ export function HrStyleApprovalSettings() {
     return logicalRules.filter((rule) => {
       if (statusFilter === "active" && !rule.is_active) return false;
       if (statusFilter === "inactive" && rule.is_active) return false;
-      if (departmentFilter && !rule.members.some((member) => String(member.requester_department_id ?? "") === departmentFilter)) return false;
-      if (positionFilter && !rule.members.some((member) => String(member.requester_position_id) === positionFilter)) return false;
-      if (typeFilter && String(rule.expense_type_id) !== typeFilter) return false;
+      if (departmentFilter && rule.source_scope?.department_name && !rule.members.some((member) => String(member.requester_department_id ?? "") === departmentFilter)) return false;
+      if (positionFilter && rule.source_scope?.requester_position_name && !rule.members.some((member) => String(member.requester_position_id ?? "") === positionFilter)) return false;
+      if (typeFilter && rule.expense_type_id != null && String(rule.expense_type_id) !== typeFilter) return false;
       if (kindFilter && rule.request_kind && rule.request_kind !== kindFilter) return false;
       if (kindFilter === "direct_payment" && rule.source_system === "hr" && !rule.request_kind) return false;
+      if ((kindFilter === "ot" || kindFilter === "allowance") && !rule.request_kind) return false;
       if (amount != null && !(rule.amount_min <= amount && (rule.amount_max == null || amount <= rule.amount_max))) return false;
       if (!query) return true;
       const haystack = [
@@ -246,33 +251,36 @@ export function HrStyleApprovalSettings() {
   const save = async (event: FormEvent) => {
     event.preventDefault();
     if (!draft || !activeVersion) return;
-    const targetPositions = draft.requester_mode === "department"
-      ? positions.filter((position) => String(position.department_id) === draft.department_id)
-      : positions.filter((position) => String(position.id) === draft.requester_position_id);
-    if (!targetPositions.length || !draft.expense_type_id || !draft.steps.length) { setError("กรุณากรอกขอบเขตผู้เบิก ประเภทการเบิก และขั้นอนุมัติให้ครบ"); return; }
+    const targetPositions: Array<Position | null> = draft.requester_mode === "all"
+      ? [null]
+      : draft.requester_mode === "department"
+        ? positions.filter((position) => String(position.department_id) === draft.department_id)
+        : positions.filter((position) => String(position.id) === draft.requester_position_id);
+    if (!targetPositions.length || !draft.steps.length) { setError("กรุณากรอกขอบเขตผู้เบิกและขั้นอนุมัติให้ครบ"); return; }
     if (draft.steps.some((step) => step.target_type !== "direct_supervisor" && !step.target_id)) { setError("กรุณาเลือกเป้าหมายผู้อนุมัติให้ครบทุกขั้น"); return; }
     setSaving(true); setError(null);
     const selectedType = types.find((type) => String(type.id) === draft.expense_type_id);
     const selectedDepartment = departments.find((department) => String(department.id) === draft.department_id);
     const selectedPosition = positions.find((position) => String(position.id) === draft.requester_position_id);
+    const selectedExpenseTypeId = selectedType?.id ?? null;
     const sourceScope: NonNullable<Rule["source_scope"]> = {
       company_name: editingRule?.source_scope
         ? editingRule.source_scope.company_name ?? null
         : currentCompany?.name_th ?? null,
-      department_name: draft.requester_mode === "department"
+      department_name: draft.requester_mode === "all" ? null : draft.requester_mode === "department"
         ? selectedDepartment?.name ?? null
         : departments.find((department) => department.id === selectedPosition?.department_id)?.name ?? null,
-      requester_position_name: draft.requester_mode === "department" ? null : selectedPosition?.name ?? null,
+      requester_position_name: draft.requester_mode === "position" ? selectedPosition?.name ?? null : null,
       expense_type_code: selectedType?.code ?? null,
-      expense_type_name: editingRule?.source_scope && editingRule.expense_type_id === Number(draft.expense_type_id)
+      expense_type_name: editingRule?.source_scope && editingRule.expense_type_id === selectedExpenseTypeId
         ? editingRule.source_scope.expense_type_name ?? selectedType?.name ?? null
         : selectedType?.name ?? null,
       request_kind: draft.request_kind || null,
     };
     const logicalGroupKey = editingRule?.logical_group_key || `acc:${crypto.randomUUID()}`;
-    const makePayload = (positionId: number) => ({
+    const makePayload = (positionId: number | null) => ({
       requester_position_id: positionId,
-      expense_type_id: Number(draft.expense_type_id),
+      expense_type_id: selectedExpenseTypeId,
       amount_min: Number(draft.amount_min || 0),
       amount_max: draft.amount_max === "" ? null : Number(draft.amount_max),
       name: draft.name.trim() || null,
@@ -283,24 +291,26 @@ export function HrStyleApprovalSettings() {
     });
     try {
       if (editingRule) {
-        const existingByPosition = new Map(editingRule.members.map((member) => [member.requester_position_id, member]));
-        const desiredPositionIds = new Set(targetPositions.map((position) => position.id));
+        const memberKey = (positionId: number | null | undefined, expenseTypeId: number | null | undefined) => `${positionId ?? "*"}:${expenseTypeId ?? "*"}`;
+        const existingByScope = new Map(editingRule.members.map((member) => [memberKey(member.requester_position_id, member.expense_type_id), member]));
+        const desiredKeys = new Set(targetPositions.map((position) => memberKey(position?.id, selectedExpenseTypeId)));
         await Promise.all(targetPositions.map((position) => {
-          const existing = existingByPosition.get(position.id);
-          if (existing) return rulesApi.update(existing.id, { ...makePayload(position.id), is_active: editingRule.is_active });
+          const positionId = position?.id ?? null;
+          const existing = existingByScope.get(memberKey(positionId, selectedExpenseTypeId));
+          if (existing) return rulesApi.update(existing.id, { ...makePayload(positionId), is_active: editingRule.is_active });
           return rulesApi.create(activeVersion.id, {
-            ...makePayload(position.id),
+            ...makePayload(positionId),
             source_system: editingRule.source_system === "hr" ? "hr" : "acc",
             source_policy_id: editingRule.source_policy_id,
             logical_group_key: logicalGroupKey,
           });
         }));
         await Promise.all(editingRule.members
-          .filter((member) => !desiredPositionIds.has(member.requester_position_id))
+          .filter((member) => !desiredKeys.has(memberKey(member.requester_position_id, member.expense_type_id)))
           .map((member) => rulesApi.delete(member.id)));
       } else {
         await Promise.all(targetPositions.map((position) => rulesApi.create(activeVersion.id, {
-          ...makePayload(position.id),
+          ...makePayload(position?.id ?? null),
           source_system: "acc",
           logical_group_key: logicalGroupKey,
         })));
@@ -361,8 +371,8 @@ export function HrStyleApprovalSettings() {
       </CardContent></Card>
 
       <Dialog open={!!draft} onOpenChange={(open) => !open && closeDialog()}><DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto"><DialogHeader><DialogTitle>{editingRule ? "แก้ไขกฎอนุมัติ" : "เพิ่มกฎอนุมัติ"}</DialogTitle><DialogDescription>กำหนดข้อมูลและขั้นอนุมัติให้ตรงกับการตั้งค่า HR</DialogDescription></DialogHeader>{draft && <form onSubmit={save} className="space-y-5 p-6 pt-4">
-        <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1"><Label>ชื่อกฎ</Label><Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="เช่น ค่าใช้จ่ายทั่วไปของฝ่ายขาย" /></div><div className="space-y-1"><Label>ประเภทการเบิก *</Label><select className={inputCls} required value={draft.expense_type_id} onChange={(e) => setDraft({ ...draft, expense_type_id: e.target.value })}>{types.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select></div></div>
-        <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1"><Label>ขอบเขตผู้ขอ *</Label><div className="flex gap-3 pt-2 text-sm"><label><input type="radio" checked={draft.requester_mode === "position"} onChange={() => setDraft({ ...draft, requester_mode: "position" })} /> ตำแหน่งเดียว</label><label><input type="radio" checked={draft.requester_mode === "department"} onChange={() => setDraft({ ...draft, requester_mode: "department" })} /> ทั้งแผนก</label></div></div>{draft.requester_mode === "position" ? <div className="space-y-1"><Label>ตำแหน่งผู้ขอ *</Label><select className={inputCls} required value={draft.requester_position_id} onChange={(e) => setDraft({ ...draft, requester_position_id: e.target.value })}>{positions.map((position) => <option key={position.id} value={position.id}>{position.name}</option>)}</select></div> : <div className="space-y-1"><Label>แผนกผู้ขอ *</Label><select className={inputCls} required value={draft.department_id} onChange={(e) => setDraft({ ...draft, department_id: e.target.value })}><option value="">-- เลือกแผนก --</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></div>}</div>
+        <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1"><Label>ชื่อกฎ</Label><Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="เช่น ค่าใช้จ่ายทั่วไปของฝ่ายขาย" /></div><div className="space-y-1"><Label>ประเภทการเบิก</Label><select className={inputCls} value={draft.expense_type_id} onChange={(e) => setDraft({ ...draft, expense_type_id: e.target.value })}><option value="">ทุกประเภท</option>{types.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select></div></div>
+        <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1"><Label>ขอบเขตผู้ขอ *</Label><div className="flex flex-wrap gap-3 pt-2 text-sm"><label><input type="radio" checked={draft.requester_mode === "position"} onChange={() => setDraft({ ...draft, requester_mode: "position" })} /> ตำแหน่งเดียว</label><label><input type="radio" checked={draft.requester_mode === "department"} onChange={() => setDraft({ ...draft, requester_mode: "department" })} /> ทั้งแผนก</label><label><input type="radio" checked={draft.requester_mode === "all"} onChange={() => setDraft({ ...draft, requester_mode: "all" })} /> ทุกตำแหน่ง</label></div></div>{draft.requester_mode === "position" ? <div className="space-y-1"><Label>ตำแหน่งผู้ขอ *</Label><select className={inputCls} required value={draft.requester_position_id} onChange={(e) => setDraft({ ...draft, requester_position_id: e.target.value })}>{positions.map((position) => <option key={position.id} value={position.id}>{position.name}</option>)}</select></div> : draft.requester_mode === "department" ? <div className="space-y-1"><Label>แผนกผู้ขอ *</Label><select className={inputCls} required value={draft.department_id} onChange={(e) => setDraft({ ...draft, department_id: e.target.value })}><option value="">-- เลือกแผนก --</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></div> : <div className="space-y-1"><Label>ตำแหน่งผู้ขอ</Label><div className={`${inputCls} text-muted-foreground`}>ทุกตำแหน่ง</div></div>}</div>
         <div className="grid gap-3 md:grid-cols-4"><div className="space-y-1"><Label>รูปแบบคำขอ</Label><select className={inputCls} value={draft.request_kind} onChange={(e) => setDraft({ ...draft, request_kind: e.target.value as RequestKind })}><option value="">ทุกรูปแบบ</option>{Object.entries(kindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="space-y-1"><Label>ยอดต่ำสุด *</Label><Input type="number" min="0" step="0.01" required value={draft.amount_min} onChange={(e) => setDraft({ ...draft, amount_min: e.target.value })} /></div><div className="space-y-1"><Label>ยอดสูงสุด</Label><Input type="number" min="0" step="0.01" value={draft.amount_max} onChange={(e) => setDraft({ ...draft, amount_max: e.target.value })} placeholder="ไม่จำกัด" /></div><div className="space-y-1"><Label>Priority</Label><Input type="number" min="1" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} /></div></div>
         <div className="space-y-2"><div className="flex items-center justify-between"><Label>ขั้นอนุมัติ *</Label><Button type="button" variant="outline" size="sm" onClick={() => setDraft({ ...draft, steps: [...draft.steps, blankStep(draft.steps.length + 1)] })}><Plus className="h-3.5 w-3.5" /> เพิ่มขั้น</Button></div>{draft.steps.map((step, index) => <StepEditor key={index} step={step} index={index} totalSteps={draft.steps.length} positions={positions} users={users} onChange={(patch) => updateStep(index, patch)} onMove={(direction) => moveStep(index, direction)} onRemove={() => setDraft({ ...draft, steps: draft.steps.filter((_, i) => i !== index) })} />)}</div>
         <DialogFooter><Button type="button" variant="outline" onClick={closeDialog}>ยกเลิก</Button><Button type="submit" disabled={saving}>{saving && <Loader2 className="h-4 w-4 animate-spin" />}บันทึกกฎ</Button></DialogFooter>
