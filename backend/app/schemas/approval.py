@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -115,6 +115,10 @@ class RuleCreate(BaseModel):
     name: Optional[str] = Field(default=None, max_length=255)
     request_kind: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment)?$")
     priority: int = Field(default=100, ge=1, le=999999)
+    source_system: Optional[str] = Field(default=None, pattern="^(acc|hr)?$")
+    source_policy_id: Optional[int] = None
+    logical_group_key: Optional[str] = Field(default=None, max_length=100)
+    source_scope: Optional[dict[str, Any]] = None
     steps: list[RuleStepIn] = Field(min_length=1)
 
 
@@ -127,6 +131,7 @@ class RuleUpdate(BaseModel):
     request_kind: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment)?$")
     priority: Optional[int] = Field(default=None, ge=1, le=999999)
     is_active: Optional[bool] = None
+    source_scope: Optional[dict[str, Any]] = None
     steps: Optional[list[RuleStepIn]] = Field(default=None, min_length=1)
 
 
@@ -157,6 +162,8 @@ class RuleOut(BaseModel):
     specificity: int = 0
     source_system: Optional[str] = None
     source_policy_id: Optional[int] = None
+    logical_group_key: Optional[str] = None
+    source_scope: Optional[dict[str, Any]] = None
     is_active: bool = True
     steps: list[RuleStepOut] = []
 

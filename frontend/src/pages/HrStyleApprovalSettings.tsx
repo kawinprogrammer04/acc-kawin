@@ -28,11 +28,12 @@ type RuleDraft = {
   priority: string;
   steps: DraftStep[];
 };
+type RuleGroup = Rule & { members: Rule[] };
 
 const inputCls = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 const kindLabels: Record<string, string> = {
-  reimbursement: "เบิกคืน",
-  advance: "เงินทดรอง",
+  reimbursement: "เบิกค่าใช้จ่าย",
+  advance: "สำรองจ่าย",
   direct_payment: "ชำระตรง",
 };
 const targetLabels: Record<TargetType, string> = {
@@ -71,12 +72,17 @@ function stepToDraft(step: RuleStep): DraftStep {
   };
 }
 
-function ruleToDraft(rule: Rule): RuleDraft {
+function ruleToDraft(rule: Rule, departments: Department[]): RuleDraft {
+  const sourceDepartment = rule.source_scope?.department_name;
+  const department = departments.find((row) => row.name === sourceDepartment);
+  const isDepartmentScope = Boolean(
+    rule.source_scope && !rule.source_scope.requester_position_name && sourceDepartment,
+  );
   return {
     name: rule.name ?? "",
-    requester_mode: "position",
+    requester_mode: isDepartmentScope ? "department" : "position",
     requester_position_id: String(rule.requester_position_id),
-    department_id: rule.requester_department_id ? String(rule.requester_department_id) : "",
+    department_id: department ? String(department.id) : (rule.requester_department_id ? String(rule.requester_department_id) : ""),
     expense_type_id: String(rule.expense_type_id),
     request_kind: (rule.request_kind ?? "") as RequestKind,
     amount_min: String(rule.amount_min),
@@ -165,7 +171,7 @@ export function HrStyleApprovalSettings() {
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("active");
   const [amountFilter, setAmountFilter] = useState("");
   const [draft, setDraft] = useState<RuleDraft | null>(null);
-  const [editingRule, setEditingRule] = useState<Rule | null>(null);
+  const [editingRule, setEditingRule] = useState<RuleGroup | null>(null);
   const [saving, setSaving] = useState(false);
   const activeVersion = versions.find((version) => version.status === "active") ?? versions[0];
 
@@ -190,25 +196,45 @@ export function HrStyleApprovalSettings() {
 
   useEffect(() => { load(); }, [load]);
 
+  const logicalRules = useMemo<RuleGroup[]>(() => {
+    const groups = new Map<string, Rule[]>();
+    rules.forEach((rule) => {
+      const key = rule.logical_group_key
+        || (rule.source_system === "hr" && rule.source_policy_id ? `hr:${rule.source_policy_id}` : `rule:${rule.id}`);
+      groups.set(key, [...(groups.get(key) ?? []), rule]);
+    });
+    return Array.from(groups.values()).map((members) => ({
+      ...members[0],
+      is_active: members.some((member) => member.is_active),
+      members,
+    }));
+  }, [rules]);
+
   const filteredRules = useMemo(() => {
     const query = search.trim().toLowerCase();
     const amount = amountFilter === "" ? null : Number(amountFilter);
-    return rules.filter((rule) => {
+    return logicalRules.filter((rule) => {
       if (statusFilter === "active" && !rule.is_active) return false;
       if (statusFilter === "inactive" && rule.is_active) return false;
-      if (departmentFilter && String(rule.requester_department_id ?? "") !== departmentFilter) return false;
-      if (positionFilter && String(rule.requester_position_id) !== positionFilter) return false;
+      if (departmentFilter && !rule.members.some((member) => String(member.requester_department_id ?? "") === departmentFilter)) return false;
+      if (positionFilter && !rule.members.some((member) => String(member.requester_position_id) === positionFilter)) return false;
       if (typeFilter && String(rule.expense_type_id) !== typeFilter) return false;
-      if (kindFilter && (rule.request_kind ?? "") !== kindFilter) return false;
+      if (kindFilter && rule.request_kind && rule.request_kind !== kindFilter) return false;
+      if (kindFilter === "direct_payment" && rule.source_system === "hr" && !rule.request_kind) return false;
       if (amount != null && !(rule.amount_min <= amount && (rule.amount_max == null || amount <= rule.amount_max))) return false;
       if (!query) return true;
-      const haystack = [rule.name, rule.requester_position_name, rule.requester_department_name, rule.expense_type_name, ...rule.steps.map((step) => `${step.name} ${step.target_name}`)].join(" ").toLowerCase();
+      const haystack = [
+        rule.name, rule.source_scope?.company_name, rule.source_scope?.department_name,
+        rule.source_scope?.requester_position_name, rule.source_scope?.expense_type_name,
+        rule.requester_position_name, rule.requester_department_name, rule.expense_type_name,
+        ...rule.steps.map((step) => `${step.name} ${step.target_name}`),
+      ].join(" ").toLowerCase();
       return haystack.includes(query);
     });
-  }, [amountFilter, departmentFilter, kindFilter, positionFilter, rules, search, statusFilter, typeFilter]);
+  }, [amountFilter, departmentFilter, kindFilter, logicalRules, positionFilter, search, statusFilter, typeFilter]);
 
   const openCreate = () => { setEditingRule(null); setDraft(blankDraft(positions, types)); };
-  const openEdit = (rule: Rule) => { setEditingRule(rule); setDraft(ruleToDraft(rule)); };
+  const openEdit = (rule: RuleGroup) => { setEditingRule(rule); setDraft(ruleToDraft(rule, departments)); };
   const closeDialog = () => { if (!saving) { setDraft(null); setEditingRule(null); } };
   const updateStep = (index: number, patch: Partial<DraftStep>) => setDraft((current) => current ? { ...current, steps: current.steps.map((step, i) => i === index ? { ...step, ...patch } : step) } : current);
   const moveStep = (index: number, direction: -1 | 1) => setDraft((current) => {
@@ -226,6 +252,24 @@ export function HrStyleApprovalSettings() {
     if (!targetPositions.length || !draft.expense_type_id || !draft.steps.length) { setError("กรุณากรอกขอบเขตผู้เบิก ประเภทการเบิก และขั้นอนุมัติให้ครบ"); return; }
     if (draft.steps.some((step) => step.target_type !== "direct_supervisor" && !step.target_id)) { setError("กรุณาเลือกเป้าหมายผู้อนุมัติให้ครบทุกขั้น"); return; }
     setSaving(true); setError(null);
+    const selectedType = types.find((type) => String(type.id) === draft.expense_type_id);
+    const selectedDepartment = departments.find((department) => String(department.id) === draft.department_id);
+    const selectedPosition = positions.find((position) => String(position.id) === draft.requester_position_id);
+    const sourceScope: NonNullable<Rule["source_scope"]> = {
+      company_name: editingRule?.source_scope
+        ? editingRule.source_scope.company_name ?? null
+        : currentCompany?.name_th ?? null,
+      department_name: draft.requester_mode === "department"
+        ? selectedDepartment?.name ?? null
+        : departments.find((department) => department.id === selectedPosition?.department_id)?.name ?? null,
+      requester_position_name: draft.requester_mode === "department" ? null : selectedPosition?.name ?? null,
+      expense_type_code: selectedType?.code ?? null,
+      expense_type_name: editingRule?.source_scope && editingRule.expense_type_id === Number(draft.expense_type_id)
+        ? editingRule.source_scope.expense_type_name ?? selectedType?.name ?? null
+        : selectedType?.name ?? null,
+      request_kind: draft.request_kind || null,
+    };
+    const logicalGroupKey = editingRule?.logical_group_key || `acc:${crypto.randomUUID()}`;
     const makePayload = (positionId: number) => ({
       requester_position_id: positionId,
       expense_type_id: Number(draft.expense_type_id),
@@ -234,23 +278,45 @@ export function HrStyleApprovalSettings() {
       name: draft.name.trim() || null,
       request_kind: draft.request_kind || null,
       priority: Number(draft.priority || 100),
+      source_scope: sourceScope,
       steps: draft.steps.map((step, index) => ({ step_no: index + 1, name: step.name.trim() || undefined, target_type: step.target_type, target_id: step.target_type === "direct_supervisor" ? null : Number(step.target_id), approve_mode: step.approve_mode })),
     });
     try {
-      if (editingRule) await rulesApi.update(editingRule.id, { ...makePayload(targetPositions[0].id), is_active: editingRule.is_active });
-      else await Promise.all(targetPositions.map((position) => rulesApi.create(activeVersion.id, makePayload(position.id))));
+      if (editingRule) {
+        const existingByPosition = new Map(editingRule.members.map((member) => [member.requester_position_id, member]));
+        const desiredPositionIds = new Set(targetPositions.map((position) => position.id));
+        await Promise.all(targetPositions.map((position) => {
+          const existing = existingByPosition.get(position.id);
+          if (existing) return rulesApi.update(existing.id, { ...makePayload(position.id), is_active: editingRule.is_active });
+          return rulesApi.create(activeVersion.id, {
+            ...makePayload(position.id),
+            source_system: editingRule.source_system === "hr" ? "hr" : "acc",
+            source_policy_id: editingRule.source_policy_id,
+            logical_group_key: logicalGroupKey,
+          });
+        }));
+        await Promise.all(editingRule.members
+          .filter((member) => !desiredPositionIds.has(member.requester_position_id))
+          .map((member) => rulesApi.delete(member.id)));
+      } else {
+        await Promise.all(targetPositions.map((position) => rulesApi.create(activeVersion.id, {
+          ...makePayload(position.id),
+          source_system: "acc",
+          logical_group_key: logicalGroupKey,
+        })));
+      }
       closeDialog(); await load();
     } catch (saveError) { setError(getApiErrorMessage(saveError, "บันทึกกฎไม่สำเร็จ")); }
     finally { setSaving(false); }
   };
 
-  const toggleActive = async (rule: Rule) => {
-    try { await rulesApi.update(rule.id, { is_active: !rule.is_active }); await load(); }
+  const toggleActive = async (rule: RuleGroup) => {
+    try { await Promise.all(rule.members.map((member) => rulesApi.update(member.id, { is_active: !rule.is_active }))); await load(); }
     catch (toggleError) { setError(getApiErrorMessage(toggleError, "เปลี่ยนสถานะกฎไม่สำเร็จ")); }
   };
-  const remove = async (rule: Rule) => {
+  const remove = async (rule: RuleGroup) => {
     if (!window.confirm(`ลบกฎ “${rule.name || rule.expense_type_name || rule.id}” หรือไม่?`)) return;
-    try { await rulesApi.delete(rule.id); await load(); }
+    try { await Promise.all(rule.members.map((member) => rulesApi.delete(member.id))); await load(); }
     catch (deleteError) { setError(getApiErrorMessage(deleteError, "ลบกฎไม่สำเร็จ")); }
   };
 
@@ -260,7 +326,7 @@ export function HrStyleApprovalSettings() {
         <div><h2 className="text-xl font-semibold">กฎอนุมัติ</h2><p className="mt-1 text-sm text-muted-foreground">ตั้งค่าขอบเขต วงเงิน ลำดับขั้น และผู้อนุมัติแบบเดียวกับ HR</p></div>
         <Button onClick={openCreate} disabled={!activeVersion}><Plus className="h-4 w-4" /> เพิ่มกฎอนุมัติ</Button>
       </div>
-      {activeVersion && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">เวอร์ชัน {activeVersion.version_no} · {rules.filter((rule) => rule.is_active).length} กฎที่เปิดใช้งาน</div>}
+      {activeVersion && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">เวอร์ชัน {activeVersion.version_no} · {logicalRules.filter((rule) => rule.is_active).length} กฎที่เปิดใช้งาน · {rules.filter((rule) => rule.is_active).length} เส้นทางภายใน</div>}
       {!activeVersion && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">ยังไม่มีเวอร์ชันสายอนุมัติที่ใช้งานอยู่</div>}
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
@@ -275,13 +341,22 @@ export function HrStyleApprovalSettings() {
           <Input type="number" min="0" step="0.01" value={amountFilter} onChange={(e) => setAmountFilter(e.target.value)} placeholder="ยอดเงินที่ต้องการตรวจ" />
         </div>
         <div className="overflow-x-auto rounded-lg border"><table className="w-full text-sm"><thead className="border-b bg-muted/30"><tr>{["กฎ / ขอบเขต", "วงเงิน", "ขั้นอนุมัติ", "สถานะ", "จัดการ"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">{heading}</th>)}</tr></thead>
-          <tbody className="divide-y">{loading ? <tr><td colSpan={5} className="p-8 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin text-muted-foreground" /></td></tr> : filteredRules.map((rule) => <tr key={rule.id} className="align-top hover:bg-muted/20">
-            <td className="px-4 py-3"><div className="font-medium">{rule.name || "กฎอนุมัติไม่มีชื่อ"}</div><div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground"><span className="rounded-full bg-muted px-2 py-0.5">{rule.requester_department_name || "ทุกแผนก"}</span><span className="rounded-full bg-muted px-2 py-0.5">{rule.requester_position_name}</span><span className="rounded-full bg-muted px-2 py-0.5">{rule.expense_type_name}</span>{rule.request_kind && <span className="rounded-full bg-muted px-2 py-0.5">{kindLabels[rule.request_kind] || rule.request_kind}</span>}</div><div className="mt-1 text-xs text-muted-foreground">Priority {rule.priority ?? 100}</div></td>
-            <td className="whitespace-nowrap px-4 py-3">{rule.amount_min.toLocaleString("th-TH", { minimumFractionDigits: 2 })} – {rule.amount_max == null ? "ไม่จำกัด" : rule.amount_max.toLocaleString("th-TH", { minimumFractionDigits: 2 })}</td>
-            <td className="px-4 py-3"><div className="space-y-1">{rule.steps.map((step) => <div key={step.step_no} className="text-xs"><span className="mr-1 font-medium">{step.step_no}.</span>{step.name || step.target_name || "ผู้อนุมัติ"}<span className="ml-1 text-muted-foreground">({step.target_name || targetLabels[(step.target_type as TargetType) || "position"]}, {step.approve_mode === "all" ? "ทุกคน" : "คนใดคนหนึ่ง"})</span></div>)}</div></td>
-            <td className="px-4 py-3"><button type="button" onClick={() => toggleActive(rule)} className={`rounded-full px-2 py-1 text-xs font-medium ${rule.is_active ? "bg-emerald-50 text-emerald-700" : "bg-muted text-muted-foreground"}`}>{rule.is_active ? "เปิดใช้งาน" : "ปิดใช้งาน"}</button></td>
-            <td className="px-4 py-3"><div className="flex gap-1"><Button variant="outline" size="icon" onClick={() => openEdit(rule)}><Pencil className="h-3.5 w-3.5" /></Button><Button variant="outline" size="icon" onClick={() => remove(rule)}><Trash2 className="h-3.5 w-3.5 text-rose-600" /></Button></div></td>
-          </tr>)}{!loading && filteredRules.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-sm text-muted-foreground">ไม่พบกฎตามเงื่อนไข</td></tr>}</tbody>
+          <tbody className="divide-y">{loading ? <tr><td colSpan={5} className="p-8 text-center"><Loader2 className="mx-auto h-5 w-5 animate-spin text-muted-foreground" /></td></tr> : filteredRules.map((rule) => {
+            const scope = rule.source_scope;
+            const companyLabel = scope ? scope.company_name || "ทุกบริษัท" : currentCompany?.name_th || "บริษัทปัจจุบัน";
+            const departmentLabel = scope ? scope.department_name || "ทุกแผนก" : rule.requester_department_name || "ทุกแผนก";
+            const positionLabel = scope ? scope.requester_position_name || "ทุกตำแหน่ง" : rule.requester_position_name || "ทุกตำแหน่ง";
+            const expenseTypeLabel = scope ? scope.expense_type_name || "ทุกประเภท" : rule.expense_type_name || "ทุกประเภท";
+            const requestKind = scope ? scope.request_kind : rule.request_kind;
+            const requestKindLabel = requestKind ? kindLabels[requestKind] || requestKind : "ทุกรูปแบบ";
+            return <tr key={rule.logical_group_key || rule.id} className="align-top hover:bg-muted/20">
+              <td className="px-4 py-3"><div className="font-medium">{rule.name || "กฎอนุมัติไม่มีชื่อ"}</div><div className="mt-1 flex flex-wrap gap-1 text-xs text-muted-foreground"><span className="rounded-full bg-muted px-2 py-0.5">{companyLabel}</span><span className="rounded-full bg-muted px-2 py-0.5">{departmentLabel}</span><span className="rounded-full bg-indigo-50 px-2 py-0.5 font-medium text-indigo-700">{positionLabel}</span><span className="rounded-full bg-muted px-2 py-0.5">{expenseTypeLabel}</span><span className="rounded-full bg-muted px-2 py-0.5">{requestKindLabel}</span></div><div className="mt-1 text-xs text-muted-foreground">Priority {rule.priority ?? 100}{rule.members.length > 1 ? ` · ${rule.members.length} เส้นทางภายใน` : ""}</div></td>
+              <td className="whitespace-nowrap px-4 py-3">{rule.amount_min.toLocaleString("th-TH", { minimumFractionDigits: 2 })} – {rule.amount_max == null ? "ไม่จำกัด" : rule.amount_max.toLocaleString("th-TH", { minimumFractionDigits: 2 })}</td>
+              <td className="px-4 py-3"><div className="space-y-1">{rule.steps.map((step) => <div key={step.step_no} className="text-xs"><span className="mr-1 font-medium">{step.step_no}.</span>{step.name || step.target_name || "ผู้อนุมัติ"}<span className="ml-1 text-muted-foreground">({step.target_name || targetLabels[(step.target_type as TargetType) || "position"]}, {step.approve_mode === "all" ? "ทุกคน" : "คนใดคนหนึ่ง"})</span></div>)}</div></td>
+              <td className="px-4 py-3"><button type="button" onClick={() => toggleActive(rule)} className={`rounded-full px-2 py-1 text-xs font-medium ${rule.is_active ? "bg-emerald-50 text-emerald-700" : "bg-muted text-muted-foreground"}`}>{rule.is_active ? "เปิดใช้งาน" : "ปิดใช้งาน"}</button></td>
+              <td className="px-4 py-3"><div className="flex gap-1"><Button variant="outline" size="icon" onClick={() => openEdit(rule)}><Pencil className="h-3.5 w-3.5" /></Button><Button variant="outline" size="icon" onClick={() => remove(rule)}><Trash2 className="h-3.5 w-3.5 text-rose-600" /></Button></div></td>
+            </tr>;
+          })}{!loading && filteredRules.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-sm text-muted-foreground">ไม่พบกฎตามเงื่อนไข</td></tr>}</tbody>
         </table></div>
       </CardContent></Card>
 

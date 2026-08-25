@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,11 +50,7 @@ async def find_matching_rule(
     amount: Decimal,
     request_kind: Optional[str] = None,
 ) -> Optional[ApprovalRule]:
-    kind_filter = (
-        ApprovalRule.request_kind == request_kind
-        if request_kind in {"ot", "allowance"}
-        else or_(ApprovalRule.request_kind.is_(None), ApprovalRule.request_kind == request_kind)
-    )
+    kind_filter = _request_kind_filter(request_kind)
     result = await db.execute(
         select(ApprovalRule).where(
             ApprovalRule.policy_version_id == policy_version_id,
@@ -82,6 +78,22 @@ async def find_matching_rule(
                    ApprovalRule.specificity.desc(), ApprovalRule.source_policy_id).limit(1)
     )
     return fallback.scalar_one_or_none()
+
+
+def _request_kind_filter(request_kind: Optional[str]):
+    if request_kind in {"ot", "allowance"}:
+        return ApprovalRule.request_kind == request_kind
+    if request_kind == "direct_payment":
+        # HR's NULL wildcard means advance + reimbursement only. ACC-authored
+        # wildcard rules keep their existing all-finance-form behavior.
+        return or_(
+            ApprovalRule.request_kind == request_kind,
+            and_(
+                ApprovalRule.request_kind.is_(None),
+                or_(ApprovalRule.source_system.is_(None), ApprovalRule.source_system != "hr"),
+            ),
+        )
+    return or_(ApprovalRule.request_kind.is_(None), ApprovalRule.request_kind == request_kind)
 
 
 async def get_rule_steps(db: AsyncSession, rule_id: int) -> list[ApprovalRuleStep]:
@@ -203,6 +215,7 @@ async def preview_route(
     requester_position_id: int,
     expense_type_id: int,
     amount: Decimal,
+    request_kind: Optional[str] = None,
     at_time: Optional[datetime] = None,
 ) -> dict:
     at_time = at_time or datetime.now(timezone.utc)
@@ -210,7 +223,9 @@ async def preview_route(
     if not policy_version:
         return {"matched": False, "message": "บริษัทนี้ยังไม่มีสายอนุมัติที่เปิดใช้งาน (ACTIVE)", "rule_id": None, "steps": []}
 
-    rule = await find_matching_rule(db, policy_version.id, requester_position_id, expense_type_id, amount)
+    rule = await find_matching_rule(
+        db, policy_version.id, requester_position_id, expense_type_id, amount, request_kind
+    )
     if not rule:
         return {
             "matched": False,

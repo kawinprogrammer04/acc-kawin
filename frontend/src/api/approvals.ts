@@ -69,6 +69,15 @@ export interface Rule {
   specificity?: number;
   source_system?: string | null;
   source_policy_id?: number | null;
+  logical_group_key?: string | null;
+  source_scope?: {
+    company_name?: string | null;
+    department_name?: string | null;
+    requester_position_name?: string | null;
+    expense_type_code?: string | null;
+    expense_type_name?: string | null;
+    request_kind?: string | null;
+  } | null;
   is_active: boolean;
   steps: RuleStep[];
 }
@@ -320,6 +329,10 @@ export const rulesApi = {
       name?: string | null;
       request_kind?: string | null;
       priority?: number;
+      source_system?: "acc" | "hr";
+      source_policy_id?: number | null;
+      logical_group_key?: string;
+      source_scope?: Rule["source_scope"];
       steps: {
         step_no: number;
         name?: string;
@@ -339,6 +352,7 @@ export const rulesApi = {
     request_kind?: string | null;
     priority?: number;
     is_active?: boolean;
+    source_scope?: Rule["source_scope"];
     steps?: {
       step_no: number;
       name?: string;
@@ -368,7 +382,7 @@ export const delegationsApi = {
 
 // ── Route preview ─────────────────────────────────────────────────────────
 export const approvalRoutesApi = {
-  preview: (params: { requester_position_id: number; expense_type_id: number; amount: number }) =>
+  preview: (params: { requester_position_id: number; expense_type_id: number; amount: number; request_kind?: string }) =>
     api.get("/approval-routes/preview", { params }).then((r) => r.data),
 };
 

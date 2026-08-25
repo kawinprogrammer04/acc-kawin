@@ -374,7 +374,7 @@ export function ExpenseRequestWizardPage() {
     if (step !== 3 || !request || !request.amount) { setPreview(null); return; }
     // สายอนุมัติต้องดูยอดเบิกจริงทั้งก้อน (ยอดรวมรายการ) ไม่ใช่ยอดที่แบ่งจ่ายงวดนี้
     const routingAmount = request.installment_target_amount ?? request.amount;
-    approvalRoutesApi.preview({ requester_position_id: request.requester_position_id, expense_type_id: request.expense_type_id, amount: routingAmount })
+    approvalRoutesApi.preview({ requester_position_id: request.requester_position_id, expense_type_id: request.expense_type_id, amount: routingAmount, request_kind: request.request_format })
       .then(setPreview).catch(() => setPreview(null));
   }, [step, request?.id, request?.amount, request?.installment_target_amount, request?.requester_position_id, request?.expense_type_id]);
 

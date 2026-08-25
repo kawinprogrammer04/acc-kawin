@@ -14,8 +14,8 @@ from reportlab.pdfgen import canvas
 from app.services.expense_finance_service import excel_bytes
 from app.services.expense_request_service import calculate_totals, render_payment_approval_pdf
 from app.services.expense_signature_service import _placement_box, _request_signature_slot, _stamp_pdf
-from app.services.approval_service import resolve_approver_for_position, routing_amount
-from app.routers.approvals import _employee_organization
+from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
+from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import _append_legacy_approval_steps
 
 
@@ -91,6 +91,28 @@ class ApprovalRoutingAmountTests(unittest.TestCase):
         req = request(amount=Decimal("1177"))
         self.assertIsNone(getattr(req, "installment_target_amount", None))
         self.assertEqual(routing_amount(req), Decimal("1177"))
+
+
+class ApprovalRequestKindTests(unittest.TestCase):
+    def test_hr_wildcard_is_excluded_from_direct_payment(self):
+        condition = str(_request_kind_filter("direct_payment"))
+        self.assertIn("approval_rules.source_system", condition)
+        self.assertIn("approval_rules.request_kind IS NULL", condition)
+
+    def test_hr_wildcard_remains_available_to_reimbursement(self):
+        condition = str(_request_kind_filter("reimbursement"))
+        self.assertNotIn("approval_rules.source_system", condition)
+        self.assertIn("approval_rules.request_kind IS NULL", condition)
+
+    def test_department_wide_hr_scope_keeps_lower_specificity(self):
+        scope = {
+            "company_name": None,
+            "department_name": "CRM",
+            "requester_position_name": None,
+            "expense_type_code": "GENERAL",
+            "request_kind": None,
+        }
+        self.assertEqual(_rule_specificity(scope, None), 2)
 
 
 class EmployeeApprovalResolutionTests(unittest.TestCase):

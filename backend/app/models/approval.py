@@ -88,6 +88,8 @@ class ApprovalRule(Base):
     source_system: Mapped[Optional[str]] = mapped_column(String(20))
     source_policy_id: Mapped[Optional[int]] = mapped_column(BigInteger)
     source_policy_name: Mapped[Optional[str]] = mapped_column(String(255))
+    logical_group_key: Mapped[Optional[str]] = mapped_column(String(100))
+    source_scope: Mapped[Optional[dict]] = mapped_column(JSONB)
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     specificity: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=3)
     request_kind: Mapped[Optional[str]] = mapped_column(String(30))
