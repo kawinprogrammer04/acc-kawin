@@ -9,8 +9,10 @@ The module is isolated from `expense_entries` and cash-flow transactions. Record
 3. For the `KAWIN_BROTHERS` deployment, sync the current HR matrix with
    `HR_DB_PASSWORD='...' php scripts/export_hr_approval_policies_sql.php | docker compose exec -T db psql -U postgres -d accounting_db -v ON_ERROR_STOP=1`.
    The sync creates a new active version, retires the previous active version, keeps
-   old versions for historical requests, and currently imports 86 expanded rules
-   with 131 approval steps.
+   old versions for historical requests, and currently imports all 80 logical HR
+   policies as 88 rules with 133 approval steps. The global OT and allowance
+   fallbacks are retained for parity with HR, but ACC's finance document form
+   continues to offer only reimbursement, advance, and direct payment.
 4. Assign production users to positions (or configure primary approvers), then run
    the preflight check before accepting requests.
 5. Run `python -m app.commands.expense_backfill_hashes` once (safe to replay).
@@ -23,7 +25,7 @@ The scheduler runs at 08:10 in `Asia/Bangkok`. Notification keys are unique per 
 The migration is additive and preserves legacy request/attachment identifiers. Legacy `approved` requests become `ready_to_pay`; drafts remain drafts.
 
 `expense_preflight` defaults to company `KAWIN_BROTHERS` and the current HR-synced
-matrix of 86 active rules. Set `EXPENSE_EXPECTED_ACTIVE_RULES` when HR publishes
+matrix of 88 active rules. Set `EXPENSE_EXPECTED_ACTIVE_RULES` when HR publishes
 a new matrix with a different expanded rule count.
 Deployments with a different baseline can set `EXPENSE_PRIMARY_COMPANY_CODE` and
 `EXPENSE_EXPECTED_ACTIVE_RULES` for the one-off preflight command.

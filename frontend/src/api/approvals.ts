@@ -55,11 +55,11 @@ export interface RuleStep {
 
 export interface Rule {
   id: number;
-  requester_position_id: number;
+  requester_position_id?: number | null;
   requester_position_name?: string;
   requester_department_id?: number | null;
   requester_department_name?: string | null;
-  expense_type_id: number;
+  expense_type_id?: number | null;
   expense_type_name?: string;
   amount_min: number;
   amount_max?: number | null;
@@ -322,8 +322,8 @@ export const rulesApi = {
   create: (
     versionId: number,
     data: {
-      requester_position_id: number;
-      expense_type_id: number;
+      requester_position_id?: number | null;
+      expense_type_id?: number | null;
       amount_min: number;
       amount_max?: number | null;
       name?: string | null;
@@ -344,8 +344,8 @@ export const rulesApi = {
     }
   ) => api.post(`/approval-policy-versions/${versionId}/rules`, data).then((r) => r.data),
   update: (ruleId: number, data: {
-    requester_position_id?: number;
-    expense_type_id?: number;
+    requester_position_id?: number | null;
+    expense_type_id?: number | null;
     amount_min?: number;
     amount_max?: number | null;
     name?: string | null;

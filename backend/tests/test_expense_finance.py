@@ -94,6 +94,16 @@ class ApprovalRoutingAmountTests(unittest.TestCase):
 
 
 class ApprovalRequestKindTests(unittest.TestCase):
+    def test_hr_allowance_uses_its_exact_global_fallback(self):
+        condition = str(_request_kind_filter("allowance"))
+        self.assertIn("approval_rules.request_kind", condition)
+        self.assertNotIn("approval_rules.request_kind IS NULL", condition)
+
+    def test_hr_ot_uses_its_exact_global_fallback(self):
+        condition = str(_request_kind_filter("ot"))
+        self.assertIn("approval_rules.request_kind", condition)
+        self.assertNotIn("approval_rules.request_kind IS NULL", condition)
+
     def test_hr_wildcard_is_excluded_from_direct_payment(self):
         condition = str(_request_kind_filter("direct_payment"))
         self.assertIn("approval_rules.source_system", condition)

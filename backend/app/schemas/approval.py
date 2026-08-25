@@ -108,12 +108,12 @@ class RuleStepIn(BaseModel):
 
 
 class RuleCreate(BaseModel):
-    requester_position_id: int
-    expense_type_id: int
+    requester_position_id: Optional[int] = Field(default=None, gt=0)
+    expense_type_id: Optional[int] = Field(default=None, gt=0)
     amount_min: Decimal = Field(ge=0)
     amount_max: Optional[Decimal] = None  # None = unbounded above
     name: Optional[str] = Field(default=None, max_length=255)
-    request_kind: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment)?$")
+    request_kind: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment|ot|allowance)?$")
     priority: int = Field(default=100, ge=1, le=999999)
     source_system: Optional[str] = Field(default=None, pattern="^(acc|hr)?$")
     source_policy_id: Optional[int] = None
@@ -123,12 +123,12 @@ class RuleCreate(BaseModel):
 
 
 class RuleUpdate(BaseModel):
-    requester_position_id: Optional[int] = None
-    expense_type_id: Optional[int] = None
+    requester_position_id: Optional[int] = Field(default=None, gt=0)
+    expense_type_id: Optional[int] = Field(default=None, gt=0)
     amount_min: Optional[Decimal] = Field(default=None, ge=0)
     amount_max: Optional[Decimal] = None
     name: Optional[str] = Field(default=None, max_length=255)
-    request_kind: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment)?$")
+    request_kind: Optional[str] = Field(default=None, pattern="^(reimbursement|advance|direct_payment|ot|allowance)?$")
     priority: Optional[int] = Field(default=None, ge=1, le=999999)
     is_active: Optional[bool] = None
     source_scope: Optional[dict[str, Any]] = None
@@ -148,11 +148,11 @@ class RuleStepOut(BaseModel):
 
 class RuleOut(BaseModel):
     id: int
-    requester_position_id: int
+    requester_position_id: Optional[int] = None
     requester_position_name: Optional[str] = None
     requester_department_id: Optional[int] = None
     requester_department_name: Optional[str] = None
-    expense_type_id: int
+    expense_type_id: Optional[int] = None
     expense_type_name: Optional[str] = None
     amount_min: Decimal
     amount_max: Optional[Decimal]

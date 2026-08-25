@@ -435,20 +435,20 @@ function groupRulesByDepartment(rules: Rule[], positions: Position[], department
 
     const bySig = new Map<string, Rule[]>();
     for (const r of rules) {
-      if (!memberIdSet.has(r.requester_position_id)) continue;
+      if (r.requester_position_id == null || !memberIdSet.has(r.requester_position_id)) continue;
       const sig = signature(r);
       const list = bySig.get(sig) ?? [];
       list.push(r);
       bySig.set(sig, list);
     }
     for (const [sig, group] of bySig) {
-      const requesterIds = new Set(group.map(r => r.requester_position_id));
+      const requesterIds = new Set(group.flatMap(r => r.requester_position_id == null ? [] : [r.requester_position_id]));
       if (requesterIds.size === memberIds.length && memberIds.every(id => requesterIds.has(id))) {
         rows.push({
           kind: "department",
           key: `dept-${dept.id}-${sig}`,
           department: dept,
-          memberNames: group.map(r => positionById.get(r.requester_position_id)?.name ?? r.requester_position_name ?? "-"),
+          memberNames: group.map(r => r.requester_position_id == null ? "ทุกตำแหน่ง" : positionById.get(r.requester_position_id)?.name ?? r.requester_position_name ?? "-"),
           rule: group[0],
         });
         for (const r of group) consumed.add(r.id);
