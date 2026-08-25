@@ -7,14 +7,15 @@ $pdo = new PDO('mysql:host=212.80.214.52;port=3306;dbname=kawin_hr;charset=utf8m
     [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
 
 $rows = $pdo->query(<<<'SQL'
-SELECT p.id policy_id, p.name policy_name, d.name department_name,
-       rp.name requester_position_name, et.code expense_type_code,
+SELECT p.id policy_id, p.name policy_name, c.name company_name, d.name department_name,
+       rp.name requester_position_name, et.code expense_type_code, et.name expense_type_name,
        p.request_kind, p.minimum_amount, p.maximum_amount, p.priority,
        s.id step_id, s.step_order, s.name step_name, s.target_type,
        s.target_id, s.approve_mode, tp.name target_position_name,
        COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.title_name, u.thai_first_name, u.thai_last_name)), ''), u.name) target_user_name
 FROM expense_approval_policies p
 JOIN expense_approval_policy_steps s ON s.expense_approval_policy_id=p.id
+LEFT JOIN companies c ON c.id=p.company_id
 LEFT JOIN departments d ON d.id=p.department_id
 LEFT JOIN positions rp ON rp.id=p.requester_position_id
 LEFT JOIN expense_request_types et ON et.id=p.expense_request_type_id
@@ -29,15 +30,15 @@ function lit($v): string { return $v === null ? 'NULL' : "'".str_replace("'", "'
 echo "BEGIN;\n";
 echo <<<'SQL'
 CREATE TEMP TABLE hr_policy_stage(
- policy_id bigint, policy_name text, department_name text, requester_position_name text,
- expense_type_code text, request_kind text, minimum_amount numeric, maximum_amount numeric,
+ policy_id bigint, policy_name text, company_name text, department_name text, requester_position_name text,
+ expense_type_code text, expense_type_name text, request_kind text, minimum_amount numeric, maximum_amount numeric,
  priority int, step_id bigint, step_order int, step_name text, target_type text,
  target_id bigint, approve_mode text, target_position_name text, target_user_name text
 ) ON COMMIT DROP;
 SQL;
 foreach ($rows as $r) {
     $vals=[];
-    foreach (['policy_id','policy_name','department_name','requester_position_name','expense_type_code','request_kind','minimum_amount','maximum_amount','priority','step_id','step_order','step_name','target_type','target_id','approve_mode','target_position_name','target_user_name'] as $k) $vals[]=lit($r[$k]);
+    foreach (['policy_id','policy_name','company_name','department_name','requester_position_name','expense_type_code','expense_type_name','request_kind','minimum_amount','maximum_amount','priority','step_id','step_order','step_name','target_type','target_id','approve_mode','target_position_name','target_user_name'] as $k) $vals[]=lit($r[$k]);
     echo "INSERT INTO hr_policy_stage VALUES (".implode(',', $vals).");\n";
 }
 echo <<<'SQL'
@@ -49,7 +50,16 @@ SELECT DISTINCT s.policy_id,s.policy_name,s.request_kind,s.minimum_amount,s.maxi
        s.priority,
        ((s.department_name IS NOT NULL)::int + (s.requester_position_name IS NOT NULL)::int
         + (s.expense_type_code IS NOT NULL)::int + (s.request_kind IS NOT NULL)::int)::smallint specificity,
-       rp.id requester_position_id, et.id expense_type_id
+       rp.id requester_position_id, et.id expense_type_id,
+       ('hr:' || s.policy_id::text) logical_group_key,
+       jsonb_build_object(
+         'company_name',s.company_name,
+         'department_name',s.department_name,
+         'requester_position_name',s.requester_position_name,
+         'expense_type_code',s.expense_type_code,
+         'expense_type_name',s.expense_type_name,
+         'request_kind',s.request_kind
+       ) source_scope
 FROM hr_policy_stage s
 JOIN positions rp ON rp.company_id=1 AND rp.is_active
  AND ((s.requester_position_name IS NOT NULL AND rp.name=s.requester_position_name)
@@ -93,10 +103,12 @@ SELECT id FROM approval_policy_versions WHERE company_id=1 AND status='draft'
 ORDER BY version_no DESC LIMIT 1;
 
 INSERT INTO approval_rules(policy_version_id,requester_position_id,expense_type_id,amount_range,
- source_system,source_policy_id,source_policy_name,priority,specificity,request_kind)
+ source_system,source_policy_id,source_policy_name,logical_group_key,source_scope,
+ priority,specificity,request_kind)
 SELECT v.id,e.requester_position_id,e.expense_type_id,
        numrange(e.minimum_amount,e.maximum_amount,'[]'),
-       'hr',e.policy_id,e.policy_name,e.priority,e.specificity,e.request_kind
+       'hr',e.policy_id,e.policy_name,e.logical_group_key,e.source_scope,
+       e.priority,e.specificity,e.request_kind
 FROM hr_policy_expanded e CROSS JOIN new_policy_version v;
 
 INSERT INTO approval_rule_steps(approval_rule_id,step_no,approver_position_id,name,approve_mode,target_type,target_user_id)

@@ -146,6 +146,14 @@ def _amount_range(amount_min: Decimal, amount_max: Optional[Decimal]) -> Range:
     return Range(amount_min, amount_max, bounds="(]")
 
 
+def _rule_specificity(source_scope: Optional[dict], request_kind: Optional[str]) -> int:
+    if not source_scope:
+        return 3 + int(request_kind is not None)
+    return sum(source_scope.get(field) is not None for field in (
+        "department_name", "requester_position_name", "expense_type_code", "request_kind",
+    ))
+
+
 async def _rule_to_out(db: AsyncSession, rule: ApprovalRule, company_id: int) -> RuleOut:
     steps = await approval_service.get_rule_steps(db, rule.id)
     position_rows = list((await db.execute(select(Position).where(Position.company_id == company_id))).scalars().all())
@@ -189,6 +197,8 @@ async def _rule_to_out(db: AsyncSession, rule: ApprovalRule, company_id: int) ->
         specificity=rule.specificity,
         source_system=rule.source_system,
         source_policy_id=rule.source_policy_id,
+        logical_group_key=rule.logical_group_key,
+        source_scope=rule.source_scope,
         is_active=rule.is_active,
         steps=[
             RuleStepOut(
@@ -636,10 +646,13 @@ async def create_rule(
         requester_position_id=payload.requester_position_id,
         expense_type_id=payload.expense_type_id,
         amount_range=_amount_range(payload.amount_min, payload.amount_max),
-        source_system="acc",
+        source_system=payload.source_system or "acc",
+        source_policy_id=payload.source_policy_id,
         source_policy_name=payload.name or f"{requester_position.name} / กฎอนุมัติ",
+        logical_group_key=payload.logical_group_key or f"acc:{uuid.uuid4()}",
+        source_scope=payload.source_scope,
         priority=payload.priority,
-        specificity=3 + int(payload.request_kind is not None),
+        specificity=_rule_specificity(payload.source_scope, payload.request_kind),
         request_kind=payload.request_kind,
     )
     db.add(rule)
@@ -701,7 +714,9 @@ async def update_rule(
         rule.priority = payload.priority
     if "is_active" in payload.model_fields_set and payload.is_active is not None:
         rule.is_active = payload.is_active
-    rule.specificity = 3 + int(rule.request_kind is not None)
+    if "source_scope" in payload.model_fields_set:
+        rule.source_scope = payload.source_scope
+    rule.specificity = _rule_specificity(rule.source_scope, rule.request_kind)
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -865,12 +880,13 @@ async def preview_route(
     requester_position_id: int,
     expense_type_id: int,
     amount: Decimal,
+    request_kind: Optional[str] = Query(default=None, pattern="^(reimbursement|advance|direct_payment)?$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
     result = await approval_service.preview_route(
-        db, company.id, requester_position_id, expense_type_id, amount
+        db, company.id, requester_position_id, expense_type_id, amount, request_kind
     )
     return result
 
