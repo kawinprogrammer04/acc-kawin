@@ -1,4 +1,5 @@
 """Accounting, settlement, finance settings, histories and notifications."""
+from calendar import monthrange
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -74,6 +75,161 @@ ACCOUNTING_STATUSES = [
     "ready_to_pay", "partially_paid", "paid", "settlement_due", "settlement_review",
     "completed",
 ]
+
+
+@router.get("/expense-requests/dashboard")
+async def expense_dashboard(
+    year: Optional[int] = None,
+    department_ids: Optional[list[int]] = Query(None),
+    position_ids: Optional[list[int]] = Query(None),
+    requester_ids: Optional[list[int]] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(accounting_view),
+    company: Company = Depends(get_current_company),
+):
+    """ACC-native expense dashboard mirroring the HR expense dashboard.
+
+    This endpoint intentionally reads only ACC tables.  HR is not queried and
+    no HR data is mutated by viewing this dashboard.
+    """
+    selected_year = year or datetime.now(timezone.utc).year
+    request_query = select(ExpenseRequest).where(
+        ExpenseRequest.company_id == company.id,
+        func.extract("year", ExpenseRequest.created_at) == selected_year,
+    )
+    if department_ids:
+        request_query = request_query.where(ExpenseRequest.department_id.in_(department_ids))
+    if position_ids:
+        request_query = request_query.where(ExpenseRequest.requester_position_id.in_(position_ids))
+    if requester_ids:
+        request_query = request_query.where(ExpenseRequest.requester_user_id.in_(requester_ids))
+
+    rows = list((await db.execute(request_query)).scalars().all())
+    status_groups = {
+        "requested": ["draft", "returned_for_correction"],
+        "pending_approval": ["pending_approval", "pending_adjustment_approval"],
+        "approved": ["approved", "ready_to_pay", "settlement_due", "settlement_review"],
+        "paid": ["completed"],
+        "cancelled": ["cancelled"],
+    }
+    status_counts = {
+        key: sum(row.status in statuses for row in rows)
+        for key, statuses in status_groups.items()
+    }
+    used_statuses = set(status_groups["approved"] + status_groups["paid"])
+
+    # ACC's generic budgets table supports monthly, quarterly, yearly and
+    # custom ranges. Allocate each active budget to the months it covers so
+    # the dashboard remains useful without introducing an HR-specific table.
+    budget_rows = (await db.execute(
+        text("""
+            SELECT period_type, start_date, end_date, amount
+            FROM budgets
+            WHERE company_id = :company_id AND is_active = TRUE
+              AND budget_type IN ('expense', 'overall')
+              AND start_date <= :year_end AND end_date >= :year_start
+        """),
+        {
+            "company_id": company.id,
+            "year_start": date(selected_year, 1, 1),
+            "year_end": date(selected_year, 12, 31),
+        },
+    )).mappings().all()
+    monthly_budget = [0.0] * 12
+    for budget in budget_rows:
+        start = max(budget["start_date"], date(selected_year, 1, 1))
+        end = min(budget["end_date"], date(selected_year, 12, 31))
+        covered = [month for month in range(1, 13) if
+                   date(selected_year, month, monthrange(selected_year, month)[1]) >= start and
+                   date(selected_year, month, 1) <= end]
+        if not covered:
+            continue
+        amount = float(budget["amount"] or 0)
+        allocation = amount / (12 if budget["period_type"] == "yearly" else
+                               3 if budget["period_type"] == "quarterly" else
+                               len(covered) if budget["period_type"] == "custom" else 1)
+        for month in covered:
+            monthly_budget[month - 1] += allocation
+
+    month_labels = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.",
+                    "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."]
+    monthly_used = [0.0] * 12
+    category_totals: dict[int, float] = {}
+    for row in rows:
+        if row.status not in used_statuses:
+            continue
+        amount = float(row.gross_amount or row.amount or 0)
+        month = row.created_at.month if row.created_at else row.request_date.month
+        monthly_used[month - 1] += amount
+        category_totals[row.expense_type_id] = category_totals.get(row.expense_type_id, 0.0) + amount
+
+    type_ids = set(category_totals)
+    type_names = dict((await db.execute(select(ExpenseType.id, ExpenseType.name).where(
+        ExpenseType.id.in_(type_ids)
+    ))).all()) if type_ids else {}
+    category_usage = [
+        {"category": type_names.get(type_id, f"ประเภท #{type_id}"), "total": total}
+        for type_id, total in sorted(category_totals.items(), key=lambda item: item[1], reverse=True)
+    ]
+    monthly = [
+        {
+            "month": index + 1,
+            "label": month_labels[index],
+            "budget": monthly_budget[index],
+            "used": monthly_used[index],
+            "remaining": monthly_budget[index] - monthly_used[index],
+            "over_budget": monthly_used[index] > monthly_budget[index],
+        }
+        for index in range(12)
+    ]
+
+    all_years = (await db.execute(select(func.extract("year", ExpenseRequest.created_at)).where(
+        ExpenseRequest.company_id == company.id
+    ).distinct().order_by(func.extract("year", ExpenseRequest.created_at).desc()))).scalars().all()
+    available_years = sorted({int(value) for value in all_years if value is not None} | {selected_year}, reverse=True)
+
+    option_query = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
+    option_rows = list((await db.execute(option_query)).scalars().all())
+    department_ids_used = {row.department_id for row in option_rows if row.department_id is not None}
+    position_ids_used = {row.requester_position_id for row in option_rows if row.requester_position_id is not None}
+    requester_ids_used = {row.requester_user_id for row in option_rows if row.requester_user_id is not None}
+    departments = [
+        {"id": item[0], "name": item[1]}
+        for item in (await db.execute(select(Department.id, Department.name).where(
+            Department.id.in_(department_ids_used)
+        ).order_by(Department.name))).all()
+    ] if department_ids_used else []
+    positions = [
+        {"id": item[0], "name": item[1]}
+        for item in (await db.execute(select(Position.id, Position.name).where(
+            Position.id.in_(position_ids_used)
+        ).order_by(Position.name))).all()
+    ] if position_ids_used else []
+    users = [
+        {"id": item[0], "name": item[1] or item[2]}
+        for item in (await db.execute(select(User.id, User.full_name, User.username).where(
+            User.id.in_(requester_ids_used)
+        ).order_by(User.full_name, User.username))).all()
+    ] if requester_ids_used else []
+
+    total_budget = sum(item["budget"] for item in monthly)
+    total_used = sum(item["used"] for item in monthly)
+    return {
+        "year": selected_year,
+        "available_years": available_years,
+        "status_counts": status_counts,
+        "monthly": monthly,
+        "total_budget": total_budget,
+        "total_used": total_used,
+        "total_remaining": total_budget - total_used,
+        "category_usage": category_usage,
+        "options": {"departments": departments, "positions": positions, "requesters": users},
+        "selected": {
+            "department_ids": department_ids or [],
+            "position_ids": position_ids or [],
+            "requester_ids": requester_ids or [],
+        },
+    }
 
 
 def _accounting_query(
