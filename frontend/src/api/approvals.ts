@@ -586,6 +586,31 @@ export const expenseAccountingApi = {
   issueWht: (id: string) => api.post(`/expense-requests/${id}/wht-certificate`).then(r => r.data),
 };
 
+export interface ExpenseDashboardOption { id: number; name: string }
+export interface ExpenseDashboardMonthly {
+  month: number; label: string; budget: number; used: number; remaining: number; over_budget: boolean;
+}
+export interface ExpenseDashboardData {
+  year: number;
+  available_years: number[];
+  status_counts: Record<"requested" | "pending_approval" | "approved" | "paid" | "cancelled", number>;
+  monthly: ExpenseDashboardMonthly[];
+  total_budget: number;
+  total_used: number;
+  total_remaining: number;
+  category_usage: Array<{ category: string; total: number }>;
+  options: {
+    departments: ExpenseDashboardOption[];
+    positions: ExpenseDashboardOption[];
+    requesters: ExpenseDashboardOption[];
+  };
+}
+
+export const expenseDashboardApi = {
+  get: (params: { year: number; department_ids?: number[]; position_ids?: number[]; requester_ids?: number[] }) =>
+    api.get<ExpenseDashboardData>("/expense-requests/dashboard", { params }).then(r => r.data),
+};
+
 export interface Department { id: number; code?: string | null; name: string; manager_user_id?: number | null; is_active: boolean }
 export interface AttachmentRequirement { id: number; expense_type_id: number; code: string; name: string; description?: string; is_required: boolean; requires_signature: boolean; allowed_mime_types: string[]; max_file_size: number; sort_order: number; is_active: boolean }
 export const expenseSettingsApi = {
