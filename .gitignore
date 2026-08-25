@@ -3,6 +3,7 @@
 .env.production
 .env.local
 .env.*
+hr-sync.env
 !.env.example
 !.env.local.example
 !.env.production.example
@@ -34,6 +35,7 @@ frontend/dist/
 
 # DB backups (local only)
 *_backup_*.sql
+pre-deploy-backup-*.dump
 
 # Generated local exports / scratch files
 output/

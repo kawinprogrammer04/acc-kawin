@@ -148,7 +148,7 @@ class ExpenseRequest(Base):
     id: Mapped[str] = mapped_column(PG_UUID(as_uuid=False), primary_key=True, server_default=func.uuid_generate_v4())
     request_no: Mapped[Optional[str]] = mapped_column(
         String(30), unique=True,
-        server_default=text("'EXP-' || to_char(CURRENT_DATE, 'YYYYMM') || '-' || lpad(nextval('expense_request_no_seq')::text, 6, '0')"),
+        server_default=text("'ACC-EXP-' || to_char(CURRENT_DATE, 'YYYYMM') || '-' || lpad(nextval('acc_expense_request_no_seq')::text, 6, '0')"),
     )
     company_id: Mapped[int] = mapped_column(Integer, ForeignKey("companies.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

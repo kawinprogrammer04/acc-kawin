@@ -529,6 +529,12 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
             )}
           </>
         )}
+        {user?.is_platform_admin && (
+          <>
+            <Separator />
+            <LeafLink item={{ key: "settings", label: "ซิงก์ข้อมูล HR", href: "/settings/hr-sync", icon: RefreshCcw }} />
+          </>
+        )}
       </nav>
 
       <Separator />

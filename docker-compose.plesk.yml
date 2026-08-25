@@ -1,0 +1,291 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# Finn Accounting — Plesk production stack
+#
+# Plesk terminates HTTPS (Let's Encrypt) on the public domain and reverse-proxies
+# to 127.0.0.1:${APP_PORT:-18080} on this host. This stack does NOT bind 80/443
+# directly — Plesk's own Apache/nginx already owns those ports for all vhosts.
+#
+# Usage on the server:
+#   cp .env.production.example .env   # fill in secrets
+#   docker compose -f docker-compose.plesk.yml up -d --build
+# ══════════════════════════════════════════════════════════════════════════════
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: "5"
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: acc_db
+    restart: unless-stopped
+    logging: *default-logging
+    shm_size: 256mb
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER: ${POSTGRES_USER:-accounting_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/01_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./db/02_seed_chart_of_accounts.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+      - ./db/03_views_and_functions.sql:/docker-entrypoint-initdb.d/03_views.sql:ro
+      - ./db/05_cashflow_tables.sql:/docker-entrypoint-initdb.d/05_cashflow.sql:ro
+      - ./db/06_multi_company.sql:/docker-entrypoint-initdb.d/06_multi_company.sql:ro
+      - ./db/07_runtime_fixes.sql:/docker-entrypoint-initdb.d/07_runtime_fixes.sql:ro
+      - ./scripts/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    command: >
+      postgres
+        -c shared_buffers=128MB
+        -c effective_cache_size=384MB
+        -c maintenance_work_mem=64MB
+        -c checkpoint_completion_target=0.9
+        -c wal_buffers=4MB
+        -c default_statistics_target=100
+        -c max_connections=100
+        -c log_min_duration_statement=500
+        -c log_checkpoints=on
+        -c hba_file=/etc/postgresql/pg_hba.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-accounting_app} -d ${POSTGRES_DB:-accounting_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # Loopback-only — reach it from your machine via an SSH tunnel, never
+    # expose 5432 directly to the internet.
+    ports:
+      - "127.0.0.1:5432:5432"
+    networks:
+      - backend_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: runtime
+    image: finn-accounting-backend:production
+    container_name: acc_backend
+    restart: unless-stopped
+    logging: *default-logging
+    extra_hosts:
+      - "dev.crm-kawin.test:host-gateway"
+      # Lets the container reach Ollama running natively on this host — on
+      # Linux (this Plesk host) the mapping must be explicit.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db:
+        condition: service_healthy
+      tax_invoice_renderer:
+        condition: service_healthy
+    environment:
+      APP_ENV:                    ${APP_ENV:-production}
+      DATABASE_URL:               ${DATABASE_URL:-}
+      MIGRATION_DATABASE_URL:     ${MIGRATION_DATABASE_URL:-}
+      DATABASE_HOST:              ${DATABASE_HOST:-db}
+      POSTGRES_DB:                ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER:              ${POSTGRES_USER:-accounting_app}
+      POSTGRES_PASSWORD:          ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      SECRET_KEY:                 ${SECRET_KEY:?Set SECRET_KEY in .env}
+      ALGORITHM:                  ${ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      COMPANY_NAME:               ${COMPANY_NAME:-บริษัท ของคุณ จำกัด}
+      COMPANY_TAX_ID:             ${COMPANY_TAX_ID:-}
+      VAT_RATE:                   ${VAT_RATE:-7.0}
+      DEBUG:                      ${DEBUG:-false}
+      CRM_KAWIN_BASE_URL:         ${CRM_KAWIN_BASE_URL:-}
+      CRM_KAWIN_ORDERS_PATH:      ${CRM_KAWIN_ORDERS_PATH:-/api/accounting/get_list_order.php}
+      CRM_KAWIN_API_KEY:          ${CRM_KAWIN_API_KEY:-}
+      CRM_KAWIN_TIMEOUT_SECONDS:  ${CRM_KAWIN_TIMEOUT_SECONDS:-15}
+      HR_KAWIN_BASE_URL:          ${HR_KAWIN_BASE_URL:-}
+      HR_KAWIN_ME_PATH:           ${HR_KAWIN_ME_PATH:-/api/employees/me}
+      HR_KAWIN_TIMEOUT_SECONDS:   ${HR_KAWIN_TIMEOUT_SECONDS:-10}
+      # Read-only HR → ACC sync. Host paths default to tracked empty directories
+      # so local/dev compose remains usable; production records the source
+      # paths in .env once and keeps both mounts read-only forever.
+      HR_SYNC_DB_HOST:             ${HR_SYNC_DB_HOST:-}
+      HR_SYNC_DB_PORT:             ${HR_SYNC_DB_PORT:-3306}
+      HR_SYNC_DB_NAME:             ${HR_SYNC_DB_NAME:-kawin_hr}
+      HR_SYNC_DB_USER:             ${HR_SYNC_DB_USER:-}
+      HR_SYNC_DB_PASSWORD:         ${HR_SYNC_DB_PASSWORD:-}
+      HR_SYNC_FROM_DATE:           ${HR_SYNC_FROM_DATE:-2026-01-01}
+      HR_SYNC_STORAGE_ROOT:        /mnt/hr-storage
+      HR_SYNC_APP_KEY_FILE:        /run/secrets/hr-sync/hr_app_key
+      HR_SYNC_BACKUP_DIR:          /app/uploads/hr_sync_backups
+      HR_SYNC_BACKUP_KEEP:         ${HR_SYNC_BACKUP_KEEP:-10}
+      TAX_INVOICE_SOFFICE_PATH:   ${TAX_INVOICE_SOFFICE_PATH:-}
+      TAX_INVOICE_PDF_TIMEOUT_SECONDS: ${TAX_INVOICE_PDF_TIMEOUT_SECONDS:-60}
+      DOMPDF_RENDERER_URL:        ${DOMPDF_RENDERER_URL:-http://tax_invoice_renderer:8090}
+      DOMPDF_TIMEOUT_SECONDS:     ${DOMPDF_TIMEOUT_SECONDS:-30}
+      XDG_CACHE_HOME:             /tmp/.cache
+      OLLAMA_URL:                 ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_VISION_MODEL:        ${OLLAMA_VISION_MODEL:-qwen2.5vl:7b}
+    volumes:
+      - uploads:/app/uploads
+      - ${HR_SYNC_STORAGE_HOST_PATH:-./hr-sync-storage-empty}:/mnt/hr-storage:ro
+      - ${HR_SYNC_APP_KEY_HOST_FILE:-./hr-sync-secrets-empty/hr_app_key}:/run/secrets/hr-sync/hr_app_key:ro
+    # Keep the backend non-root while allowing it to read group-readable HR
+    # storage. The one-time installer records the HR storage directory's GID.
+    group_add:
+      - "${HR_SYNC_STORAGE_HOST_GID:-65534}"
+    expose:
+      - "8000"
+    # The image's own CMD (/app/entrypoint.sh) already runs `alembic upgrade
+    # head` before starting Uvicorn — do not override it with a bare uvicorn
+    # command, or schema migrations silently stop running on every deploy.
+    # --proxy-headers/--forwarded-allow-ips is required here (unlike the
+    # default entrypoint) because Plesk's Apache/nginx sits in front of this
+    # container and forwards X-Forwarded-* headers.
+    command:
+      - sh
+      - -c
+      - >-
+        alembic upgrade head &&
+        exec uvicorn app.main:app
+        --host 0.0.0.0
+        --port 8000
+        --workers ${WEB_CONCURRENCY:-2}
+        --no-access-log
+        --proxy-headers
+        --forwarded-allow-ips=*
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - backend_net
+
+  # ── Tax Invoice PDF Renderer (PHP + Dompdf) ───────────────────────────────
+  tax_invoice_renderer:
+    build:
+      context: ./backend
+      dockerfile: dompdf_renderer/Dockerfile
+    image: finn-accounting-tax-invoice-renderer:production
+    container_name: acc_tax_invoice_renderer
+    restart: unless-stopped
+    logging: *default-logging
+    expose:
+      - "8090"
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(@file_get_contents('http://127.0.0.1:8090/health') === 'ok' ? 0 : 1);"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - backend_net
+
+  # ── Credit Statement Matcher (embedded under /statement) ───────────────────
+  # Source lives in ./credit_statement_matcher — built here so the same
+  # `docker compose -f docker-compose.plesk.yml up` brings it online behind
+  # this stack's Nginx, reachable at https://${DOMAIN}/statement/
+  statement:
+    build:
+      context: ./credit_statement_matcher
+      dockerfile: Dockerfile
+    image: finn-accounting-statement:production
+    container_name: acc_statement
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      # Served behind Nginx under a sub-path → prefix every generated link
+      ROOT_PATH: /statement
+      PORT: 8010
+      DATABASE_HOST: db
+      DATABASE_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-accounting_db}
+      POSTGRES_USER: ${POSTGRES_USER:-accounting_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      STATEMENT_DATABASE_URL: ${STATEMENT_DATABASE_URL:-}
+      UPLOAD_DIR: /tmp/statement_uploads
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    # Not exposed externally — only Nginx (frontend) reaches it on backend_net
+    expose:
+      - "8010"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8010/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks:
+      - backend_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: runtime
+    image: finn-accounting-frontend:production
+    container_name: acc_frontend
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      backend:
+        condition: service_healthy
+      statement:
+        condition: service_healthy
+    # Only reachable from localhost — Plesk's nginx reverse-proxies to this port.
+    ports:
+      - "127.0.0.1:${APP_PORT:-18080}:80"
+    volumes:
+      - ./nginx/plesk-conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/snippets:/etc/nginx/snippets:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - nginx_logs:/var/log/nginx
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - backend_net
+      - frontend_net
+
+  db_backup:
+    image: postgres:16-alpine
+    container_name: acc_db_backup
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGDATABASE: ${POSTGRES_DB:-accounting_db}
+      PGUSER: ${POSTGRES_USER:-accounting_app}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-30}
+    volumes:
+      - backups:/backups
+      - ./scripts/backup.sh:/backup.sh:ro
+    command: >
+      sh -c "echo '0 2 * * * sh /backup.sh >> /var/log/backup.log 2>&1' | crontab - && crond -f -l 2"
+    networks:
+      - backend_net
+
+networks:
+  backend_net:
+    driver: bridge
+  frontend_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: finn_accounting_postgres_data
+  uploads:
+    name: finn_accounting_uploads
+  backups:
+    name: finn_accounting_backups
+  nginx_logs:
+    name: finn_accounting_nginx_logs
