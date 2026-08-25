@@ -224,16 +224,42 @@ class AccountingApprovalTimelineTests(unittest.TestCase):
 class ExpenseExportTests(unittest.TestCase):
     def test_formula_injection_is_escaped(self):
         row = SimpleNamespace(
-            request_no="=HYPERLINK(\"bad\")", request_date=SimpleNamespace(isoformat=lambda: "2026-08-11"),
-            requester_name_snapshot="+SUM(1,1)", title="@cmd", request_format="reimbursement", status="completed",
+            id="request-1", request_no="=HYPERLINK(\"bad\")", submitted_at=None,
+            request_format="reimbursement", expense_type_id=1, company_name_snapshot="Test Co",
+            department_id=1, department_name_snapshot="Finance", requester_name_snapshot="+SUM(1,1)",
+            recipient_name="Recipient", bank_name="Test Bank", bank_account_name="Tester",
+            bank_account_number_encrypted=None, title="@cmd", withholding_decision="none", status="completed",
             gross_amount=1, vat_amount=0, withholding_amount=0, net_amount=1, paid_amount=1, remaining_amount=0,
-            bank_name="Test Bank", bank_account_name="Tester", bank_account_number_encrypted=None,
         )
-        workbook = load_workbook(io.BytesIO(excel_bytes([row])))
+        workbook = load_workbook(io.BytesIO(excel_bytes(
+            [row], expense_type_names={1: "General"}, department_names={1: "Finance"},
+        )))
         values = list(workbook.active.values)[1]
         self.assertTrue(values[0].startswith("'="))
-        self.assertTrue(values[2].startswith("'+"))
-        self.assertTrue(values[4].startswith("'@"))  # title, now one column later than the bank-info column
+        self.assertTrue(values[7].startswith("'+"))
+        self.assertTrue(values[6].startswith("'@"))
+
+    def test_columns_match_hr_and_keep_acc_item_column(self):
+        row = SimpleNamespace(
+            id="request-1", request_no="ACC-EXP-202608-000001", submitted_at=None,
+            request_format="reimbursement", expense_type_id=1, company_name_snapshot="Test Co",
+            department_id=1, department_name_snapshot="Finance", requester_name_snapshot="Requester",
+            recipient_name="Recipient", bank_name="Test Bank", bank_account_name="Tester",
+            bank_account_number_encrypted=None, title="รายการของ ACC", withholding_decision=None,
+            status="ready_to_pay", gross_amount=100, vat_amount=0, withholding_amount=3,
+            net_amount=97, paid_amount=0, remaining_amount=97,
+        )
+        workbook = load_workbook(io.BytesIO(excel_bytes(
+            [row], expense_type_names={1: "General"}, department_names={1: "Finance"},
+        )))
+        headings = list(workbook.active.values)[0]
+        self.assertEqual(headings, (
+            "เลขที่คำขอ", "วันที่ส่ง", "ประเภทคำขอ", "หมวดค่าใช้จ่าย", "บริษัท", "แผนก", "รายการ",
+            "ผู้ขอ", "ผู้รับเงิน", "ธนาคาร", "ชื่อบัญชี", "เลขบัญชี", "ยอดอนุมัติ",
+            "ภาษีหัก ณ ที่จ่าย", "ผลพิจารณาภาษี", "ยอดโอนสุทธิ", "ยอดส่วนต่างเงินทดรอง",
+            "จ่ายแล้ว", "คงเหลือ", "สถานะ", "วันที่จ่ายล่าสุด", "เลขอ้างอิง",
+        ))
+        self.assertEqual(list(workbook.active.values)[1][6], "รายการของ ACC")
 
 
 class ExpenseRequestPdfTests(unittest.TestCase):

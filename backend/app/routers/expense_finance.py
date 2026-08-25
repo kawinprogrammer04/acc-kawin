@@ -464,7 +464,51 @@ async def export_accounting(
         query=query,
     )
     rows = (await db.execute(stmt.order_by(ExpenseRequest.created_at.desc()))).scalars().all()
-    data = expense_finance_service.excel_bytes(list(rows))
+    request_ids = [row.id for row in rows]
+    type_ids = {row.expense_type_id for row in rows}
+    department_ids = {row.department_id for row in rows if row.department_id is not None}
+
+    expense_type_names = dict((await db.execute(
+        select(ExpenseType.id, ExpenseType.name).where(
+            ExpenseType.company_id == company.id,
+            ExpenseType.id.in_(type_ids),
+        )
+    )).all()) if type_ids else {}
+    department_names = dict((await db.execute(
+        select(Department.id, Department.name).where(
+            Department.company_id == company.id,
+            Department.id.in_(department_ids),
+        )
+    )).all()) if department_ids else {}
+    payment_rows = (await db.execute(
+        select(ExpensePayment).where(
+            ExpensePayment.company_id == company.id,
+            ExpensePayment.expense_request_id.in_(request_ids),
+            ExpensePayment.voided_at.is_(None),
+        ).order_by(ExpensePayment.paid_at, ExpensePayment.created_at)
+    )).scalars().all() if request_ids else []
+    payments_by_request_id: dict[str, list[ExpensePayment]] = {}
+    for payment in payment_rows:
+        payments_by_request_id.setdefault(payment.expense_request_id, []).append(payment)
+
+    settlement_rows = (await db.execute(
+        select(ExpenseSettlement).where(
+            ExpenseSettlement.company_id == company.id,
+            ExpenseSettlement.expense_request_id.in_(request_ids),
+        ).order_by(ExpenseSettlement.created_at.desc())
+    )).scalars().all() if request_ids else []
+    settlements_by_request_id: dict[str, ExpenseSettlement] = {}
+    for settlement in settlement_rows:
+        settlements_by_request_id.setdefault(settlement.expense_request_id, settlement)
+
+    data = expense_finance_service.excel_bytes(
+        list(rows),
+        expense_type_names=expense_type_names,
+        department_names=department_names,
+        payments_by_request_id=payments_by_request_id,
+        settlements_by_request_id=settlements_by_request_id,
+        company_name=company.name_th,
+    )
     return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": "attachment; filename=expense-requests.xlsx"})
 
