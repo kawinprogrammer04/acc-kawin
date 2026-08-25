@@ -50,7 +50,7 @@ const cashflowNav: NavItem[] = [
   { key: "budgets", label: "งบประมาณ", href: "/budgets", icon: PiggyBank },
   {
     key: "expense_requests", label: "เบิกเงิน / ขออนุมัติ", href: "/expense-requests", icon: Send,
-    excludePrefixes: ["/expense-requests/accounting", "/expense-requests/settings"],
+    excludePrefixes: ["/expense-requests/accounting", "/expense-requests/dashboard", "/expense-requests/settings"],
   },
   { key: "approvals_inbox", label: "รออนุมัติของฉัน", href: "/approvals/inbox", icon: Inbox },
   { key: "activity_logs", label: "Activity Log", href: "/activity-logs", icon: ClipboardList },
@@ -266,7 +266,7 @@ function menuToLeaf(menu: AppMenu): NavLeaf | null {
     // finance sections. Without this exclusion, NavLink marks both the
     // parent request menu and the accounting/settings menu as active.
     excludePrefixes: menu.key === "expense_requests"
-      ? ["/expense-requests/accounting", "/expense-requests/settings"]
+      ? ["/expense-requests/accounting", "/expense-requests/dashboard", "/expense-requests/settings"]
       : undefined,
   };
 }
