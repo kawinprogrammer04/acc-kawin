@@ -103,6 +103,19 @@ services:
       HR_KAWIN_BASE_URL:          ${HR_KAWIN_BASE_URL:-}
       HR_KAWIN_ME_PATH:           ${HR_KAWIN_ME_PATH:-/api/employees/me}
       HR_KAWIN_TIMEOUT_SECONDS:   ${HR_KAWIN_TIMEOUT_SECONDS:-10}
+      # Read-only HR → ACC sync. Host paths default to tracked empty directories
+      # so local/dev compose remains usable; production records the source
+      # paths in .env once and keeps both mounts read-only forever.
+      HR_SYNC_DB_HOST:             ${HR_SYNC_DB_HOST:-}
+      HR_SYNC_DB_PORT:             ${HR_SYNC_DB_PORT:-3306}
+      HR_SYNC_DB_NAME:             ${HR_SYNC_DB_NAME:-kawin_hr}
+      HR_SYNC_DB_USER:             ${HR_SYNC_DB_USER:-}
+      HR_SYNC_DB_PASSWORD:         ${HR_SYNC_DB_PASSWORD:-}
+      HR_SYNC_FROM_DATE:           ${HR_SYNC_FROM_DATE:-2026-01-01}
+      HR_SYNC_STORAGE_ROOT:        /mnt/hr-storage
+      HR_SYNC_APP_KEY_FILE:        /run/secrets/hr-sync/hr_app_key
+      HR_SYNC_BACKUP_DIR:          /app/uploads/hr_sync_backups
+      HR_SYNC_BACKUP_KEEP:         ${HR_SYNC_BACKUP_KEEP:-10}
       TAX_INVOICE_SOFFICE_PATH:   ${TAX_INVOICE_SOFFICE_PATH:-}
       TAX_INVOICE_PDF_TIMEOUT_SECONDS: ${TAX_INVOICE_PDF_TIMEOUT_SECONDS:-60}
       DOMPDF_RENDERER_URL:        ${DOMPDF_RENDERER_URL:-http://tax_invoice_renderer:8090}
@@ -112,6 +125,12 @@ services:
       OLLAMA_VISION_MODEL:        ${OLLAMA_VISION_MODEL:-qwen2.5vl:7b}
     volumes:
       - uploads:/app/uploads
+      - ${HR_SYNC_STORAGE_HOST_PATH:-./hr-sync-storage-empty}:/mnt/hr-storage:ro
+      - ${HR_SYNC_APP_KEY_HOST_FILE:-./hr-sync-secrets-empty/hr_app_key}:/run/secrets/hr-sync/hr_app_key:ro
+    # Keep the backend non-root while allowing it to read group-readable HR
+    # storage. The one-time installer records the HR storage directory's GID.
+    group_add:
+      - "${HR_SYNC_STORAGE_HOST_GID:-65534}"
     expose:
       - "8000"
     # The image's own CMD (/app/entrypoint.sh) already runs `alembic upgrade

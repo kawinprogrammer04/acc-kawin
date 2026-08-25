@@ -42,6 +42,7 @@ import { ExpenseSettingsPage } from "@/pages/ExpenseSettingsPage";
 import { RoleManagementPage } from "@/pages/RoleManagementPage";
 import { CrmCashflowStatementPage } from "@/pages/CrmCashflowStatementPage";
 import { CrmCashflowInvoicePage } from "@/pages/CrmCashflowInvoicePage";
+import { HrSyncPage } from "@/pages/HrSyncPage";
 
 function guarded(menuKey: string, page: JSX.Element) {
   return <RequirePermission menuKey={menuKey}>{page}</RequirePermission>;
@@ -117,6 +118,7 @@ export default function App() {
               <Route path="/approval-matrix" element={<Navigate to="/expense-requests/settings" replace />} />
               <Route path="/roles" element={guarded("roles", <RoleManagementPage />)} />
               <Route path="/settings" element={guarded("settings", <CompanySettingsPage />)} />
+              <Route path="/settings/hr-sync" element={guarded("settings", <HrSyncPage />)} />
               <Route path="/companies" element={guarded("companies", <CompaniesPage />)} />
               <Route path="/documents" element={guarded("documents", <DocumentsPage />)} />
               <Route path="/statement" element={<GuardedStatementPage />} />

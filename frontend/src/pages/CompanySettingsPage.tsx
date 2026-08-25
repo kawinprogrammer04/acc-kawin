@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { Building2, KeyRound, Loader2, Plug, Save } from "lucide-react";
+import { Building2, KeyRound, Loader2, Plug, RefreshCcw, Save } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { api, getApiErrorMessage } from "@/api/client";
+import { useAuth } from "@/context/AuthContext";
 
 interface CompanySettings {
   company_name: string;
@@ -31,6 +33,7 @@ const MONTHS = [
 ];
 
 export function CompanySettingsPage() {
+  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -182,6 +185,26 @@ export function CompanySettingsPage() {
 
         {/* Contact & System */}
         <div className="space-y-4">
+          {user?.is_platform_admin && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                  <RefreshCcw className="h-4 w-4" /> ซิงก์ข้อมูล HR
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="mb-3 text-sm text-muted-foreground">
+                  ตรวจสอบและนำผู้ใช้ รายการเบิก เอกสาร และเส้นทางอนุมัติล่าสุดจาก HR เข้า ACC
+                </p>
+                <Link
+                  to="/settings/hr-sync"
+                  className="inline-flex items-center rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                >
+                  เปิดหน้าซิงก์ข้อมูล
+                </Link>
+              </CardContent>
+            </Card>
+          )}
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-sm font-semibold">ติดต่อ</CardTitle>

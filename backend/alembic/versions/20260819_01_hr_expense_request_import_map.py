@@ -25,7 +25,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     op.execute("""
-        CREATE TABLE hr_expense_request_import_map (
+        CREATE TABLE IF NOT EXISTS hr_expense_request_import_map (
             hr_expense_request_id BIGINT PRIMARY KEY,
             expense_request_id UUID NOT NULL REFERENCES expense_requests(id) ON DELETE RESTRICT,
             source_status VARCHAR(50) NOT NULL,

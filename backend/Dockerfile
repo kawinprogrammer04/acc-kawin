@@ -13,6 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
+# Match the production PostgreSQL 16 server for pre-sync custom-format backups.
+FROM postgres:16-bookworm AS pg-client
+
 # ── Stage 2: runtime image ────────────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
@@ -27,17 +30,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fc-cache -fv && \
     rm -rf /var/lib/apt/lists/*
 
-# Non-root user
-RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser
+# Stable non-root UID/GID: existing uploads stay readable across image rebuilds,
+# and the one-time installer can grant this identity access to the mounted key.
+RUN groupadd --system --gid 999 appuser && \
+    useradd --system --uid 999 --gid appuser -d /app -s /sbin/nologin appuser
 
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
+COPY --from=pg-client /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump
 COPY --chown=appuser:appuser . .
 
-RUN mkdir -p /app/uploads /tmp/.cache/fontconfig && \
+RUN mkdir -p /app/uploads /tmp/.cache/fontconfig /run/secrets/hr-sync && \
     chmod +x /app/entrypoint.sh && \
-    chown -R appuser:appuser /app/uploads /tmp/.cache
+    chown -R appuser:appuser /app/uploads /tmp/.cache /run/secrets/hr-sync
 
 USER appuser
 
