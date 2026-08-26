@@ -1038,9 +1038,14 @@ async def list_expense_requests(
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
-    q = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
-    if scope == "mine" or not await _can_view_all_company_requests(db, current_user, company.id):
-        q = q.where(ExpenseRequest.requester_user_id == current_user.id)
+    # This endpoint backs the personal "คำขอเบิกค่าใช้จ่าย" page. Keep the
+    # legacy scope parameter for API compatibility, but never broaden this
+    # personal list—even platform/super admins must use the dedicated
+    # accounting or approval endpoints to inspect another employee's request.
+    q = select(ExpenseRequest).where(
+        ExpenseRequest.company_id == company.id,
+        ExpenseRequest.requester_user_id == current_user.id,
+    )
     if status:
         # เมื่อผู้ใช้เลือกสถานะ ให้แสดงสถานะนั้นตามปกติ
         q = q.where(ExpenseRequest.status == status)
