@@ -11,6 +11,13 @@ recreate intentionally removed requests. A compact audit snapshot is retained
 in `expense_request_purge_log` and the apply command requires both the exact
 current candidate count and the name of a completed backup.
 
+The regular HR Sync also treats the same 121-number file as a strict expense
+request allowlist. It imports or updates only those approved HR requests and
+their items, attachments, approval trail, payment summary and settlement data.
+ACC-native request numbers (including `ACC-EXP...`) never enter the HR import
+path and remain unchanged. Shared HR user and position data is still read and
+updated because the approved requests depend on it.
+
 ## 1. Deploy and back up (root)
 
 ```bash
