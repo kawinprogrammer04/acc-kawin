@@ -109,28 +109,22 @@ function RequestTableRow({ item, onCancel }: { item: ExpenseRequest; onCancel: (
 
 export function ExpenseRequestPage() {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const { currentCompany } = useCompany();
   const [items, setItems] = useState<ExpenseRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
 
-  // super_admin ต้องเห็นคำขอของทุกคนเสมอ (ไม่ใช่แค่ตัวเลือกเสริม) เพราะต้องใช้ตรวจสอบ/
-  // แก้ไขปัญหาที่พนักงานคนอื่นแจ้งมาได้ — ไม่ต้องล็อกไว้แค่ "ของฉัน" เหมือน role อื่น
-  const seesEveryonesRequests = Boolean(user?.is_platform_admin || currentCompany?.role === "super_admin");
-
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
       setItems(await expenseRequestsApi.list({
-        scope: seesEveryonesRequests ? "all" : "mine",
+        scope: "mine",
         status: status || undefined, limit: 100,
       }));
     } catch (e) {
       setError(getApiErrorMessage(e, "โหลดรายการคำขอไม่สำเร็จ"));
     } finally { setLoading(false); }
-  }, [status, seesEveryonesRequests]);
+  }, [status]);
 
   useEffect(() => { load(); }, [load]);
 
