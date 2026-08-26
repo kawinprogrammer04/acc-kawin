@@ -41,3 +41,4 @@ pre-deploy-backup-*.dump
 output/
 outputs/
 tmp/
+.ops/
