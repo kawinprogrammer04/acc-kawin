@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Building2, ChevronLeft, ChevronRight, Clipboard, Eraser, Eye, FileSignature, FileSpreadsheet,
+  Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Eraser, Eye, FileSignature, FileSpreadsheet,
   Filter, Landmark, Loader2, RotateCcw, Settings2, UserCheck, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getApiErrorMessage } from "@/api/client";
 import {
   expenseAccountingApi, expenseSettingsApi, expenseTypesApi,
@@ -147,6 +148,62 @@ function ApprovalRouteTimeline({ steps, approvedAt }: { steps: AccountingApprova
 
 const inputClass = "mt-2 min-h-12 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20";
 
+type FilterSelectOption = { value: string; label: string };
+
+function FilterSelect({
+  label, value, allLabel, options, onChange,
+}: {
+  label: string;
+  value: string;
+  allLabel: string;
+  options: FilterSelectOption[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selectedLabel = options.find(option => option.value === value)?.label || allLabel;
+  const selectableOptions = [{ value: "", label: allLabel }, ...options];
+
+  const selectOption = (nextValue: string) => {
+    onChange(nextValue);
+    setOpen(false);
+  };
+
+  return <div className="text-sm font-bold">
+    <span>{label}</span>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${label}: ${selectedLabel}`}
+          className="mt-2 flex min-h-12 w-full items-center justify-between gap-3 rounded-xl border border-input bg-background px-3 text-left text-sm font-medium outline-none transition hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20"
+        >
+          <span className="truncate">{selectedLabel}</span>
+          <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-[220px] p-2">
+        <p className="border-b px-2 pb-2 text-xs font-bold text-muted-foreground">เลือก{label}</p>
+        <div className="max-h-72 space-y-1 overflow-y-auto pt-2">
+          {selectableOptions.map(option => {
+            const selected = value === option.value;
+            return <button
+              key={option.value || "all"}
+              type="button"
+              onClick={() => selectOption(option.value)}
+              className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${selected ? "bg-primary/10 font-bold text-primary" : "font-medium hover:bg-muted"}`}
+            >
+              <span className="truncate">{option.label}</span>
+              <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${selected ? "bg-primary text-primary-foreground" : "border border-input"}`}>
+                {selected && <Check className="h-3.5 w-3.5" />}
+              </span>
+            </button>;
+          })}
+        </div>
+      </PopoverContent>
+    </Popover>
+  </div>;
+}
+
 function toApiFilters(filters: FilterForm): AccountingFilters {
   return {
     status: filters.status || undefined,
@@ -274,10 +331,10 @@ export function ExpenseAccountingPage() {
 
     <form onSubmit={submitFilters} className="space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <label className="text-sm font-bold">สถานะ<select value={filters.status} onChange={event => setFilters(current => ({ ...current, status: event.target.value }))} className={inputClass}><option value="">ทุกสถานะ</option>{Object.entries(statusLabel).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <label className="text-sm font-bold">บริษัท<select value={filters.company_id} onChange={event => setFilters(current => ({ ...current, company_id: event.target.value }))} className={inputClass}><option value="">ทุกบริษัท</option>{companies.filter(company => company.is_active).map(company => <option key={company.id} value={company.id}>{company.name_th}</option>)}</select></label>
-        <label className="text-sm font-bold">แผนก<select value={filters.department_id} onChange={event => setFilters(current => ({ ...current, department_id: event.target.value }))} className={inputClass}><option value="">ทุกแผนก</option>{visibleDepartments.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
-        <label className="text-sm font-bold">ประเภท<select value={filters.type_id} onChange={event => setFilters(current => ({ ...current, type_id: event.target.value }))} className={inputClass}><option value="">ทุกประเภท</option>{visibleTypes.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+        <FilterSelect label="สถานะ" value={filters.status} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={status => setFilters(current => ({ ...current, status }))} />
+        <FilterSelect label="บริษัท" value={filters.company_id} allLabel="ทุกบริษัท" options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: company.name_th }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
+        <FilterSelect label="แผนก" value={filters.department_id} allLabel="ทุกแผนก" options={visibleDepartments.map(item => ({ value: String(item.id), label: item.name }))} onChange={department_id => setFilters(current => ({ ...current, department_id }))} />
+        <FilterSelect label="ประเภท" value={filters.type_id} allLabel="ทุกประเภท" options={visibleTypes.map(item => ({ value: String(item.id), label: item.name }))} onChange={type_id => setFilters(current => ({ ...current, type_id }))} />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
