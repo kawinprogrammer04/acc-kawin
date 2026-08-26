@@ -22,6 +22,11 @@ const SOURCE_LABELS: Record<string, string> = {
   items: "รายการย่อย",
   attachments: "ไฟล์แนบ",
   approval_rows: "ข้อมูลผู้อนุมัติ",
+  payments: "รายการจ่ายเงิน",
+  payment_proofs: "หลักฐานการโอน",
+  withholding_certificates: "หนังสือรับรองหัก ณ ที่จ่าย",
+  withholding_documents: "ไฟล์หนังสือรับรอง",
+  histories: "ประวัติรายการจาก HR",
 };
 
 const RESULT_LABELS: Record<string, string> = {
@@ -33,6 +38,11 @@ const RESULT_LABELS: Record<string, string> = {
   files_validated: "ไฟล์ที่ตรวจสอบ",
   files_copied: "ไฟล์ที่คัดลอกใหม่",
   files_reused: "ไฟล์เดิมที่ใช้ซ้ำ",
+  payments_synced: "รายการจ่ายเงินที่นำเข้า",
+  withholding_certificates_synced: "หนังสือรับรองที่นำเข้า",
+  histories_synced: "ประวัติที่นำเข้า",
+  finance_files_copied: "ไฟล์การเงินที่คัดลอกใหม่",
+  finance_files_reused: "ไฟล์การเงินเดิมที่ใช้ซ้ำ",
 };
 
 const CHECK_LABELS: Record<keyof HrSyncConfiguration["checks"], string> = {
