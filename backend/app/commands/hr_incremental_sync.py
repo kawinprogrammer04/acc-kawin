@@ -362,7 +362,13 @@ class SourceSnapshot:
             "attachments": len(self.attachments),
             "approval_rows": len(self.approvals),
             "payments": len(self.payments),
+            "payment_proofs": sum(
+                1 for row in self.payments if row.get("proof_path")
+            ),
             "withholding_certificates": len(self.withholding_certificates),
+            "withholding_documents": sum(
+                1 for row in self.withholding_certificates if row.get("pdf_path")
+            ),
             "histories": len(self.histories),
         }
 

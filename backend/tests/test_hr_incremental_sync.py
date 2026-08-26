@@ -166,6 +166,9 @@ class HrIncrementalSyncHelpersTest(unittest.TestCase):
             [(item.source_key, item.expected_sha256) for item in files],
             [("payment-proof:105", None), ("wht-certificate:12", "a" * 64)],
         )
+        self.assertEqual(snapshot.counts()["payments"], 1)
+        self.assertEqual(snapshot.counts()["payment_proofs"], 1)
+        self.assertEqual(snapshot.counts()["withholding_documents"], 1)
         self.assertNotEqual(_payment_uuid(105), _payment_uuid(106))
         self.assertNotEqual(_certificate_uuid(12), _certificate_uuid(13))
 
