@@ -11,9 +11,12 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 
 from app.commands.hr_incremental_sync import (
+    REQUEST_ALLOWLIST_EXPECTED_COUNT,
+    _apply_request_allowlist,
     _attachment_uuid,
     _certificate_uuid,
     _files,
+    _load_request_allowlist,
     _payment_uuid,
     _request_number_conflicts,
     _request_uuid,
@@ -37,6 +40,82 @@ def _laravel_encrypt(plaintext: str, key: bytes, iv: bytes) -> str:
 
 
 class HrIncrementalSyncHelpersTest(unittest.TestCase):
+    def test_production_request_allowlist_has_exact_approved_count(self) -> None:
+        allowlist = _load_request_allowlist()
+
+        self.assertEqual(len(allowlist), REQUEST_ALLOWLIST_EXPECTED_COUNT)
+        self.assertIn("EXP-202608-013975", allowlist)
+        self.assertIn("EXP-202607-000008", allowlist)
+
+    def test_request_allowlist_filters_requests_and_all_child_rows(self) -> None:
+        snapshot = SourceSnapshot(
+            from_date=date(2026, 1, 1),
+            created_at=datetime.now(timezone.utc),
+            users=[{"hr_user_id": 1}],
+            positions=[{"hr_position_id": 2}],
+            requests=[
+                {
+                    "hr_expense_request_id": 13975,
+                    "request_number": "EXP-202608-013975",
+                },
+                {
+                    "hr_expense_request_id": 13976,
+                    "request_number": "EXP-202608-013976",
+                },
+                {
+                    "hr_expense_request_id": 99999,
+                    "request_number": "ACC-EXP-202608-000001",
+                },
+            ],
+            items=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
+            attachments=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
+            approvals=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
+            payments=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
+            withholding_certificates=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
+            histories=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
+        )
+
+        filtered = _apply_request_allowlist(
+            snapshot,
+            frozenset({"EXP-202608-013975"}),
+            # An older purge exclusion is overridden by the explicit allowlist.
+            excluded_ids={13975},
+        )
+
+        self.assertEqual(filtered.users, snapshot.users)
+        self.assertEqual(filtered.positions, snapshot.positions)
+        self.assertEqual(
+            [row["hr_expense_request_id"] for row in filtered.requests],
+            [13975],
+        )
+        self.assertEqual(filtered.items, [{"hr_expense_request_id": 13975}])
+        self.assertEqual(filtered.attachments, [{"hr_expense_request_id": 13975}])
+        self.assertEqual(filtered.approvals, [{"hr_expense_request_id": 13975}])
+        self.assertEqual(filtered.payments, [{"hr_expense_request_id": 13975}])
+        self.assertEqual(
+            filtered.withholding_certificates,
+            [{"hr_expense_request_id": 13975}],
+        )
+        self.assertEqual(filtered.histories, [{"hr_expense_request_id": 13975}])
+
     def test_excluded_requests_and_children_are_removed_from_snapshot(self) -> None:
         snapshot = SourceSnapshot(
             from_date=date(2026, 1, 1),
