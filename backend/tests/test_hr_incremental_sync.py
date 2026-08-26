@@ -15,6 +15,7 @@ from app.commands.hr_incremental_sync import (
     _request_number_conflicts,
     _request_uuid,
     _source_path,
+    _without_excluded_requests,
     SourceSnapshot,
     decrypt_laravel_value,
 )
@@ -33,6 +34,28 @@ def _laravel_encrypt(plaintext: str, key: bytes, iv: bytes) -> str:
 
 
 class HrIncrementalSyncHelpersTest(unittest.TestCase):
+    def test_excluded_requests_and_children_are_removed_from_snapshot(self) -> None:
+        snapshot = SourceSnapshot(
+            from_date=date(2026, 1, 1),
+            created_at=datetime.now(timezone.utc),
+            users=[{"hr_user_id": 1}], positions=[],
+            requests=[
+                {"hr_expense_request_id": 100},
+                {"hr_expense_request_id": 200},
+            ],
+            items=[{"hr_expense_request_id": 100}, {"hr_expense_request_id": 200}],
+            attachments=[{"hr_expense_request_id": 100}],
+            approvals=[{"hr_expense_request_id": 200}],
+        )
+
+        filtered = _without_excluded_requests(snapshot, {100})
+
+        self.assertEqual(filtered.users, snapshot.users)
+        self.assertEqual(filtered.requests, [{"hr_expense_request_id": 200}])
+        self.assertEqual(filtered.items, [{"hr_expense_request_id": 200}])
+        self.assertEqual(filtered.attachments, [])
+        self.assertEqual(filtered.approvals, [{"hr_expense_request_id": 200}])
+
     def test_decrypt_laravel_encrypted_cast(self) -> None:
         key = bytes(range(32))
         encrypted = _laravel_encrypt("012-345-6789", key, bytes(range(16)))
