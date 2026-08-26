@@ -16,7 +16,32 @@ from app.services.expense_request_service import calculate_totals, render_paymen
 from app.services.expense_signature_service import _placement_box, _request_signature_slot, _stamp_pdf
 from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
 from app.routers.approvals import _employee_organization, _rule_specificity
-from app.routers.expense_finance import _append_legacy_approval_steps
+from app.routers.expense_finance import (
+    _accounting_query, _append_legacy_approval_steps, _parse_csv_ints, _parse_csv_values,
+)
+
+
+class AccountingFilterTests(unittest.TestCase):
+    def test_csv_filters_trim_empty_values_and_remove_duplicates(self):
+        self.assertEqual(
+            _parse_csv_values("ready_to_pay, partially_paid,ready_to_pay,,"),
+            ["ready_to_pay", "partially_paid"],
+        )
+
+    def test_csv_integer_filters_support_multiple_values(self):
+        self.assertEqual(_parse_csv_ints("3, 7,3", "department_ids"), [3, 7])
+
+    def test_accounting_query_uses_each_multi_select_filter(self):
+        statement = _accounting_query(
+            SimpleNamespace(id=9),
+            statuses=["ready_to_pay", "partially_paid"],
+            department_ids=[3, 7],
+            type_ids=[11, 12],
+        )
+        parameters = list(statement.compile().params.values())
+        self.assertIn(["ready_to_pay", "partially_paid"], parameters)
+        self.assertIn([3, 7], parameters)
+        self.assertIn([11, 12], parameters)
 
 
 def request(**overrides):

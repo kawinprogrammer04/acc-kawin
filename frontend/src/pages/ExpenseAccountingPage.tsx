@@ -5,6 +5,7 @@ import {
   Filter, Landmark, Loader2, RotateCcw, Settings2, UserCheck, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { DatePicker } from "@/components/ui/date-picker";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getApiErrorMessage } from "@/api/client";
@@ -22,14 +23,39 @@ const FILTER_STORAGE_KEY = "expense_accounting_filters";
 const PAGE_SIZE = 25;
 
 type FilterForm = {
-  status: string; company_id: string; department_id: string; type_id: string;
+  statuses: string[]; company_id: string; department_ids: string[]; type_ids: string[];
   date_from: string; date_to: string; withholding_only: boolean;
 };
 
 const emptyFilters = (companyId?: number): FilterForm => ({
-  status: "", company_id: companyId ? String(companyId) : "", department_id: "",
-  type_id: "", date_from: "", date_to: "", withholding_only: false,
+  statuses: [], company_id: companyId ? String(companyId) : "", department_ids: [],
+  type_ids: [], date_from: "", date_to: "", withholding_only: false,
 });
+
+function storedStringArray(value: unknown, legacyValue: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  if (typeof value === "string" && value) return value.split(",").filter(Boolean);
+  if (typeof legacyValue === "string" && legacyValue) return [legacyValue];
+  return [];
+}
+
+function readStoredFilters(): FilterForm {
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(FILTER_STORAGE_KEY) || "{}") as Record<string, unknown>;
+    return {
+      ...emptyFilters(),
+      statuses: storedStringArray(stored.statuses, stored.status),
+      company_id: typeof stored.company_id === "string" ? stored.company_id : "",
+      department_ids: storedStringArray(stored.department_ids, stored.department_id),
+      type_ids: storedStringArray(stored.type_ids, stored.type_id),
+      date_from: typeof stored.date_from === "string" ? stored.date_from : "",
+      date_to: typeof stored.date_to === "string" ? stored.date_to : "",
+      withholding_only: stored.withholding_only === true,
+    };
+  } catch {
+    return emptyFilters();
+  }
+}
 
 const statusLabel: Record<string, string> = {
   pending_approval: "กำลังอนุมัติ", pending_adjustment_approval: "กำลังอนุมัติส่วนต่าง",
@@ -146,22 +172,21 @@ function ApprovalRouteTimeline({ steps, approvedAt }: { steps: AccountingApprova
   })}</ol>;
 }
 
-const inputClass = "mt-2 min-h-12 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20";
-
 type FilterSelectOption = { value: string; label: string };
 
 function FilterSelect({
-  label, value, allLabel, options, onChange,
+  label, value, allLabel, options, onChange, allowEmpty = true,
 }: {
   label: string;
   value: string;
   allLabel: string;
   options: FilterSelectOption[];
   onChange: (value: string) => void;
+  allowEmpty?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const selectedLabel = options.find(option => option.value === value)?.label || allLabel;
-  const selectableOptions = [{ value: "", label: allLabel }, ...options];
+  const selectableOptions = allowEmpty ? [{ value: "", label: allLabel }, ...options] : options;
 
   const selectOption = (nextValue: string) => {
     onChange(nextValue);
@@ -204,11 +229,73 @@ function FilterSelect({
   </div>;
 }
 
+function MultiFilterSelect({
+  label, values, allLabel, options, onChange,
+}: {
+  label: string;
+  values: string[];
+  allLabel: string;
+  options: FilterSelectOption[];
+  onChange: (values: string[]) => void;
+}) {
+  const selectedLabel = values.length === 0
+    ? allLabel
+    : values.length === 1
+      ? options.find(option => option.value === values[0])?.label || values[0]
+      : `เลือกแล้ว ${values.length} รายการ`;
+
+  const toggleOption = (value: string) => {
+    onChange(values.includes(value)
+      ? values.filter(current => current !== value)
+      : [...values, value]);
+  };
+
+  return <div className="text-sm font-bold">
+    <span>{label}</span>
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${label}: ${selectedLabel}`}
+          className="mt-2 flex min-h-12 w-full items-center justify-between gap-3 rounded-xl border border-input bg-background px-3 text-left text-sm font-medium outline-none transition hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20"
+        >
+          <span className="min-w-0 flex-1 truncate">{selectedLabel}</span>
+          {values.length > 1 && <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-black text-primary-foreground">{values.length}</span>}
+          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-2">
+        <div className="flex items-center justify-between gap-3 border-b px-2 pb-2">
+          <p className="text-xs font-bold text-muted-foreground">เลือก{label}ได้หลายรายการ</p>
+          <button type="button" onClick={() => onChange([])} disabled={values.length === 0} className="shrink-0 text-xs font-bold text-primary hover:underline disabled:text-muted-foreground disabled:no-underline">เลือกทั้งหมด</button>
+        </div>
+        <div className="max-h-72 space-y-1 overflow-y-auto py-2">
+          {options.map(option => {
+            const selected = values.includes(option.value);
+            return <button
+              key={option.value}
+              type="button"
+              onClick={() => toggleOption(option.value)}
+              className={`flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${selected ? "bg-primary/10 font-bold text-primary" : "font-medium hover:bg-muted"}`}
+            >
+              <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border ${selected ? "border-primary bg-primary text-primary-foreground" : "border-input bg-background"}`}>
+                {selected && <Check className="h-3.5 w-3.5" />}
+              </span>
+              <span className="truncate">{option.label}</span>
+            </button>;
+          })}
+        </div>
+        <p className="border-t px-2 pt-2 text-xs text-muted-foreground">{values.length === 0 ? allLabel : `เลือกไว้ ${values.length} รายการ`}</p>
+      </PopoverContent>
+    </Popover>
+  </div>;
+}
+
 function toApiFilters(filters: FilterForm): AccountingFilters {
   return {
-    status: filters.status || undefined,
-    department_id: filters.department_id ? Number(filters.department_id) : undefined,
-    type_id: filters.type_id ? Number(filters.type_id) : undefined,
+    statuses: filters.statuses.length ? filters.statuses.join(",") : undefined,
+    department_ids: filters.department_ids.length ? filters.department_ids.join(",") : undefined,
+    type_ids: filters.type_ids.length ? filters.type_ids.join(",") : undefined,
     date_from: filters.date_from || undefined,
     date_to: filters.date_to || undefined,
     withholding_only: filters.withholding_only || undefined,
@@ -241,14 +328,8 @@ export function ExpenseAccountingPage() {
   const [stats, setStats] = useState<Record<string, number>>({});
   const [departments, setDepartments] = useState<Department[]>([]);
   const [types, setTypes] = useState<ExpenseType[]>([]);
-  const [filters, setFilters] = useState<FilterForm>(() => {
-    try { return { ...emptyFilters(), ...JSON.parse(sessionStorage.getItem(FILTER_STORAGE_KEY) || "{}") }; }
-    catch { return emptyFilters(); }
-  });
-  const [applied, setApplied] = useState<FilterForm>(() => {
-    try { return { ...emptyFilters(), ...JSON.parse(sessionStorage.getItem(FILTER_STORAGE_KEY) || "{}") }; }
-    catch { return emptyFilters(); }
-  });
+  const [filters, setFilters] = useState<FilterForm>(readStoredFilters);
+  const [applied, setApplied] = useState<FilterForm>(readStoredFilters);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
@@ -331,16 +412,16 @@ export function ExpenseAccountingPage() {
 
     <form onSubmit={submitFilters} className="space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <FilterSelect label="สถานะ" value={filters.status} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={status => setFilters(current => ({ ...current, status }))} />
-        <FilterSelect label="บริษัท" value={filters.company_id} allLabel="ทุกบริษัท" options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: company.name_th }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
-        <FilterSelect label="แผนก" value={filters.department_id} allLabel="ทุกแผนก" options={visibleDepartments.map(item => ({ value: String(item.id), label: item.name }))} onChange={department_id => setFilters(current => ({ ...current, department_id }))} />
-        <FilterSelect label="ประเภท" value={filters.type_id} allLabel="ทุกประเภท" options={visibleTypes.map(item => ({ value: String(item.id), label: item.name }))} onChange={type_id => setFilters(current => ({ ...current, type_id }))} />
+        <MultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
+        <FilterSelect label="บริษัท" value={filters.company_id} allLabel="เลือกบริษัท" allowEmpty={false} options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: company.name_th }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
+        <MultiFilterSelect label="แผนก" values={filters.department_ids} allLabel="ทุกแผนก" options={visibleDepartments.map(item => ({ value: String(item.id), label: item.name }))} onChange={department_ids => setFilters(current => ({ ...current, department_ids }))} />
+        <MultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={visibleTypes.map(item => ({ value: String(item.id), label: item.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <label className="text-sm font-bold">ตั้งแต่วันที่<input type="date" value={filters.date_from} onChange={event => setFilters(current => ({ ...current, date_from: event.target.value }))} className={inputClass} /></label>
-        <label className="text-sm font-bold">ถึงวันที่<input type="date" value={filters.date_to} onChange={event => setFilters(current => ({ ...current, date_to: event.target.value }))} className={inputClass} /></label>
-        <label className="flex items-center gap-3 rounded-xl border border-input bg-background px-4 text-sm font-bold sm:col-span-2 lg:col-span-2"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
+        <div className="text-sm font-bold">ตั้งแต่วันที่<DatePicker value={filters.date_from} onChange={date_from => setFilters(current => ({ ...current, date_from }))} placeholder="เลือกวันเริ่มต้น" className="mt-2 min-h-12 rounded-xl border-input bg-background text-sm hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20" /></div>
+        <div className="text-sm font-bold">ถึงวันที่<DatePicker value={filters.date_to} onChange={date_to => setFilters(current => ({ ...current, date_to }))} placeholder="เลือกวันสิ้นสุด" className="mt-2 min-h-12 rounded-xl border-input bg-background text-sm hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20" /></div>
+        <label className="flex min-h-12 items-center gap-3 rounded-xl border border-input bg-background px-4 text-sm font-bold transition hover:border-primary/50 hover:bg-muted/30 sm:col-span-2 lg:col-span-2"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>
       </div>
 
       <div className="flex flex-wrap items-center justify-end gap-3 border-t pt-5">

@@ -78,6 +78,20 @@ ACCOUNTING_STATUSES = [
 ]
 
 
+def _parse_csv_values(value: Optional[str]) -> list[str]:
+    """Return unique, non-empty CSV values while preserving their order."""
+    if not value:
+        return []
+    return list(dict.fromkeys(item.strip() for item in value.split(",") if item.strip()))
+
+
+def _parse_csv_ints(value: Optional[str], field_name: str) -> list[int]:
+    try:
+        return [int(item) for item in _parse_csv_values(value)]
+    except ValueError as exc:
+        raise HTTPException(422, f"{field_name} ต้องเป็นรายการตัวเลขคั่นด้วยเครื่องหมายจุลภาค") from exc
+
+
 @router.get("/expense-requests/dashboard")
 async def expense_dashboard(
     year: Optional[int] = None,
@@ -234,14 +248,16 @@ async def expense_dashboard(
 
 
 def _accounting_query(
-    company: Company, *, status: Optional[str] = None,
-    department_id: Optional[int] = None, type_id: Optional[int] = None,
+    company: Company, *, status: Optional[str] = None, statuses: Optional[list[str]] = None,
+    department_id: Optional[int] = None, department_ids: Optional[list[int]] = None,
+    type_id: Optional[int] = None, type_ids: Optional[list[int]] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
     withholding_only: bool = False, query: Optional[str] = None,
 ):
     stmt = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
-    if status:
-        stmt = stmt.where(ExpenseRequest.status == status)
+    selected_statuses = statuses or ([status] if status else [])
+    if selected_statuses:
+        stmt = stmt.where(ExpenseRequest.status.in_(selected_statuses))
     else:
         stmt = stmt.where(ExpenseRequest.status.in_(ACCOUNTING_STATUSES))
     # รายการที่อยู่หน้าบัญชีต้องอนุมัติครบทุก step ใน revision ปัจจุบันแล้ว
@@ -254,10 +270,12 @@ def _accounting_query(
         ~ExpenseRequest.status.in_(["accounting_review", "ready_to_pay"]),
         ~incomplete_step,
     ))
-    if department_id is not None:
-        stmt = stmt.where(ExpenseRequest.department_id == department_id)
-    if type_id is not None:
-        stmt = stmt.where(ExpenseRequest.expense_type_id == type_id)
+    selected_department_ids = department_ids or ([department_id] if department_id is not None else [])
+    if selected_department_ids:
+        stmt = stmt.where(ExpenseRequest.department_id.in_(selected_department_ids))
+    selected_type_ids = type_ids or ([type_id] if type_id is not None else [])
+    if selected_type_ids:
+        stmt = stmt.where(ExpenseRequest.expense_type_id.in_(selected_type_ids))
     if date_from is not None:
         stmt = stmt.where(func.date(ExpenseRequest.submitted_at) >= date_from)
     if date_to is not None:
@@ -307,8 +325,9 @@ def _append_legacy_approval_steps(
 
 @router.get("/expense-requests/accounting/list")
 async def accounting_list(
-    status: Optional[str] = None, query: Optional[str] = None,
-    department_id: Optional[int] = None, type_id: Optional[int] = None,
+    status: Optional[str] = None, statuses: Optional[str] = None, query: Optional[str] = None,
+    department_id: Optional[int] = None, department_ids: Optional[str] = None,
+    type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
     withholding_only: bool = False,
     limit: int = Query(100, le=500), offset: int = Query(0, ge=0),
@@ -316,7 +335,9 @@ async def accounting_list(
     company: Company = Depends(get_current_company),
 ):
     stmt = _accounting_query(
-        company, status=status, department_id=department_id, type_id=type_id,
+        company, status=status, statuses=_parse_csv_values(statuses),
+        department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
+        type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
         date_from=date_from, date_to=date_to, withholding_only=withholding_only,
         query=query,
     )
@@ -452,15 +473,18 @@ async def accounting_stats(
 
 @router.get("/expense-requests/accounting/export")
 async def export_accounting(
-    status: Optional[str] = None, query: Optional[str] = None,
-    department_id: Optional[int] = None, type_id: Optional[int] = None,
+    status: Optional[str] = None, statuses: Optional[str] = None, query: Optional[str] = None,
+    department_id: Optional[int] = None, department_ids: Optional[str] = None,
+    type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
     withholding_only: bool = False,
     db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_export),
     company: Company = Depends(get_current_company),
 ):
     stmt = _accounting_query(
-        company, status=status, department_id=department_id, type_id=type_id,
+        company, status=status, statuses=_parse_csv_values(statuses),
+        department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
+        type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
         date_from=date_from, date_to=date_to, withholding_only=withholding_only,
         query=query,
     )
