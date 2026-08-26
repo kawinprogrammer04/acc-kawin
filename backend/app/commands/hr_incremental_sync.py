@@ -315,6 +315,28 @@ class SourceSnapshot:
         }
 
 
+def _without_excluded_requests(
+    snapshot: SourceSnapshot, excluded_ids: set[int]
+) -> SourceSnapshot:
+    """Remove intentionally purged HR requests and all their child rows."""
+    if not excluded_ids:
+        return snapshot
+
+    def included(row: dict[str, Any]) -> bool:
+        return int(row["hr_expense_request_id"]) not in excluded_ids
+
+    return SourceSnapshot(
+        from_date=snapshot.from_date,
+        created_at=snapshot.created_at,
+        users=snapshot.users,
+        positions=snapshot.positions,
+        requests=[row for row in snapshot.requests if included(row)],
+        items=[row for row in snapshot.items if included(row)],
+        attachments=[row for row in snapshot.attachments if included(row)],
+        approvals=[row for row in snapshot.approvals if included(row)],
+    )
+
+
 @dataclass(frozen=True)
 class SyncOutcome:
     snapshot_sha256: str
@@ -1552,6 +1574,13 @@ async def synchronize(
     apply: bool,
     expected_snapshot_sha256: str | None = None,
 ) -> SyncOutcome:
+    async with AsyncSessionLocal() as exclusion_db:
+        excluded_ids = {
+            int(value) for value in (await exclusion_db.execute(text(
+                "SELECT hr_expense_request_id FROM hr_expense_request_sync_exclusions"
+            ))).scalars().all()
+        }
+    snapshot = _without_excluded_requests(snapshot, excluded_ids)
     app_key = _load_laravel_key()
     resolved, hashes, secrets = await asyncio.to_thread(
         validate_source, snapshot, storage_root, app_key
@@ -1565,7 +1594,7 @@ async def synchronize(
         required = {
             "hr_user_import_map", "hr_expense_request_import_map",
             "hr_expense_attachment_import_map", "hr_user_position_import_map",
-            "hr_incremental_sync_runs",
+            "hr_incremental_sync_runs", "hr_expense_request_sync_exclusions",
         }
         present = set((await db.execute(text(
             "SELECT table_name FROM information_schema.tables WHERE table_schema='public'"
