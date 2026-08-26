@@ -1047,8 +1047,11 @@ async def list_expense_requests(
         ExpenseRequest.requester_user_id == current_user.id,
     )
     if status:
-        # เมื่อผู้ใช้เลือกสถานะ ให้แสดงสถานะนั้นตามปกติ
-        q = q.where(ExpenseRequest.status == status)
+        # A comma-separated value keeps the existing query parameter backward
+        # compatible while allowing the personal page to select many statuses.
+        statuses = sorted({value.strip() for value in status.split(",") if value.strip()})
+        if statuses:
+            q = q.where(ExpenseRequest.status.in_(statuses))
     q = q.order_by(ExpenseRequest.created_at.desc()).limit(limit).offset(offset)
     rows = (await db.execute(q)).scalars().all()
     return [await _request_to_out(db, r) for r in rows]
