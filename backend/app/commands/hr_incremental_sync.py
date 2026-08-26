@@ -21,7 +21,7 @@ import re
 import shutil
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path, PurePosixPath
@@ -254,6 +254,46 @@ WHERE er.deleted_at IS NULL AND er.created_at >= %s AND a.is_active=1
 ORDER BY a.expense_request_id, a.id
 """
 
+PAYMENTS_SQL = """
+SELECT p.id AS source_payment_id,
+       p.expense_request_id AS hr_expense_request_id,
+       p.payment_type, p.net_amount, p.paid_date, p.reference_number,
+       p.proof_path, p.paid_by AS paid_by_hr_user_id,
+       p.created_at, p.updated_at
+FROM expense_payments p
+JOIN expense_requests er ON er.id=p.expense_request_id
+WHERE er.deleted_at IS NULL AND er.created_at >= %s
+ORDER BY p.expense_request_id, p.id
+"""
+
+WITHHOLDING_CERTIFICATES_SQL = """
+SELECT certificate.id AS source_certificate_id,
+       certificate.expense_request_id AS hr_expense_request_id,
+       certificate.expense_payment_id AS source_payment_id,
+       certificate.certificate_number, certificate.issued_date,
+       certificate.tax_base, certificate.tax_rate, certificate.tax_amount,
+       certificate.pdf_path, certificate.pdf_hash,
+       certificate.issued_by AS issued_by_hr_user_id,
+       certificate.created_at, certificate.updated_at
+FROM expense_withholding_tax_certificates certificate
+JOIN expense_requests er ON er.id=certificate.expense_request_id
+WHERE er.deleted_at IS NULL AND er.created_at >= %s
+ORDER BY certificate.expense_request_id, certificate.id
+"""
+
+HISTORIES_SQL = """
+SELECT history.id AS source_history_id,
+       history.expense_request_id AS hr_expense_request_id,
+       history.user_id AS actor_hr_user_id,
+       history.revision, history.action, history.from_status, history.to_status,
+       history.comments, history.metadata, history.ip_address,
+       history.user_agent, history.created_at
+FROM expense_request_histories history
+JOIN expense_requests er ON er.id=history.expense_request_id
+WHERE er.deleted_at IS NULL AND er.created_at >= %s
+ORDER BY history.expense_request_id, history.created_at, history.id
+"""
+
 APPROVALS_SQL = """
 SELECT er.id AS hr_expense_request_id, er.current_revision,
        step.id AS source_step_id, step.step_order, step.name AS step_name,
@@ -303,6 +343,9 @@ class SourceSnapshot:
     items: list[dict[str, Any]]
     attachments: list[dict[str, Any]]
     approvals: list[dict[str, Any]]
+    payments: list[dict[str, Any]] = field(default_factory=list)
+    withholding_certificates: list[dict[str, Any]] = field(default_factory=list)
+    histories: list[dict[str, Any]] = field(default_factory=list)
 
     def counts(self) -> dict[str, int]:
         return {
@@ -312,6 +355,9 @@ class SourceSnapshot:
             "items": len(self.items),
             "attachments": len(self.attachments),
             "approval_rows": len(self.approvals),
+            "payments": len(self.payments),
+            "withholding_certificates": len(self.withholding_certificates),
+            "histories": len(self.histories),
         }
 
 
@@ -334,6 +380,11 @@ def _without_excluded_requests(
         items=[row for row in snapshot.items if included(row)],
         attachments=[row for row in snapshot.attachments if included(row)],
         approvals=[row for row in snapshot.approvals if included(row)],
+        payments=[row for row in snapshot.payments if included(row)],
+        withholding_certificates=[
+            row for row in snapshot.withholding_certificates if included(row)
+        ],
+        histories=[row for row in snapshot.histories if included(row)],
     )
 
 
@@ -370,6 +421,9 @@ def _snapshot_sha256(snapshot: SourceSnapshot, file_hashes: dict[tuple[str, bool
         "items": snapshot.items,
         "attachments": snapshot.attachments,
         "approvals": snapshot.approvals,
+        "payments": snapshot.payments,
+        "withholding_certificates": snapshot.withholding_certificates,
+        "histories": snapshot.histories,
         "files": sorted((key, signed, digest) for (key, signed), digest in file_hashes.items()),
     }
     encoded = json.dumps(payload, default=_json_default, ensure_ascii=False, sort_keys=True).encode()
@@ -386,6 +440,14 @@ def _summary_payment_uuid(hr_request_id: int) -> str:
 
 def _summary_settlement_uuid(hr_request_id: int) -> str:
     return str(uuid.UUID(hashlib.md5(f"kawin-hr-expense-settlement:{hr_request_id}".encode()).hexdigest()))
+
+
+def _payment_uuid(source_payment_id: int) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"kawin-hr-expense-payment-row:{source_payment_id}"))
+
+
+def _certificate_uuid(source_certificate_id: int) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"kawin-hr-expense-wht-certificate:{source_certificate_id}"))
 
 
 def _attachment_uuid(source_attachment_id: int | None, hr_request_id: int, kind: str) -> str:
@@ -414,6 +476,18 @@ def _as_date(value: Any) -> date | None:
 
 def _decimal(value: Any) -> Decimal:
     return Decimal(str(value or 0))
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(str(value))
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
 
 
 def _load_laravel_key() -> bytes:
@@ -508,6 +582,9 @@ def fetch_source(from_date: date) -> SourceSnapshot:
                 items=_query(cursor, ITEMS_SQL, (value,)),
                 attachments=_query(cursor, ATTACHMENTS_SQL, (value,)),
                 approvals=_query(cursor, APPROVALS_SQL, (value,)),
+                payments=_query(cursor, PAYMENTS_SQL, (value,)),
+                withholding_certificates=_query(cursor, WITHHOLDING_CERTIFICATES_SQL, (value,)),
+                histories=_query(cursor, HISTORIES_SQL, (value,)),
             )
             connection.rollback()
             return snapshot
@@ -543,6 +620,22 @@ def _files(snapshot: SourceSnapshot) -> list[SourceFile]:
                 str(row.get("original_name") or source_key), str(row["latest_signed_path"]),
                 None, True,
             ))
+    for row in snapshot.payments:
+        if row.get("proof_path"):
+            source_id = int(row["source_payment_id"])
+            output.append(SourceFile(
+                int(row["hr_expense_request_id"]), f"payment-proof:{source_id}",
+                f"payment-proof-{source_id}{Path(str(row['proof_path'])).suffix}",
+                str(row["proof_path"]), None, False,
+            ))
+    for row in snapshot.withholding_certificates:
+        if row.get("pdf_path"):
+            source_id = int(row["source_certificate_id"])
+            output.append(SourceFile(
+                int(row["hr_expense_request_id"]), f"wht-certificate:{source_id}",
+                f"{row.get('certificate_number') or f'wht-{source_id}'}.pdf",
+                str(row["pdf_path"]), row.get("pdf_hash"), False,
+            ))
     return output
 
 
@@ -562,7 +655,10 @@ def validate_source(snapshot: SourceSnapshot, storage_root: Path, app_key: bytes
             raise ValueError(f"request {request['request_number']} has no importable requester")
         if not request.get("requester_position_name") or not request.get("department_name"):
             raise ValueError(f"request {request['request_number']} lacks position/department")
-    for collection in (snapshot.items, snapshot.attachments, snapshot.approvals):
+    for collection in (
+        snapshot.items, snapshot.attachments, snapshot.approvals, snapshot.payments,
+        snapshot.withholding_certificates, snapshot.histories,
+    ):
         for row in collection:
             if int(row["hr_expense_request_id"]) not in request_id_set:
                 raise ValueError("HR child row refers to a request outside the snapshot")
@@ -1568,6 +1664,213 @@ async def _sync_files(
     return {"files_copied": copied, "files_reused": reused}
 
 
+async def _sync_financial_documents(
+    db: AsyncSession,
+    snapshot: SourceSnapshot,
+    company_id: int,
+    admin_id: int,
+    user_ids: dict[int, int],
+    request_ids: dict[int, str],
+    resolved: dict[tuple[str, bool], Path],
+    hashes: dict[tuple[str, bool], str],
+) -> dict[str, int]:
+    """Mirror HR payment rows and their private files instead of a lossy summary.
+
+    Earlier sync versions collapsed every HR payment into one aggregate ACC row,
+    which discarded the slip and made withholding certificates impossible to
+    show. Deterministic UUIDs make this safe to rerun. ACC-native payments are
+    left untouched and prevent HR finance rows from being reintroduced after an
+    accountant has continued the request inside ACC.
+    """
+    requests = {int(row["hr_expense_request_id"]): row for row in snapshot.requests}
+    payments: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    certificates: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    histories: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in snapshot.payments:
+        payments[int(row["hr_expense_request_id"])].append(row)
+    for row in snapshot.withholding_certificates:
+        certificates[int(row["hr_expense_request_id"])].append(row)
+    for row in snapshot.histories:
+        histories[int(row["hr_expense_request_id"])].append(row)
+
+    copied = reused = payment_count = certificate_count = history_count = 0
+    for hr_id, request_id in request_ids.items():
+        source_request = requests[hr_id]
+        has_acc_finance = bool((await db.execute(text("""
+            SELECT EXISTS(
+                SELECT 1 FROM expense_payments
+                 WHERE expense_request_id=:request_id
+                   AND idempotency_key<>:summary_key
+                   AND idempotency_key NOT LIKE 'hr-payment:%'
+            )
+        """), {
+            "request_id": request_id,
+            "summary_key": f"hr-summary-payment:{hr_id}",
+        })).scalar_one())
+
+        source_payments = payments[hr_id]
+        if (source_payments or certificates[hr_id]) and not has_acc_finance:
+            # Remove only the aggregate row created by older HR sync versions.
+            # Its deterministic key makes the target exact and recoverable by
+            # rerunning an older release if ever needed.
+            await db.execute(text("""
+                DELETE FROM expense_payments
+                 WHERE id=CAST(:id AS uuid) AND idempotency_key=:summary_key
+            """), {
+                "id": _summary_payment_uuid(hr_id),
+                "summary_key": f"hr-summary-payment:{hr_id}",
+            })
+
+            for row in source_payments:
+                source_id = int(row["source_payment_id"])
+                proof_key = (f"{hr_id}:payment-proof:{source_id}", False)
+                proof_target = None
+                proof_hash = None
+                proof_name = None
+                if proof_key in resolved:
+                    source = resolved[proof_key]
+                    proof_hash = hashes[proof_key]
+                    proof_name = f"payment-proof-{source_id}{_safe_suffix(source)}"
+                    proof_target = _target_file(request_id, f"payment-proof-{source_id}", proof_hash, source)
+                    copied_now = await asyncio.to_thread(_copy_file, source, proof_target, proof_hash)
+                    copied += int(copied_now)
+                    reused += int(not copied_now)
+
+                payment_type = "adjustment" if row.get("payment_type") == "adjustment" else "full"
+                actor_id = user_ids.get(int(row.get("paid_by_hr_user_id") or 0), admin_id)
+                await db.execute(text("""
+                    INSERT INTO expense_payments(
+                        id, company_id, expense_request_id, revision, payment_type,
+                        amount, paid_at, method, reference_no, note,
+                        proof_file_name, proof_file_path, proof_sha256,
+                        recorded_by, idempotency_key, created_at, updated_at
+                    ) VALUES (
+                        CAST(:id AS uuid), :company_id, :request_id, :revision, :payment_type,
+                        :amount, :paid_at, 'legacy_hr_import', :reference_no,
+                        'นำเข้ารายการจ่ายจริงจาก HR', :proof_name, :proof_path, :proof_sha256,
+                        :recorded_by, :idempotency_key, :created_at, :updated_at
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        revision=EXCLUDED.revision, payment_type=EXCLUDED.payment_type,
+                        amount=EXCLUDED.amount, paid_at=EXCLUDED.paid_at,
+                        reference_no=EXCLUDED.reference_no,
+                        proof_file_name=EXCLUDED.proof_file_name,
+                        proof_file_path=EXCLUDED.proof_file_path,
+                        proof_sha256=EXCLUDED.proof_sha256,
+                        recorded_by=EXCLUDED.recorded_by,
+                        updated_at=EXCLUDED.updated_at
+                """), {
+                    "id": _payment_uuid(source_id),
+                    "company_id": company_id,
+                    "request_id": request_id,
+                    "revision": int(source_request["current_revision"]),
+                    "payment_type": payment_type,
+                    "amount": max(_decimal(row.get("net_amount")), Decimal("0")),
+                    "paid_at": _timestamp(row.get("paid_date") or row.get("created_at")),
+                    "reference_no": row.get("reference_number"),
+                    "proof_name": proof_name,
+                    "proof_path": str(proof_target) if proof_target else None,
+                    "proof_sha256": proof_hash,
+                    "recorded_by": actor_id,
+                    "idempotency_key": f"hr-payment:{source_id}",
+                    "created_at": _timestamp(row.get("created_at") or row.get("paid_date")),
+                    "updated_at": _timestamp(row.get("updated_at") or row.get("created_at")),
+                })
+                payment_count += 1
+
+            for row in certificates[hr_id]:
+                source_id = int(row["source_certificate_id"])
+                certificate_key = (f"{hr_id}:wht-certificate:{source_id}", False)
+                if certificate_key not in resolved:
+                    continue
+                source = resolved[certificate_key]
+                digest = hashes[certificate_key]
+                target = _target_file(request_id, f"wht-certificate-{source_id}", digest, source)
+                copied_now = await asyncio.to_thread(_copy_file, source, target, digest)
+                copied += int(copied_now)
+                reused += int(not copied_now)
+                source_payment_id = row.get("source_payment_id")
+                issuer_id = user_ids.get(int(row.get("issued_by_hr_user_id") or 0), admin_id)
+                await db.execute(text("""
+                    INSERT INTO expense_withholding_tax_certificates(
+                        id, company_id, expense_request_id, payment_id,
+                        certificate_no, tax_rate, base_amount, tax_amount,
+                        file_path, sha256, issued_by, issued_at
+                    ) VALUES (
+                        CAST(:id AS uuid), :company_id, :request_id, CAST(:payment_id AS uuid),
+                        :certificate_no, :tax_rate, :base_amount, :tax_amount,
+                        :file_path, :sha256, :issued_by, :issued_at
+                    )
+                    ON CONFLICT (id) DO UPDATE SET
+                        payment_id=EXCLUDED.payment_id,
+                        certificate_no=EXCLUDED.certificate_no,
+                        tax_rate=EXCLUDED.tax_rate, base_amount=EXCLUDED.base_amount,
+                        tax_amount=EXCLUDED.tax_amount, file_path=EXCLUDED.file_path,
+                        sha256=EXCLUDED.sha256, issued_by=EXCLUDED.issued_by,
+                        issued_at=EXCLUDED.issued_at
+                """), {
+                    "id": _certificate_uuid(source_id),
+                    "company_id": company_id,
+                    "request_id": request_id,
+                    "payment_id": _payment_uuid(int(source_payment_id)) if source_payment_id else None,
+                    "certificate_no": str(row["certificate_number"])[:50],
+                    "tax_rate": max(_decimal(row.get("tax_rate")), Decimal("0")),
+                    "base_amount": max(_decimal(row.get("tax_base")), Decimal("0")),
+                    "tax_amount": max(_decimal(row.get("tax_amount")), Decimal("0")),
+                    "file_path": str(target),
+                    "sha256": digest,
+                    "issued_by": issuer_id,
+                    "issued_at": _timestamp(row.get("issued_date") or row.get("created_at")),
+                })
+                certificate_count += 1
+
+        for row in histories[hr_id]:
+            actor_hr_id = row.get("actor_hr_user_id")
+            actor_id = user_ids.get(int(actor_hr_id)) if actor_hr_id is not None else None
+            await db.execute(text("""
+                INSERT INTO expense_request_histories(
+                    id, company_id, expense_request_id, revision, event,
+                    from_status, to_status, actor_user_id, note, snapshot,
+                    ip_address, user_agent, created_at
+                ) VALUES (
+                    :id, :company_id, :request_id, :revision, :event,
+                    :from_status, :to_status, :actor_user_id, :note,
+                    CAST(:snapshot AS jsonb), CAST(:ip_address AS inet), :user_agent, :created_at
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    revision=EXCLUDED.revision, event=EXCLUDED.event,
+                    from_status=EXCLUDED.from_status, to_status=EXCLUDED.to_status,
+                    actor_user_id=EXCLUDED.actor_user_id, note=EXCLUDED.note,
+                    snapshot=EXCLUDED.snapshot, ip_address=EXCLUDED.ip_address,
+                    user_agent=EXCLUDED.user_agent, created_at=EXCLUDED.created_at
+            """), {
+                # Native ACC history IDs come from a positive sequence. Negative
+                # source IDs provide a stable, collision-free import namespace.
+                "id": -int(row["source_history_id"]),
+                "company_id": company_id,
+                "request_id": request_id,
+                "revision": int(row.get("revision") or 1),
+                "event": str(row.get("action") or "hr_history")[:60],
+                "from_status": row.get("from_status"),
+                "to_status": row.get("to_status"),
+                "actor_user_id": actor_id,
+                "note": row.get("comments"),
+                "snapshot": json.dumps(_json_dict(row.get("metadata")), ensure_ascii=False),
+                "ip_address": row.get("ip_address") or None,
+                "user_agent": row.get("user_agent"),
+                "created_at": _timestamp(row.get("created_at")),
+            })
+            history_count += 1
+
+    return {
+        "finance_files_copied": copied,
+        "finance_files_reused": reused,
+        "payments_synced": payment_count,
+        "withholding_certificates_synced": certificate_count,
+        "histories_synced": history_count,
+    }
+
+
 async def synchronize(
     snapshot: SourceSnapshot,
     storage_root: Path,
@@ -1638,7 +1941,10 @@ async def synchronize(
         file_counts = await _sync_files(
             db, snapshot, company_id, user_ids, request_ids, resolved, hashes,
         )
-        result = {**plan, **file_counts}
+        finance_counts = await _sync_financial_documents(
+            db, snapshot, company_id, admin_id, user_ids, request_ids, resolved, hashes,
+        )
+        result = {**plan, **file_counts, **finance_counts}
         run_id = str(uuid.uuid4())
         await db.execute(text("""
             INSERT INTO hr_incremental_sync_runs(

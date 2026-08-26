@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, CheckCircle2, Clock3, Eye, FileText, Loader2, Pencil,
-  RotateCcw, Send, Trash2, XCircle,
+  ArrowLeft, CheckCircle2, Clock3, Download, Eye, FileText, Loader2, Pencil,
+  Receipt, RotateCcw, Send, Trash2, Upload, XCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { authApi, getApiErrorMessage } from "@/api/client";
 import { approvalInboxApi, expenseRequestsApi } from "@/api/approvals";
 import { expenseAccountingApi } from "@/api/approvals";
-import type { ApprovalStepTimeline, ExpenseHistory, ExpenseRequestDetail, ExpenseSettlement, ExpensePaymentRecord } from "@/api/approvals";
+import type {
+  ApprovalStepTimeline, ExpenseHistory, ExpensePaymentRecord, ExpenseRequestDetail,
+  ExpenseSettlement, ExpenseWithholdingCertificate,
+} from "@/api/approvals";
 import { SignaturePad } from "@/components/expense/SignaturePad";
 import { PdfSignatureWorkspace, initialPlacement } from "@/components/expense/PdfSignatureWorkspace";
 import type { SignaturePlacement } from "@/components/expense/PdfSignatureWorkspace";
@@ -53,6 +56,17 @@ const stepStatusLabel: Record<string, string> = {
 };
 
 const completedStepStatuses = ["approved", "completed", "skipped"];
+
+const historyEventLabel: Record<string, string> = {
+  payment_recorded: "บันทึกจ่ายเงิน",
+  payment_proof_replaced: "แก้ไขหลักฐานการโอน",
+  wht_certificate_issued: "ออกหนังสือรับรองหัก ณ ที่จ่าย",
+  accounting_returned: "ฝ่ายบัญชีส่งคืนให้แก้ไข",
+  accounting_cancelled: "ฝ่ายบัญชียกเลิกคำขอ",
+  settlement_submitted: "ส่งข้อมูลเคลียร์เงิน",
+  settlement_approved: "ตรวจผ่านและปิดรายการ",
+  settlement_returned: "ตีกลับข้อมูลเคลียร์เงิน",
+};
 
 function getStepApprovers(step: ApprovalStepTimeline) {
   return step.approvers?.length
@@ -135,6 +149,10 @@ export function ExpenseRequestDetailPage() {
   const [paymentAmount, setPaymentAmount] = useState("");
   const [nextInstallmentAmount, setNextInstallmentAmount] = useState("");
   const [payments, setPayments] = useState<ExpensePaymentRecord[]>([]);
+  const [whtCertificates, setWhtCertificates] = useState<ExpenseWithholdingCertificate[]>([]);
+  const [replacementProofs, setReplacementProofs] = useState<Record<string, File | null>>({});
+  const [replacingPaymentId, setReplacingPaymentId] = useState<string | null>(null);
+  const [issuingWht, setIssuingWht] = useState(false);
   const [voidingPaymentId, setVoidingPaymentId] = useState<string | null>(null);
   const [accountingReturnReason, setAccountingReturnReason] = useState("");
   const [accountingCancelReason, setAccountingCancelReason] = useState("");
@@ -146,10 +164,11 @@ export function ExpenseRequestDetailPage() {
     try {
       const detail = await expenseRequestsApi.get(requestId); setRequest(detail);
       setPaymentAmount(String(detail.remaining ?? ""));
-      const [historyRows, settlementRows, paymentRows] = await Promise.all([
+      const [historyRows, settlementRows, paymentRows, certificateRows] = await Promise.all([
         expenseAccountingApi.histories(requestId).catch(() => []), expenseAccountingApi.settlements(requestId).catch(() => []),
         expenseAccountingApi.payments(requestId).catch(() => []),
-      ]); setHistories(historyRows); setSettlements(settlementRows); setPayments(paymentRows);
+        expenseAccountingApi.whtCertificates(requestId).catch(() => []),
+      ]); setHistories(historyRows); setSettlements(settlementRows); setPayments(paymentRows); setWhtCertificates(certificateRows);
     }
     catch (e) { setError(getApiErrorMessage(e, "โหลดรายละเอียดคำขอไม่สำเร็จ")); }
     finally { setLoading(false); }
@@ -307,6 +326,30 @@ export function ExpenseRequestDetailPage() {
     try { await expenseAccountingApi.voidPayment(paymentId, reason.trim()); await load(); }
     catch (e) { setError(getApiErrorMessage(e, "ยกเลิกรายการจ่ายไม่สำเร็จ")); }
     finally { setVoidingPaymentId(null); }
+  };
+
+  const replacePaymentProof = async (paymentId: string) => {
+    const file = replacementProofs[paymentId];
+    if (!file) { setError("กรุณาเลือกไฟล์หลักฐานการโอนใหม่"); return; }
+    setReplacingPaymentId(paymentId); setError("");
+    try {
+      await expenseAccountingApi.replacePaymentProof(paymentId, {
+        proof_file_name: file.name,
+        proof_content_base64: await fileAsBase64(file),
+        reason: "แก้ไขหลักฐานการโอนจากหน้ารายการ",
+      });
+      setReplacementProofs(current => ({ ...current, [paymentId]: null }));
+      await load();
+    } catch (e) { setError(getApiErrorMessage(e, "แก้ไขหลักฐานการโอนไม่สำเร็จ")); }
+    finally { setReplacingPaymentId(null); }
+  };
+
+  const issueWhtCertificate = async () => {
+    if (!requestId) return;
+    setIssuingWht(true); setError("");
+    try { await expenseAccountingApi.issueWht(requestId); await load(); }
+    catch (e) { setError(getApiErrorMessage(e, "ออกหนังสือรับรองหัก ณ ที่จ่ายไม่สำเร็จ")); }
+    finally { setIssuingWht(false); }
   };
 
   const cancelByAccounting = async () => {
@@ -474,24 +517,49 @@ export function ExpenseRequestDetailPage() {
             : <p className="text-lg font-black">{formatCurrency(request.remaining)}</p>}
         </div></div><div className="grid gap-4 sm:grid-cols-2"><label className="text-xs font-black text-indigo-800">วันที่โอนเงิน *<input type="date" value={paymentDate} onChange={event => setPaymentDate(event.target.value)} className="mt-2 h-11 w-full rounded-md border bg-background px-4 text-sm font-normal text-foreground" /></label><label className="text-xs font-black text-indigo-800">เลขอ้างอิงธนาคาร<input value={paymentReference} onChange={event => setPaymentReference(event.target.value)} placeholder="เช่น เลขที่รายการโอน" className="mt-2 h-11 w-full rounded-md border bg-background px-4 text-sm font-normal text-foreground" /></label></div><label className="block text-xs font-black text-indigo-800">หลักฐานการโอน * <span className="font-normal">(บังคับแนบ)</span><span className="mt-2 flex h-11 cursor-pointer items-center rounded-md border border-dashed border-indigo-300 bg-background px-4 text-sm font-normal text-indigo-700"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={event => setPaymentProof(event.target.files?.[0] || null)} className="w-full" /></span></label><button onClick={payByAccounting} disabled={saving} className="h-11 w-full rounded-md bg-indigo-700 px-8 text-sm font-black text-white hover:bg-indigo-800 disabled:opacity-60">ยืนยันจ่ายเงิน</button>{canAccountingUpdate && <div className="border-t border-indigo-200 pt-4"><p className="mb-2 text-xs text-amber-700">การส่งคืนจากขั้นนี้จะให้ผู้ขอแก้ไขและส่งเข้ากระบวนการอนุมัติใหม่</p><textarea rows={2} value={accountingReturnReason} onChange={event => setAccountingReturnReason(event.target.value)} placeholder="ระบุเหตุผลที่ส่งคืนให้ผู้ขอแก้ไข" className="w-full rounded-md border bg-background px-4 py-2 text-sm" /><button onClick={returnByAccounting} disabled={saving} className="mt-3 h-11 w-full rounded-md bg-blue-50 px-8 text-sm font-black text-blue-700 hover:bg-blue-100 disabled:opacity-60">ส่งคืนให้ผู้ขอแก้ไข</button></div>}</CardContent></Card>}
 
-        {canAccountingView && payments.length > 0 && <Card className="border-slate-200"><CardContent className="space-y-3 p-6">
-          <SectionTitle description="รายการจ่ายเงินทั้งหมดของคำขอนี้ เรียงจากล่าสุด">ประวัติการจ่ายเงิน</SectionTitle>
-          <div className="space-y-2">
+        {canAccountingView && (payments.length > 0 || whtCertificates.length > 0 || request.withholding_amount > 0) && <Card className="border-slate-200"><CardContent className="space-y-4 p-6">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <SectionTitle description="หนังสือรับรอง ภาพสลิป และรายการจ่ายเงินของคำขอนี้">เอกสารการเงิน</SectionTitle>
+            {canAccountingUpdate && request.withholding_amount > 0 && whtCertificates.length === 0 && activePayments.length > 0 &&
+              <button onClick={issueWhtCertificate} disabled={issuingWht}
+                className="inline-flex h-10 items-center gap-2 rounded-lg bg-violet-50 px-3 text-xs font-black text-violet-700 hover:bg-violet-100 disabled:opacity-60">
+                <Receipt className="h-4 w-4" /> {issuingWht ? "กำลังออกเอกสาร..." : "ออกหนังสือรับรอง"}
+              </button>}
+          </div>
+          <div className="space-y-3">
+            {whtCertificates.map(certificate => <div key={certificate.id} className="flex items-stretch gap-1">
+              <button onClick={() => expenseAccountingApi.openWhtCertificate(request.id, certificate.id)}
+                className="flex flex-1 items-center gap-2 rounded-xl bg-violet-50 px-3 py-3 text-left font-black text-violet-700 hover:bg-violet-100 dark:bg-violet-600 dark:text-white dark:hover:bg-violet-700">
+                <Eye className="h-4 w-4 shrink-0" /><span className="min-w-0">หนังสือรับรองหัก ณ ที่จ่าย<span className="block text-xs font-normal opacity-80">{formatCurrency(certificate.tax_amount)} · {formatDate(certificate.issued_at)}</span></span>
+              </button>
+              <button onClick={() => expenseAccountingApi.downloadWhtCertificate(request.id, certificate.id, `${certificate.certificate_no}.pdf`)}
+                className="inline-flex w-11 shrink-0 items-center justify-center rounded-xl bg-violet-50 text-violet-700 hover:bg-violet-100 dark:bg-violet-600 dark:text-white dark:hover:bg-violet-700" title="ดาวน์โหลดเก็บไว้">
+                <Download className="h-4 w-4" />
+              </button>
+            </div>)}
             {[...payments].reverse().map((payment) => <div key={payment.id}
-              className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border px-4 py-3 text-sm ${payment.voided_at ? "border-rose-100 bg-rose-50/50 text-muted-foreground" : "border-slate-200 bg-background"}`}>
-              <div>
-                <p className={`font-black ${payment.voided_at ? "line-through" : ""}`}>{formatCurrency(payment.amount)}
-                  {payment.payment_type === "partial" && <span className="ml-2 rounded-full bg-teal-100 px-2 py-0.5 text-[10px] font-bold text-teal-700">งวด</span>}
-                </p>
-                <p className="text-xs text-muted-foreground">{formatDate(payment.paid_at)} · {payment.method || "-"}{payment.reference_no ? ` · ${payment.reference_no}` : ""}</p>
+              className={`rounded-xl border p-3 text-sm ${payment.voided_at ? "border-rose-100 bg-rose-50/50 text-muted-foreground" : "border-slate-200 bg-background"}`}>
+              <div className="flex items-center justify-between gap-3">
+                <span className={`font-black ${payment.voided_at ? "line-through" : "text-slate-700 dark:text-slate-200"}`}>{payment.payment_type === "adjustment" ? "จ่ายส่วนต่าง" : "จ่ายเงิน"} {formatCurrency(payment.amount)}</span>
+                <span className="text-xs text-muted-foreground">{formatDate(payment.paid_at)}</span>
               </div>
-              {payment.voided_at
-                ? <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-bold text-rose-700">ยกเลิกแล้ว</span>
-                : canAccountingCancel && payment.id === latestActivePaymentId &&
-                  <button onClick={() => voidPaymentRow(payment.id)} disabled={voidingPaymentId === payment.id}
-                    className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-60">
-                    {voidingPaymentId === payment.id ? "กำลังยกเลิก..." : "ยกเลิกรายการนี้"}
-                  </button>}
+              <p className="mt-1 text-xs text-muted-foreground">อ้างอิง {payment.reference_no || "-"}</p>
+              {!payment.voided_at && payment.proof_file_name && <span className="mt-2 inline-flex items-center gap-2 text-xs font-black">
+                <button onClick={() => expenseAccountingApi.openPaymentProof(request.id, payment.id)} className="inline-flex items-center gap-1 text-indigo-600 hover:underline dark:text-indigo-300"><Eye className="h-3.5 w-3.5" />ดูหลักฐานโอน</button>
+                <button onClick={() => expenseAccountingApi.downloadPaymentProof(request.id, payment.id, payment.proof_file_name || `payment-proof-${payment.id}`)} className="text-slate-500 hover:text-indigo-600" title="ดาวน์โหลดเก็บไว้"><Download className="h-3.5 w-3.5" /></button>
+              </span>}
+              {!payment.voided_at && canAccountingUpdate && <details className="mt-2">
+                <summary className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold text-amber-700 hover:underline dark:text-amber-300"><Pencil className="h-3.5 w-3.5" />{payment.proof_file_name ? "แนบสลิปผิด? แก้ไขไฟล์" : "แนบหลักฐานการโอน"}</summary>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={event => setReplacementProofs(current => ({ ...current, [payment.id]: event.target.files?.[0] || null }))} className="min-w-0 flex-1 text-xs file:mr-2 file:min-h-9 file:rounded-lg file:border-0 file:bg-amber-50 file:px-2 file:text-xs file:font-bold file:text-amber-800 hover:file:bg-amber-100" />
+                  <button onClick={() => replacePaymentProof(payment.id)} disabled={!replacementProofs[payment.id] || replacingPaymentId === payment.id} className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-lg bg-amber-600 px-3 text-xs font-black text-white hover:bg-amber-700 disabled:opacity-60"><Upload className="h-3.5 w-3.5" />{replacingPaymentId === payment.id ? "กำลังบันทึก..." : "บันทึกสลิปนี้"}</button>
+                </div>
+              </details>}
+              <div className="mt-2 flex justify-end">
+                {payment.voided_at
+                  ? <span className="rounded-full bg-rose-100 px-2.5 py-1 text-xs font-bold text-rose-700">ยกเลิกแล้ว</span>
+                  : canAccountingCancel && payment.id === latestActivePaymentId && <button onClick={() => voidPaymentRow(payment.id)} disabled={voidingPaymentId === payment.id} className="rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-bold text-rose-700 hover:bg-rose-100 disabled:opacity-60">{voidingPaymentId === payment.id ? "กำลังยกเลิก..." : "ยกเลิกรายการนี้"}</button>}
+              </div>
             </div>)}
           </div>
         </CardContent></Card>}
@@ -540,12 +608,12 @@ export function ExpenseRequestDetailPage() {
 
     <div className="grid gap-5 lg:grid-cols-2">
       <Card><CardContent className="space-y-5 p-6"><SectionTitle description="แสดงขั้นตอนปัจจุบัน ผู้อนุมัติจริง และลำดับที่จะดำเนินการต่อ">เส้นทางอนุมัติ</SectionTitle><ApprovalPath steps={request.steps} currentStepNo={request.current_step_no} approvedAt={request.approved_at} /></CardContent></Card>
-      <Card><CardContent className="space-y-5 p-6"><SectionTitle>ประวัติและ Audit</SectionTitle><ol className="space-y-4">
+      <Card><CardContent className="space-y-5 p-6"><SectionTitle>ประวัติล่าสุด</SectionTitle><ol className="space-y-4">
         <li className="flex gap-3"><Clock3 className="mt-0.5 h-5 w-5 text-muted-foreground" /><div><p className="font-medium">สร้างคำขอ</p><p className="text-sm text-muted-foreground">{formatDate(request.created_at)} · {request.requester_name}</p></div></li>
         {request.submitted_at && <li className="flex gap-3"><Send className="mt-0.5 h-5 w-5 text-amber-600" /><div><p className="font-medium">ส่งอนุมัติ</p><p className="text-sm text-muted-foreground">{formatDate(request.submitted_at)}</p></div></li>}
         {request.steps.filter((step) => step.decided_at).map((step) => <li key={step.id} className="flex gap-3">{step.status === "approved" ? <CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600" /> : <RotateCcw className="mt-0.5 h-5 w-5 text-rose-600" />}<div><p className="font-medium">{stepStatusLabel[step.status]} · ขั้นตอนที่ {step.step_no}</p><p className="text-sm text-muted-foreground">{formatDate(step.decided_at)} · {step.resolved_approver_name}</p></div></li>)}
         {request.approved_at && <li className="flex gap-3"><CheckCircle2 className="mt-0.5 h-5 w-5 text-emerald-600" /><div><p className="font-medium">อนุมัติครบ</p><p className="text-sm text-muted-foreground">{formatDateTime(request.approved_at)}</p></div></li>}
-        {histories.filter(row => !["legacy_imported","submitted"].includes(row.event)).map(row => <li key={`history-${row.id}`} className="flex gap-3"><Clock3 className="mt-0.5 h-5 w-5 text-primary" /><div><p className="font-medium">{row.event} · revision {row.revision}</p><p className="text-sm text-muted-foreground">{formatDate(row.created_at)}{row.note ? ` · ${row.note}` : ""}</p></div></li>)}
+        {[...histories].filter(row => !["legacy_imported","submitted"].includes(row.event)).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 12).map(row => <li key={`history-${row.id}`} className="flex gap-3"><Clock3 className="mt-0.5 h-5 w-5 text-primary" /><div><p className="font-medium">{historyEventLabel[row.event] || row.event} · revision {row.revision}</p><p className="text-sm text-muted-foreground">{formatDateTime(row.created_at)}{row.note ? ` · ${row.note}` : ""}</p></div></li>)}
       </ol></CardContent></Card>
     </div>
   </div>;
