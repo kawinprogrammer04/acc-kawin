@@ -173,6 +173,7 @@ function ApprovalRouteTimeline({ steps, approvedAt }: { steps: AccountingApprova
 }
 
 type FilterSelectOption = { value: string; label: string };
+const filterControlClass = "mt-2 box-border h-12 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none transition hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20";
 
 function FilterSelect({
   label, value, allLabel, options, onChange, allowEmpty = true,
@@ -193,14 +194,14 @@ function FilterSelect({
     setOpen(false);
   };
 
-  return <div className="text-sm font-bold">
+  return <div className="min-w-0 text-sm font-bold">
     <span>{label}</span>
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
           type="button"
           aria-label={`${label}: ${selectedLabel}`}
-          className="mt-2 flex min-h-12 w-full items-center justify-between gap-3 rounded-xl border border-input bg-background px-3 text-left text-sm font-medium outline-none transition hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20"
+          className={`${filterControlClass} flex items-center justify-between gap-3 text-left font-medium`}
         >
           <span className="truncate">{selectedLabel}</span>
           <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
@@ -250,14 +251,14 @@ function MultiFilterSelect({
       : [...values, value]);
   };
 
-  return <div className="text-sm font-bold">
+  return <div className="min-w-0 text-sm font-bold">
     <span>{label}</span>
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
           aria-label={`${label}: ${selectedLabel}`}
-          className="mt-2 flex min-h-12 w-full items-center justify-between gap-3 rounded-xl border border-input bg-background px-3 text-left text-sm font-medium outline-none transition hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20"
+          className={`${filterControlClass} flex items-center justify-between gap-3 text-left font-medium`}
         >
           <span className="min-w-0 flex-1 truncate">{selectedLabel}</span>
           {values.length > 1 && <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-black text-primary-foreground">{values.length}</span>}
@@ -419,8 +420,8 @@ export function ExpenseAccountingPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
-        <div className="text-sm font-bold">ตั้งแต่วันที่<DatePicker value={filters.date_from} onChange={date_from => setFilters(current => ({ ...current, date_from }))} placeholder="เลือกวันเริ่มต้น" className="mt-2 min-h-12 rounded-xl border-input bg-background text-sm hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20" /></div>
-        <div className="text-sm font-bold">ถึงวันที่<DatePicker value={filters.date_to} onChange={date_to => setFilters(current => ({ ...current, date_to }))} placeholder="เลือกวันสิ้นสุด" className="mt-2 min-h-12 rounded-xl border-input bg-background text-sm hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20" /></div>
+        <div className="min-w-0 text-sm font-bold">ตั้งแต่วันที่<DatePicker value={filters.date_from} onChange={date_from => setFilters(current => ({ ...current, date_from }))} placeholder="เลือกวันเริ่มต้น" className={`${filterControlClass} !h-12 !rounded-xl`} /></div>
+        <div className="min-w-0 text-sm font-bold">ถึงวันที่<DatePicker value={filters.date_to} onChange={date_to => setFilters(current => ({ ...current, date_to }))} placeholder="เลือกวันสิ้นสุด" className={`${filterControlClass} !h-12 !rounded-xl`} /></div>
         <label className="flex min-h-12 items-center gap-3 rounded-xl border border-input bg-background px-4 text-sm font-bold transition hover:border-primary/50 hover:bg-muted/30 sm:col-span-2 lg:col-span-2"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>
       </div>
 
