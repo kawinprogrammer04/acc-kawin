@@ -76,6 +76,18 @@ class PaymentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class WithholdingCertificateOut(BaseModel):
+    id: str
+    expense_request_id: str
+    payment_id: Optional[str]
+    certificate_no: str
+    tax_rate: Decimal
+    base_amount: Decimal
+    tax_amount: Decimal
+    issued_at: datetime
+    model_config = {"from_attributes": True}
+
+
 class PaymentProofReplaceIn(BaseModel):
     proof_file_name: str = Field(min_length=1, max_length=255)
     proof_content_base64: str = Field(min_length=1)

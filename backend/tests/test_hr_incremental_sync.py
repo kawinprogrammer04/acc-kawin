@@ -14,7 +14,10 @@ from app.commands.hr_incremental_sync import (
     REQUEST_ALLOWLIST_EXPECTED_COUNT,
     _apply_request_allowlist,
     _attachment_uuid,
+    _certificate_uuid,
+    _files,
     _load_request_allowlist,
+    _payment_uuid,
     _request_number_conflicts,
     _request_uuid,
     _source_path,
@@ -76,6 +79,18 @@ class HrIncrementalSyncHelpersTest(unittest.TestCase):
                 {"hr_expense_request_id": 13975},
                 {"hr_expense_request_id": 13976},
             ],
+            payments=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
+            withholding_certificates=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
+            histories=[
+                {"hr_expense_request_id": 13975},
+                {"hr_expense_request_id": 13976},
+            ],
         )
 
         filtered = _apply_request_allowlist(
@@ -94,6 +109,12 @@ class HrIncrementalSyncHelpersTest(unittest.TestCase):
         self.assertEqual(filtered.items, [{"hr_expense_request_id": 13975}])
         self.assertEqual(filtered.attachments, [{"hr_expense_request_id": 13975}])
         self.assertEqual(filtered.approvals, [{"hr_expense_request_id": 13975}])
+        self.assertEqual(filtered.payments, [{"hr_expense_request_id": 13975}])
+        self.assertEqual(
+            filtered.withholding_certificates,
+            [{"hr_expense_request_id": 13975}],
+        )
+        self.assertEqual(filtered.histories, [{"hr_expense_request_id": 13975}])
 
     def test_excluded_requests_and_children_are_removed_from_snapshot(self) -> None:
         snapshot = SourceSnapshot(
@@ -107,6 +128,9 @@ class HrIncrementalSyncHelpersTest(unittest.TestCase):
             items=[{"hr_expense_request_id": 100}, {"hr_expense_request_id": 200}],
             attachments=[{"hr_expense_request_id": 100}],
             approvals=[{"hr_expense_request_id": 200}],
+            payments=[{"hr_expense_request_id": 100}],
+            withholding_certificates=[{"hr_expense_request_id": 200}],
+            histories=[{"hr_expense_request_id": 100}],
         )
 
         filtered = _without_excluded_requests(snapshot, {100})
@@ -116,6 +140,34 @@ class HrIncrementalSyncHelpersTest(unittest.TestCase):
         self.assertEqual(filtered.items, [{"hr_expense_request_id": 200}])
         self.assertEqual(filtered.attachments, [])
         self.assertEqual(filtered.approvals, [{"hr_expense_request_id": 200}])
+        self.assertEqual(filtered.payments, [])
+        self.assertEqual(filtered.withholding_certificates, [{"hr_expense_request_id": 200}])
+        self.assertEqual(filtered.histories, [])
+
+    def test_financial_files_are_part_of_the_validated_snapshot(self) -> None:
+        snapshot = SourceSnapshot(
+            from_date=date(2026, 1, 1), created_at=datetime.now(timezone.utc),
+            users=[], positions=[], requests=[], items=[], attachments=[], approvals=[],
+            payments=[{
+                "source_payment_id": 105, "hr_expense_request_id": 57,
+                "proof_path": "expense-requests/57/payments/transfer.png",
+            }],
+            withholding_certificates=[{
+                "source_certificate_id": 12, "hr_expense_request_id": 57,
+                "certificate_number": "WHT-12",
+                "pdf_path": "expense-requests/57/withholding/WHT-12.pdf",
+                "pdf_hash": "a" * 64,
+            }],
+        )
+
+        files = _files(snapshot)
+
+        self.assertEqual(
+            [(item.source_key, item.expected_sha256) for item in files],
+            [("payment-proof:105", None), ("wht-certificate:12", "a" * 64)],
+        )
+        self.assertNotEqual(_payment_uuid(105), _payment_uuid(106))
+        self.assertNotEqual(_certificate_uuid(12), _certificate_uuid(13))
 
     def test_decrypt_laravel_encrypted_cast(self) -> None:
         key = bytes(range(32))

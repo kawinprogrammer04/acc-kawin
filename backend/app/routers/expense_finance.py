@@ -26,6 +26,7 @@ from app.schemas.expense_finance import (
     AttachmentRequirementIn, AttachmentRequirementOut, DepartmentIn, DepartmentOut,
     HistoryOut, NotificationOut, PaymentIn, PaymentOut,
     PaymentProofReplaceIn, PaymentVoidIn, SettlementIn, SettlementOut, SettlementReviewIn,
+    WithholdingCertificateOut,
 )
 from app.services import expense_finance_service, expense_request_service
 
@@ -540,7 +541,8 @@ async def create_payment(
 
 @router.get("/expense-requests/{request_id}/payments/{payment_id}/proof")
 async def payment_proof(
-    request_id: str, payment_id: str, db: AsyncSession = Depends(get_db),
+    request_id: str, payment_id: str, inline: bool = False,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user), company: Company = Depends(get_current_company),
 ):
     req = await _request(db, request_id, company.id)
@@ -551,7 +553,17 @@ async def payment_proof(
     ))).scalar_one_or_none()
     if not payment or not payment.proof_file_path or not Path(payment.proof_file_path).is_file():
         raise HTTPException(404, "ไม่พบหลักฐานการจ่าย")
-    return FileResponse(payment.proof_file_path, filename=payment.proof_file_name)
+    filename = payment.proof_file_name or f"payment-proof-{payment.id}{Path(payment.proof_file_path).suffix}"
+    media_type = {
+        ".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    }.get(Path(payment.proof_file_path).suffix.lower(), "application/octet-stream")
+    return FileResponse(
+        payment.proof_file_path,
+        media_type=media_type,
+        filename=filename,
+        content_disposition_type="inline" if inline else "attachment",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @router.patch("/expense-payments/{payment_id}/proof", response_model=PaymentOut)
@@ -731,9 +743,26 @@ async def create_wht_certificate(
         raise HTTPException(400, str(exc))
 
 
+@router.get(
+    "/expense-requests/{request_id}/wht-certificates",
+    response_model=list[WithholdingCertificateOut],
+)
+async def list_wht_certificates(
+    request_id: str, db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user), company: Company = Depends(get_current_company),
+):
+    req = await _request(db, request_id, company.id)
+    await _can_view(db, req, current_user)
+    return (await db.execute(select(ExpenseWithholdingTaxCertificate).where(
+        ExpenseWithholdingTaxCertificate.expense_request_id == request_id,
+        ExpenseWithholdingTaxCertificate.company_id == company.id,
+    ).order_by(ExpenseWithholdingTaxCertificate.issued_at))).scalars().all()
+
+
 @router.get("/expense-requests/{request_id}/wht-certificate/{certificate_id}")
 async def download_wht_certificate(
-    request_id: str, certificate_id: str, db: AsyncSession = Depends(get_db),
+    request_id: str, certificate_id: str, inline: bool = False,
+    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user), company: Company = Depends(get_current_company),
 ):
     req = await _request(db, request_id, company.id)
@@ -744,7 +773,13 @@ async def download_wht_certificate(
     ))).scalar_one_or_none()
     if not cert or not Path(cert.file_path).is_file():
         raise HTTPException(404, "ไม่พบหนังสือรับรอง")
-    return FileResponse(cert.file_path, media_type="application/pdf", filename=f"{cert.certificate_no}.pdf")
+    return FileResponse(
+        cert.file_path,
+        media_type="application/pdf",
+        filename=f"{cert.certificate_no}.pdf",
+        content_disposition_type="inline" if inline else "attachment",
+        headers={"Cache-Control": "private, no-store"},
+    )
 
 
 @router.get("/notifications", response_model=list[NotificationOut])

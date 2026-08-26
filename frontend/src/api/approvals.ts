@@ -556,6 +556,38 @@ export interface ExpensePaymentRecord {
   proof_file_name?: string; proof_sha256?: string; voided_at?: string; created_at: string;
 }
 
+export interface ExpenseWithholdingCertificate {
+  id: string; expense_request_id: string; payment_id?: string;
+  certificate_no: string; tax_rate: number; base_amount: number; tax_amount: number;
+  issued_at: string;
+}
+
+async function openPrivateFinancialFile(path: string) {
+  const previewWindow = window.open("about:blank", "_blank");
+  if (previewWindow) previewWindow.opener = null;
+  try {
+    const response = await api.get(path, { params: { inline: 1 }, responseType: "blob" });
+    const url = URL.createObjectURL(response.data);
+    if (previewWindow && !previewWindow.closed) previewWindow.location.replace(url);
+    else window.location.assign(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 5 * 60_000);
+  } catch (error) {
+    if (previewWindow && !previewWindow.closed) previewWindow.close();
+    window.alert(getApiErrorMessage(error, "ไม่สามารถเปิดเอกสารการเงินนี้ได้"));
+    throw error;
+  }
+}
+
+async function downloadPrivateFinancialFile(path: string, filename: string) {
+  const response = await api.get(path, { responseType: "blob" });
+  const url = URL.createObjectURL(response.data);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
 export const expenseNotificationsApi = {
   list: () => api.get("/notifications", { params: { limit: 50 } }).then(r => r.data),
   markRead: (id: string) => api.post(`/notifications/${id}/read`).then(r => r.data),
@@ -574,6 +606,10 @@ export const expenseAccountingApi = {
   },
   pay: (id: string, data: Record<string, unknown>) => api.post(`/expense-requests/${id}/payments`, data).then(r => r.data),
   payments: (id: string): Promise<ExpensePaymentRecord[]> => api.get(`/expense-requests/${id}/payments`).then(r => r.data),
+  openPaymentProof: (requestId: string, paymentId: string) =>
+    openPrivateFinancialFile(`/expense-requests/${requestId}/payments/${paymentId}/proof`),
+  downloadPaymentProof: (requestId: string, paymentId: string, filename: string) =>
+    downloadPrivateFinancialFile(`/expense-requests/${requestId}/payments/${paymentId}/proof`, filename),
   replacePaymentProof: (paymentId: string, data: { proof_file_name: string; proof_content_base64: string; reason: string }) => api.patch(`/expense-payments/${paymentId}/proof`, data).then(r => r.data),
   voidPayment: (paymentId: string, reason: string) => api.post(`/expense-payments/${paymentId}/void`, { reason }).then(r => r.data),
   returnForCorrection: (id: string, reason: string) => api.post(`/expense-requests/${id}/accounting/return`, { reason }).then(r => r.data),
@@ -584,6 +620,12 @@ export const expenseAccountingApi = {
   reviewSettlement: (id: string, action: "approve" | "return", comment?: string) => api.post(`/expense-settlements/${id}/review`, { action, comment }).then(r => r.data),
   histories: (id: string) => api.get(`/expense-requests/${id}/histories`).then(r => r.data),
   issueWht: (id: string) => api.post(`/expense-requests/${id}/wht-certificate`).then(r => r.data),
+  whtCertificates: (id: string): Promise<ExpenseWithholdingCertificate[]> =>
+    api.get(`/expense-requests/${id}/wht-certificates`).then(r => r.data),
+  openWhtCertificate: (requestId: string, certificateId: string) =>
+    openPrivateFinancialFile(`/expense-requests/${requestId}/wht-certificate/${certificateId}`),
+  downloadWhtCertificate: (requestId: string, certificateId: string, filename: string) =>
+    downloadPrivateFinancialFile(`/expense-requests/${requestId}/wht-certificate/${certificateId}`, filename),
 };
 
 export interface ExpenseDashboardOption { id: number; name: string }
