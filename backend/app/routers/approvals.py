@@ -1713,7 +1713,7 @@ async def submit_expense_request(
     if req.withholding_required and not all([
         req.taxpayer_name, req.taxpayer_type,
         (req.recipient_tax_id_encrypted or req.taxpayer_id),
-        req.taxpayer_address, req.service_description,
+        req.taxpayer_address,
     ]):
         missing.append("ข้อมูลภาษีสำหรับฝ่ายบัญชี")
     if not any(item.attachment_type == "primary" for item in attachments):
