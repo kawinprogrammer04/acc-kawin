@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  ArrowLeft, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Eye, FileCheck2,
+  ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock3, Eye, FileCheck2,
   FileText, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, Save, Send, Trash2, Upload, UploadCloud,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { getApiErrorMessage } from "@/api/client";
 import {
@@ -35,6 +36,21 @@ const STATUS_COLOR: Record<string, string> = {
   returned_for_correction: "bg-amber-100 text-amber-700", pending_approval: "bg-amber-100 text-amber-700",
   pending_adjustment_approval: "bg-amber-100 text-amber-700",
 };
+
+const STATUS_FILTER_OPTIONS = [
+  ["draft", "ร่าง"],
+  ["pending_approval", "รออนุมัติ"],
+  ["approved", "อนุมัติแล้ว"],
+  ["ready_to_pay", "พร้อมจ่าย"],
+  ["partially_paid", "จ่ายบางส่วน"],
+  ["settlement_due", "รอเคลียร์เงิน"],
+  ["settlement_review", "รอตรวจเคลียร์"],
+  ["pending_adjustment_approval", "รออนุมัติส่วนต่าง"],
+  ["completed", "เสร็จสิ้น"],
+  ["returned_for_correction", "ส่งกลับให้แก้ไข"],
+  ["rejected", "ถูกปฏิเสธ"],
+  ["cancelled", "ยกเลิก"],
+] as const;
 
 const REQUEST_FORMAT_LABEL: Record<string, string> = {
   reimbursement: "เบิกค่าใช้จ่าย", advance: "สำรองจ่าย", direct_payment: "ชำระตรงให้ผู้ขาย",
@@ -111,20 +127,33 @@ export function ExpenseRequestPage() {
   const navigate = useNavigate();
   const [items, setItems] = useState<ExpenseRequest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [status, setStatus] = useState("");
+  const [statuses, setStatuses] = useState<string[]>([]);
   const [error, setError] = useState("");
+
+  const statusFilter = useMemo(() => statuses.join(","), [statuses]);
+  const statusFilterLabel = statuses.length === 0
+    ? "ทุกสถานะ"
+    : statuses.length === 1
+      ? STATUS_LABEL[statuses[0]] || statuses[0]
+      : `เลือกแล้ว ${statuses.length} สถานะ`;
+
+  const toggleStatus = (value: string) => {
+    setStatuses((current) => current.includes(value)
+      ? current.filter((item) => item !== value)
+      : [...current, value]);
+  };
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
       setItems(await expenseRequestsApi.list({
         scope: "mine",
-        status: status || undefined, limit: 100,
+        status: statusFilter || undefined, limit: 100,
       }));
     } catch (e) {
       setError(getApiErrorMessage(e, "โหลดรายการคำขอไม่สำเร็จ"));
     } finally { setLoading(false); }
-  }, [status]);
+  }, [statusFilter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -144,13 +173,36 @@ export function ExpenseRequestPage() {
       </PageHeader>
       <ErrorNotice message={error} />
       <div className="flex items-center justify-between gap-3">
-        <select value={status} onChange={(e) => setStatus(e.target.value)} className={`${inputCls} max-w-[220px]`}>
-          <option value="">ทุกสถานะ</option>
-          <option value="draft">ร่าง</option><option value="pending_approval">รออนุมัติ</option>
-          <option value="ready_to_pay">พร้อมจ่าย</option><option value="settlement_due">รอเคลียร์เงิน</option>
-          <option value="completed">เสร็จสิ้น</option><option value="returned_for_correction">ส่งกลับให้แก้ไข</option><option value="rejected">ถูกปฏิเสธ</option>
-          <option value="cancelled">ยกเลิก</option>
-        </select>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button type="button" className="inline-flex h-10 min-w-[220px] max-w-full items-center justify-between gap-3 rounded-lg border border-input bg-background px-3 text-sm hover:bg-muted/40">
+              <span className="truncate">สถานะ: {statusFilterLabel}</span>
+              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-[280px] p-2">
+            <div className="flex items-center justify-between border-b px-2 pb-2">
+              <p className="text-sm font-semibold">เลือกสถานะ</p>
+              <button type="button" onClick={() => setStatuses([])} disabled={statuses.length === 0}
+                className="text-xs font-medium text-primary hover:underline disabled:text-muted-foreground disabled:no-underline">
+                ทุกสถานะ
+              </button>
+            </div>
+            <div className="max-h-72 space-y-1 overflow-y-auto py-2">
+              {STATUS_FILTER_OPTIONS.map(([value, label]) => {
+                const selected = statuses.includes(value);
+                return <button key={value} type="button" onClick={() => toggleStatus(value)}
+                  className={`flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition ${selected ? "bg-primary/10 text-primary" : "hover:bg-muted"}`}>
+                  <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${selected ? "border-primary bg-primary text-primary-foreground" : "border-input bg-background"}`}>
+                    {selected && <Check className="h-3 w-3" />}
+                  </span>
+                  <span>{label}</span>
+                </button>;
+              })}
+            </div>
+            {statuses.length > 0 && <p className="border-t px-2 pt-2 text-xs text-muted-foreground">เลือกไว้ {statuses.length} สถานะ</p>}
+          </PopoverContent>
+        </Popover>
         <button onClick={load} className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted">
           <RefreshCw className="h-4 w-4" /> รีเฟรช
         </button>
