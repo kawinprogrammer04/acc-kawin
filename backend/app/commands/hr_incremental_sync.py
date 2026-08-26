@@ -6,6 +6,9 @@ referenced file, then prints a plan without changing ACC or copying files.
 
 Only rows tracked as HR imports are updated.  ACC-native users, permissions,
 split payments, settlements and attachments are never deleted.
+
+Expense requests are restricted to the tracked 121-number production
+allowlist.  Requests outside it are never created or updated by this sync.
 """
 from __future__ import annotations
 
@@ -47,6 +50,9 @@ from app.services.expense_request_service import encrypt_account_number
 COMPANY_CODE = "KAWIN_BROTHERS"
 THAILAND = ZoneInfo("Asia/Bangkok")
 PRIMARY_NAME = "เอกสารหลักสำหรับอนุมัติ (PDF).pdf"
+REQUEST_ALLOWLIST_FILE = Path(__file__).with_name("expense_request_keep_20260826.txt")
+REQUEST_ALLOWLIST_EXPECTED_COUNT = 121
+REQUEST_NUMBER_PATTERN = re.compile(r"^EXP-\d{6}-\d{6}$")
 TYPE_CODE_MAP = {
     "GENERAL": "general",
     "PURCHASE": "purchase_order",
@@ -331,6 +337,66 @@ def _without_excluded_requests(
         users=snapshot.users,
         positions=snapshot.positions,
         requests=[row for row in snapshot.requests if included(row)],
+        items=[row for row in snapshot.items if included(row)],
+        attachments=[row for row in snapshot.attachments if included(row)],
+        approvals=[row for row in snapshot.approvals if included(row)],
+    )
+
+
+def _load_request_allowlist(path: Path = REQUEST_ALLOWLIST_FILE) -> frozenset[str]:
+    """Load the production HR request allowlist and fail closed on mistakes."""
+    if not path.is_file():
+        raise ValueError(f"HR request allowlist file is missing: {path}")
+    values = [
+        line.strip() for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if len(values) != len(set(values)):
+        raise ValueError("HR request allowlist contains duplicate request numbers")
+    invalid = sorted(
+        value for value in values if not REQUEST_NUMBER_PATTERN.fullmatch(value)
+    )
+    if invalid:
+        raise ValueError(
+            "HR request allowlist contains invalid request numbers: "
+            + ", ".join(invalid)
+        )
+    if len(values) != REQUEST_ALLOWLIST_EXPECTED_COUNT:
+        raise ValueError(
+            "HR request allowlist must contain exactly "
+            f"{REQUEST_ALLOWLIST_EXPECTED_COUNT} request numbers; found {len(values)}"
+        )
+    return frozenset(values)
+
+
+def _apply_request_allowlist(
+    snapshot: SourceSnapshot,
+    allowed_numbers: frozenset[str],
+    excluded_ids: set[int] | None = None,
+) -> SourceSnapshot:
+    """Keep only explicitly approved HR requests and their child rows.
+
+    The allowlist is authoritative: an older purge exclusion cannot suppress a
+    request which the operator has now explicitly approved for synchronization.
+    ACC-native rows are not part of the HR snapshot and are therefore untouched.
+    """
+    requests = [
+        row for row in snapshot.requests
+        if str(row.get("request_number") or "") in allowed_numbers
+    ]
+    allowed_ids = {int(row["hr_expense_request_id"]) for row in requests}
+    effective_exclusions = (excluded_ids or set()) - allowed_ids
+
+    def included(row: dict[str, Any]) -> bool:
+        request_id = int(row["hr_expense_request_id"])
+        return request_id in allowed_ids and request_id not in effective_exclusions
+
+    return SourceSnapshot(
+        from_date=snapshot.from_date,
+        created_at=snapshot.created_at,
+        users=snapshot.users,
+        positions=snapshot.positions,
+        requests=requests,
         items=[row for row in snapshot.items if included(row)],
         attachments=[row for row in snapshot.attachments if included(row)],
         approvals=[row for row in snapshot.approvals if included(row)],
@@ -1574,13 +1640,17 @@ async def synchronize(
     apply: bool,
     expected_snapshot_sha256: str | None = None,
 ) -> SyncOutcome:
+    allowed_numbers = _load_request_allowlist()
     async with AsyncSessionLocal() as exclusion_db:
         excluded_ids = {
             int(value) for value in (await exclusion_db.execute(text(
                 "SELECT hr_expense_request_id FROM hr_expense_request_sync_exclusions"
             ))).scalars().all()
         }
-    snapshot = _without_excluded_requests(snapshot, excluded_ids)
+    snapshot = _apply_request_allowlist(snapshot, allowed_numbers, excluded_ids)
+    present_allowlisted_numbers = {
+        str(row["request_number"]) for row in snapshot.requests
+    }
     app_key = _load_laravel_key()
     resolved, hashes, secrets = await asyncio.to_thread(
         validate_source, snapshot, storage_root, app_key
@@ -1607,6 +1677,11 @@ async def synchronize(
         """), {"code": COMPANY_CODE})).scalar_one())
         await db.execute(text("SELECT set_config('app.current_company_id', :id, true)"), {"id": str(company_id)})
         plan, conflicts = await _target_plan(db, snapshot)
+        plan.update({
+            "request_allowlist_size": len(allowed_numbers),
+            "request_allowlist_present": len(present_allowlisted_numbers),
+            "request_allowlist_missing": len(allowed_numbers - present_allowlisted_numbers),
+        })
         if apply and conflicts:
             numbers = ", ".join(item["request_no"] for item in conflicts[:5])
             raise ValueError(
