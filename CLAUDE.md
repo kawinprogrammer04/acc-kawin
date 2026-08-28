@@ -3,6 +3,17 @@
 > เอกสารนี้อธิบายสถาปัตยกรรม, business rules, และรายละเอียดทั้งหมดของระบบ
 > เพื่อให้ AI assistant (Claude) เข้าใจบริบทของโปรเจกต์นี้ทันที
 
+## Mandatory UI standard
+
+ก่อนสร้างหรือแก้หน้าที่มี Filter, KPI/Summary Cards, Data Table, ยอดรวม,
+Export หรือ Pagination ต้องอ่านและทำตาม
+`docs/ui/kawin-data-list-standard.md` และใช้ Shared Components ที่เอกสารระบุ
+
+คำว่า **Kawin Data List Standard**, **รูปแบบหน้ารายการมาตรฐาน** หรือ
+**เหมือน `/expense-requests/accounting`** ให้ถือว่าเอกสารดังกล่าวเป็น Acceptance
+Criteria ห้ามสร้าง Date Filter, Pagination หรือขั้นตอนกดกรองรูปแบบอื่น
+เว้นแต่ผู้ใช้สั่งให้ยกเว้นหรือเปลี่ยนมาตรฐานโดยตรง
+
 ---
 
 ## 1. ภาพรวมระบบ (System Overview)
