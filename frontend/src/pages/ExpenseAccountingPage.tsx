@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Eraser, FileSignature, FileSpreadsheet,
+  Building2, Clipboard, Eraser, FileSignature, FileSpreadsheet,
   Landmark, Loader2, RotateCcw, Settings2, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { Calendar } from "@/components/ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import type { DateRange } from "react-day-picker";
+import { DataListFilterSelect, DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
+import { DataListPagination } from "@/components/data-list/DataListPagination";
+import { PresetDateRangeFilter } from "@/components/data-list/PresetDateRangeFilter";
+import { dataListFilterControlClass } from "@/components/data-list/styles";
 import { getApiErrorMessage } from "@/api/client";
 import {
   expenseAccountingApi, expenseSettingsApi, expenseTypesApi,
@@ -17,7 +19,7 @@ import type {
 } from "@/api/approvals";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
-import { formatCurrency, formatDate, localDateInput, today } from "@/lib/format";
+import { formatCurrency, formatDate, today } from "@/lib/format";
 
 const FILTER_STORAGE_KEY = "expense_accounting_filters";
 const DEFAULT_PAGE_SIZE = 25;
@@ -92,285 +94,6 @@ function CopyIconButton({ value, label, onCopy }: { value?: string; label: strin
   ><Clipboard className="h-3.5 w-3.5" /></button>;
 }
 
-type FilterSelectOption = { value: string; label: string };
-const filterControlClass = "mt-2 box-border h-12 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none transition hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20";
-
-type DatePreset = "all" | "today" | "yesterday" | "last_7_days" | "this_month" | "previous_month" | "custom";
-
-const datePresetOptions: Array<{ value: DatePreset; label: string }> = [
-  { value: "all", label: "ไม่กรองวันที่" },
-  { value: "today", label: "วันนี้" },
-  { value: "yesterday", label: "เมื่อวาน" },
-  { value: "last_7_days", label: "7 วันย้อนหลัง" },
-  { value: "this_month", label: "เดือนนี้" },
-  { value: "previous_month", label: "เดือนก่อน" },
-  { value: "custom", label: "กำหนดเอง" },
-];
-
-function dateRangeForPreset(preset: Exclude<DatePreset, "custom">) {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  if (preset === "all") return { from: "", to: "" };
-  if (preset === "today") return { from: today(), to: today() };
-  if (preset === "yesterday") {
-    const value = localDateInput(new Date(year, month, now.getDate() - 1));
-    return { from: value, to: value };
-  }
-  if (preset === "last_7_days") return {
-    from: localDateInput(new Date(year, month, now.getDate() - 6)), to: today(),
-  };
-  if (preset === "this_month") return {
-    from: localDateInput(new Date(year, month, 1)),
-    to: localDateInput(new Date(year, month + 1, 0)),
-  };
-  return {
-    from: localDateInput(new Date(year, month - 1, 1)),
-    to: localDateInput(new Date(year, month, 0)),
-  };
-}
-
-function detectDatePreset(dateFrom: string, dateTo: string): DatePreset {
-  for (const preset of ["all", "today", "yesterday", "last_7_days", "this_month", "previous_month"] as const) {
-    const range = dateRangeForPreset(preset);
-    if (dateFrom === range.from && dateTo === range.to) return preset;
-  }
-  return "custom";
-}
-
-function parseLocalDate(value: string): Date | undefined {
-  if (!value) return undefined;
-  const [year, month, day] = value.split("-").map(Number);
-  if (!year || !month || !day) return undefined;
-  return new Date(year, month - 1, day);
-}
-
-function formatThaiDate(value: Date): string {
-  return new Intl.DateTimeFormat("th-TH", {
-    day: "numeric", month: "long", year: "numeric",
-  }).format(value);
-}
-
-function orderedRange(first: Date, second: Date): { from: Date; to: Date } {
-  return first <= second ? { from: first, to: second } : { from: second, to: first };
-}
-
-function DateRangeFilter({
-  dateFrom, dateTo, onChange,
-}: { dateFrom: string; dateTo: string; onChange: (dateFrom: string, dateTo: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [customMode, setCustomMode] = useState(() => detectDatePreset(dateFrom, dateTo) === "custom");
-  const [customRange, setCustomRange] = useState<DateRange | undefined>(() => dateFrom || dateTo ? {
-    from: parseLocalDate(dateFrom), to: parseLocalDate(dateTo),
-  } : undefined);
-  const [hoveredDay, setHoveredDay] = useState<Date>();
-  const detectedPreset = detectDatePreset(dateFrom, dateTo);
-  const selectedPreset = customMode ? "custom" : detectedPreset;
-  const selectedFrom = parseLocalDate(dateFrom);
-  const selectedTo = parseLocalDate(dateTo);
-  const selectedLabel = selectedFrom && selectedTo
-    ? selectedFrom.getTime() === selectedTo.getTime()
-      ? formatThaiDate(selectedFrom)
-      : `${formatThaiDate(selectedFrom)} – ${formatThaiDate(selectedTo)}`
-    : datePresetOptions.find(option => option.value === selectedPreset)?.label || "ช่วงวันที่";
-  const previewRange = customRange?.from && !customRange.to && hoveredDay
-    ? orderedRange(customRange.from, hoveredDay)
-    : customRange;
-
-  useEffect(() => {
-    if (!open && detectedPreset !== "custom") setCustomMode(false);
-  }, [dateFrom, dateTo, detectedPreset, open]);
-
-  const choosePreset = (preset: DatePreset) => {
-    if (preset === "custom") {
-      setCustomMode(true); setCustomRange(undefined); setHoveredDay(undefined); return;
-    }
-    const range = dateRangeForPreset(preset);
-    setCustomMode(false); setHoveredDay(undefined); onChange(range.from, range.to); setOpen(false);
-  };
-
-  const chooseCustomDay = (day: Date) => {
-    if (!customRange?.from || customRange.to) {
-      setCustomRange({ from: day, to: undefined });
-      setHoveredDay(undefined);
-      return;
-    }
-    const { from, to } = orderedRange(customRange.from, day);
-    setCustomRange({ from, to }); setHoveredDay(undefined);
-    onChange(localDateInput(from), localDateInput(to));
-    setOpen(false);
-  };
-
-  return <div className="min-w-0 text-sm font-bold">
-    <span>ช่วงวันที่</span>
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button type="button" aria-label={`ช่วงวันที่: ${selectedLabel}`} className={`${filterControlClass} flex items-center justify-between gap-3 text-left font-medium`}>
-          <span className="truncate">{selectedLabel}</span><ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className={`${customMode ? "w-[640px]" : "w-[var(--radix-popover-trigger-width)] min-w-[320px]"} max-w-[calc(100vw-2rem)] p-2`}>
-        <div className={customMode ? "grid grid-cols-1 sm:grid-cols-[220px_minmax(0,1fr)]" : ""}>
-          <div className={customMode ? "sm:pr-2" : ""}>
-            <p className="border-b px-2 pb-2 text-xs font-bold text-muted-foreground">เลือกช่วงวันที่</p>
-            <div className="space-y-1 py-2">{datePresetOptions.map(option => {
-              const selected = selectedPreset === option.value;
-              return <button key={option.value} type="button" onClick={() => choosePreset(option.value)} className={`flex min-h-10 w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition ${selected ? "bg-primary/10 font-bold text-primary" : "font-medium hover:bg-muted"}`}>
-                <span>{option.label}</span>{selected && <Check className="h-4 w-4" />}
-              </button>;
-            })}</div>
-          </div>
-          {customMode && <div className="border-t px-2 pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-1">
-            <p className="text-center text-xs font-bold text-muted-foreground">
-              {customRange?.from && !customRange.to
-                ? `วันเริ่มต้น ${formatThaiDate(customRange.from)} · เลือกวันสิ้นสุด`
-                : "เลือกวันเริ่มต้น แล้วเลือกวันสิ้นสุด"}
-            </p>
-            {previewRange?.from && previewRange.to && <p className="mt-1 text-center text-xs font-bold text-primary">
-              {formatThaiDate(previewRange.from)} – {formatThaiDate(previewRange.to)}
-            </p>}
-            <Calendar
-              mode="range"
-              selected={previewRange}
-              defaultMonth={customRange?.from || parseLocalDate(dateFrom)}
-              onDayClick={chooseCustomDay}
-              onDayMouseEnter={day => setHoveredDay(day)}
-              onDayMouseLeave={() => setHoveredDay(undefined)}
-              numberOfMonths={1}
-              formatters={{
-                formatCaption: date => new Intl.DateTimeFormat("th-TH", { month: "long", year: "numeric" }).format(date),
-              }}
-              classNames={{
-                day_range_start: "rounded-l-md bg-primary text-primary-foreground",
-                day_range_end: "rounded-r-md bg-primary text-primary-foreground",
-                day_range_middle: "aria-selected:bg-primary/[0.08] aria-selected:text-foreground",
-              }}
-              className="mx-auto"
-            />
-          </div>}
-        </div>
-      </PopoverContent>
-    </Popover>
-  </div>;
-}
-
-function FilterSelect({
-  label, value, allLabel, options, onChange, allowEmpty = true,
-}: {
-  label: string;
-  value: string;
-  allLabel: string;
-  options: FilterSelectOption[];
-  onChange: (value: string) => void;
-  allowEmpty?: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const selectedLabel = options.find(option => option.value === value)?.label || allLabel;
-  const selectableOptions = allowEmpty ? [{ value: "", label: allLabel }, ...options] : options;
-
-  const selectOption = (nextValue: string) => {
-    onChange(nextValue);
-    setOpen(false);
-  };
-
-  return <div className="min-w-0 text-sm font-bold">
-    <span>{label}</span>
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={`${label}: ${selectedLabel}`}
-          className={`${filterControlClass} flex items-center justify-between gap-3 text-left font-medium`}
-        >
-          <span className="truncate">{selectedLabel}</span>
-          <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-[220px] p-2">
-        <p className="border-b px-2 pb-2 text-xs font-bold text-muted-foreground">เลือก{label}</p>
-        <div className="max-h-72 space-y-1 overflow-y-auto pt-2">
-          {selectableOptions.map(option => {
-            const selected = value === option.value;
-            return <button
-              key={option.value || "all"}
-              type="button"
-              onClick={() => selectOption(option.value)}
-              className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${selected ? "bg-primary/10 font-bold text-primary" : "font-medium hover:bg-muted"}`}
-            >
-              <span className="truncate">{option.label}</span>
-              <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${selected ? "bg-primary text-primary-foreground" : "border border-input"}`}>
-                {selected && <Check className="h-3.5 w-3.5" />}
-              </span>
-            </button>;
-          })}
-        </div>
-      </PopoverContent>
-    </Popover>
-  </div>;
-}
-
-function MultiFilterSelect({
-  label, values, allLabel, options, onChange,
-}: {
-  label: string;
-  values: string[];
-  allLabel: string;
-  options: FilterSelectOption[];
-  onChange: (values: string[]) => void;
-}) {
-  const selectedLabel = values.length === 0
-    ? allLabel
-    : values.length === 1
-      ? options.find(option => option.value === values[0])?.label || values[0]
-      : `เลือกแล้ว ${values.length} รายการ`;
-
-  const toggleOption = (value: string) => {
-    onChange(values.includes(value)
-      ? values.filter(current => current !== value)
-      : [...values, value]);
-  };
-
-  return <div className="min-w-0 text-sm font-bold">
-    <span>{label}</span>
-    <Popover>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={`${label}: ${selectedLabel}`}
-          className={`${filterControlClass} flex items-center justify-between gap-3 text-left font-medium`}
-        >
-          <span className="min-w-0 flex-1 truncate">{selectedLabel}</span>
-          {values.length > 1 && <span className="flex h-6 min-w-6 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 text-xs font-black text-primary-foreground">{values.length}</span>}
-          <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-2">
-        <div className="flex items-center justify-between gap-3 border-b px-2 pb-2">
-          <p className="text-xs font-bold text-muted-foreground">เลือก{label}ได้หลายรายการ</p>
-          <button type="button" onClick={() => onChange([])} disabled={values.length === 0} className="shrink-0 text-xs font-bold text-primary hover:underline disabled:text-muted-foreground disabled:no-underline">เลือกทั้งหมด</button>
-        </div>
-        <div className="max-h-72 space-y-1 overflow-y-auto py-2">
-          {options.map(option => {
-            const selected = values.includes(option.value);
-            return <button
-              key={option.value}
-              type="button"
-              onClick={() => toggleOption(option.value)}
-              className={`flex min-h-10 w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${selected ? "bg-primary/10 font-bold text-primary" : "font-medium hover:bg-muted"}`}
-            >
-              <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border ${selected ? "border-primary bg-primary text-primary-foreground" : "border-input bg-background"}`}>
-                {selected && <Check className="h-3.5 w-3.5" />}
-              </span>
-              <span className="truncate">{option.label}</span>
-            </button>;
-          })}
-        </div>
-        <p className="border-t px-2 pt-2 text-xs text-muted-foreground">{values.length === 0 ? allLabel : `เลือกไว้ ${values.length} รายการ`}</p>
-      </PopoverContent>
-    </Popover>
-  </div>;
-}
-
 function toApiFilters(filters: FilterForm): AccountingFilters {
   return {
     statuses: filters.statuses.length ? filters.statuses.join(",") : undefined,
@@ -396,10 +119,6 @@ function toApiFilters(filters: FilterForm): AccountingFilters {
 //     return <Link key={item.href} to={item.href} className={`inline-flex min-h-12 items-center gap-2 rounded-xl px-4 text-sm font-bold transition focus:outline-none focus:ring-4 focus:ring-primary/20 ${active ? "bg-primary text-primary-foreground shadow-sm" : "border bg-card text-foreground hover:bg-muted"}`}><Icon className="h-4 w-4" />{item.label}</Link>;
 //   })}</nav>;
 // }
-
-function StatCard({ label, value, tone, icon: Icon, currency = false }: { label: string; value: number; tone: string; icon: typeof RotateCcw; currency?: boolean }) {
-  return <Card className="overflow-hidden"><CardContent className="flex items-center justify-between p-5"><div><p className="text-sm font-semibold text-muted-foreground">{label}</p><p className="mt-2 text-3xl font-black">{currency ? formatCurrency(value) : value.toLocaleString("th-TH")}</p></div><div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${tone}`}><Icon className="h-6 w-6" /></div></CardContent></Card>;
-}
 
 export function ExpenseAccountingPage() {
   const { companies, currentCompany, setCurrentCompany } = useCompany();
@@ -462,10 +181,6 @@ export function ExpenseAccountingPage() {
     sessionStorage.removeItem(FILTER_STORAGE_KEY); setFilters(cleared); setApplied(cleared);
   };
 
-  const changePageSize = (value: string) => {
-    setError(""); setPage(1); setPageSize(value === "all" ? 0 : Number(value));
-  };
-
   const exportExcel = async () => {
     setExporting(true); setError("");
     try { await expenseAccountingApi.exportUrl(toApiFilters(applied)); }
@@ -481,10 +196,6 @@ export function ExpenseAccountingPage() {
 
   const visibleDepartments = useMemo(() => departments.filter(item => item.is_active), [departments]);
   const visibleTypes = useMemo(() => types.filter(item => item.is_active), [types]);
-  const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(total / pageSize));
-  const displayedFrom = total === 0 ? 0 : pageSize === 0 ? 1 : ((page - 1) * pageSize) + 1;
-  const displayedTo = pageSize === 0 ? total : Math.min(page * pageSize, total);
-
   return <div className="w-full space-y-6 p-6">
     {/* <FinanceNav /> */}
 
@@ -494,28 +205,28 @@ export function ExpenseAccountingPage() {
     </div>
 
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-      <StatCard label="กำลังอนุมัติ" value={stats.pending_approval_count || 0} tone="bg-violet-100 text-violet-700 dark:bg-violet-950" icon={FileSignature} />
-      <StatCard label="รายการเก่ารอส่งต่อ" value={stats.accounting_review_count || 0} tone="bg-cyan-100 text-cyan-700 dark:bg-cyan-950" icon={RotateCcw} />
-      <StatCard label="พร้อมจ่าย" value={stats.ready_to_pay_count || 0} tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-950" icon={WalletCards} />
-      <StatCard label="จ่ายบางส่วน" value={stats.partially_paid_count || 0} tone="bg-teal-100 text-teal-700 dark:bg-teal-950" icon={WalletCards} />
-      <StatCard label="รอตรวจเคลียร์" value={stats.settlement_review_count || 0} tone="bg-amber-100 text-amber-700 dark:bg-amber-950" icon={Landmark} />
-      <StatCard label="ยอดโอนรวม" value={Number(stats.transfer_amount_total || 0)} currency tone="bg-emerald-100 text-emerald-700 dark:bg-emerald-950" icon={Wallet} />
+      <DataListKpiCard label="กำลังอนุมัติ" value={stats.pending_approval_count || 0} tone="bg-violet-100 text-violet-700 dark:bg-violet-950" icon={FileSignature} />
+      <DataListKpiCard label="รายการเก่ารอส่งต่อ" value={stats.accounting_review_count || 0} tone="bg-cyan-100 text-cyan-700 dark:bg-cyan-950" icon={RotateCcw} />
+      <DataListKpiCard label="พร้อมจ่าย" value={stats.ready_to_pay_count || 0} tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-950" icon={WalletCards} />
+      <DataListKpiCard label="จ่ายบางส่วน" value={stats.partially_paid_count || 0} tone="bg-teal-100 text-teal-700 dark:bg-teal-950" icon={WalletCards} />
+      <DataListKpiCard label="รอตรวจเคลียร์" value={stats.settlement_review_count || 0} tone="bg-amber-100 text-amber-700 dark:bg-amber-950" icon={Landmark} />
+      <DataListKpiCard label="ยอดโอนรวม" value={Number(stats.transfer_amount_total || 0)} currency tone="bg-emerald-100 text-emerald-700 dark:bg-emerald-950" icon={Wallet} />
     </div>
 
     <form onSubmit={event => event.preventDefault()} className="space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
       <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
-        <input className={filterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ หรือชื่อผู้รับ" />
+        <input className={dataListFilterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ หรือชื่อผู้รับ" />
       </label>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <MultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
-        <FilterSelect label="บริษัท" value={filters.company_id} allLabel="เลือกบริษัท" allowEmpty={false} options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: company.name_th }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
-        <MultiFilterSelect label="แผนก" values={filters.department_ids} allLabel="ทุกแผนก" options={visibleDepartments.map(item => ({ value: String(item.id), label: item.name }))} onChange={department_ids => setFilters(current => ({ ...current, department_ids }))} />
-        <MultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={visibleTypes.map(item => ({ value: String(item.id), label: item.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
+        <DataListMultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
+        <DataListFilterSelect label="บริษัท" value={filters.company_id} allLabel="เลือกบริษัท" allowEmpty={false} options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: company.name_th }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
+        <DataListMultiFilterSelect label="แผนก" values={filters.department_ids} allLabel="ทุกแผนก" options={visibleDepartments.map(item => ({ value: String(item.id), label: item.name }))} onChange={department_ids => setFilters(current => ({ ...current, department_ids }))} />
+        <DataListMultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={visibleTypes.map(item => ({ value: String(item.id), label: item.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
-        <DateRangeFilter dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))} />
+        <PresetDateRangeFilter dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))} />
         <label className="flex min-h-12 items-center gap-3 px-1 text-sm font-bold sm:col-span-1 lg:col-span-3"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>
       </div>
 
@@ -557,16 +268,12 @@ export function ExpenseAccountingPage() {
       {loading && <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>}
       {!loading && rows.length === 0 && <div className="flex flex-col items-center py-14 text-muted-foreground"><Building2 className="mb-3 h-9 w-9" /><p>ไม่มีรายการตามตัวกรอง</p></div>}
     </div></CardContent></Card>
-    {!loading && total > 0 && <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card px-4 py-3 text-xs text-muted-foreground">
-      <div className="flex flex-wrap items-center gap-2">
-        <span>แสดง {displayedFrom.toLocaleString("th-TH")}–{displayedTo.toLocaleString("th-TH")} จาก {total.toLocaleString("th-TH")} รายการ</span>
-        <span>· ต่อหน้า</span>
-        <select aria-label="จำนวนรายการต่อหน้า" value={pageSize === 0 ? "all" : String(pageSize)} onChange={event => changePageSize(event.target.value)} className="h-9 rounded-lg border border-input bg-background px-3 text-sm font-black text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
-          <option value="10">10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="all">ทั้งหมด</option>
-        </select>
-        <span>· อัปเดตล่าสุด {formatDate(new Date().toISOString())}</span>
-      </div>
-      {pageSize !== 0 && <div className="flex items-center gap-2"><button type="button" onClick={() => setPage(current => Math.max(1, current - 1))} disabled={page === 1} className="inline-flex h-10 items-center gap-1 rounded-lg border px-3 font-bold disabled:opacity-40"><ChevronLeft className="h-4 w-4" />ก่อนหน้า</button><span className="px-2 font-bold">หน้า {page.toLocaleString("th-TH")} / {totalPages.toLocaleString("th-TH")}</span><button type="button" onClick={() => setPage(current => Math.min(totalPages, current + 1))} disabled={page >= totalPages} className="inline-flex h-10 items-center gap-1 rounded-lg border px-3 font-bold disabled:opacity-40">ถัดไป<ChevronRight className="h-4 w-4" /></button></div>}
-    </div>}
+    {!loading && <DataListPagination
+      total={total}
+      page={page}
+      pageSize={pageSize}
+      onPageChange={setPage}
+      onPageSizeChange={value => { setError(""); setPage(1); setPageSize(value); }}
+    />}
   </div>;
 }
