@@ -190,3 +190,4 @@ class AccountingStatsOut(BaseModel):
     overdue_count: int
     ready_to_pay_amount: Decimal
     partially_paid_count: int = 0
+    transfer_amount_total: Decimal = Decimal("0")
