@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Eraser, FileSignature, FileSpreadsheet,
-  Filter, Landmark, Loader2, RotateCcw, Settings2, Wallet, WalletCards,
+  Filter, Landmark, Loader2, Receipt, RotateCcw, Settings2, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { DatePicker } from "@/components/ui/date-picker";
@@ -16,7 +16,7 @@ import type {
 } from "@/api/approvals";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
-import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
+import { formatCurrency, formatDate } from "@/lib/format";
 
 const FILTER_STORAGE_KEY = "expense_accounting_filters";
 const PAGE_SIZE = 25;
@@ -74,6 +74,17 @@ const statusColor: Record<string, string> = {
   settlement_review: "bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-200",
   completed: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200",
 };
+
+function CopyIconButton({ value, label, onCopy }: { value?: string; label: string; onCopy: (label: string, value?: string) => void }) {
+  if (!value) return null;
+  return <button
+    type="button"
+    onClick={() => onCopy(label, value)}
+    title={`คัดลอก${label}`}
+    aria-label={`คัดลอก${label}`}
+    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition hover:bg-primary/10 hover:text-primary"
+  ><Clipboard className="h-3.5 w-3.5" /></button>;
+}
 
 type FilterSelectOption = { value: string; label: string };
 const filterControlClass = "mt-2 box-border h-12 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none transition hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20";
@@ -288,9 +299,9 @@ export function ExpenseAccountingPage() {
     finally { setExporting(false); }
   };
 
-  const copyForScb = async (row: AccountingRequest) => {
-    const value = `${row.recipient_name || ""} | ${row.bank_name || ""} | ${row.bank_account_number || ""} | ${Number(row.transfer_amount || 0).toFixed(2)}`;
-    try { await navigator.clipboard.writeText(value); setNotice(`คัดลอกข้อมูล ${row.request_no} แล้ว`); window.setTimeout(() => setNotice(""), 2500); }
+  const copyField = async (label: string, value?: string) => {
+    if (!value) return;
+    try { await navigator.clipboard.writeText(value); setNotice(`คัดลอก${label}แล้ว`); window.setTimeout(() => setNotice(""), 2000); }
     catch { setError("เบราว์เซอร์ไม่อนุญาตให้คัดลอก กรุณาคัดลอกจากข้อมูลในตาราง"); }
   };
 
@@ -336,18 +347,22 @@ export function ExpenseAccountingPage() {
     {error && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-200">{error}</div>}
     {notice && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200">{notice}</div>}
 
-    <Card className="overflow-hidden"><CardContent className="p-0"><div className="overflow-x-auto"><table className="w-full min-w-[1440px] text-sm"><thead className="bg-muted/50 text-left text-xs font-black uppercase text-muted-foreground"><tr>{["คำขอ", "ผู้รับเงิน", "บัญชีสำหรับ SCB", "วัตถุประสงค์", "ยอดโอนสุทธิ", "สถานะ", "ดำเนินการ"].map((heading, index) => <th key={heading} className={`px-4 py-3 ${[4, 6].includes(index) ? "text-right" : "text-left"}`}>{heading}</th>)}</tr></thead>
+    <Card className="overflow-hidden"><CardContent className="p-0"><div className="overflow-x-auto"><table className="w-full min-w-[1760px] text-sm"><thead className="bg-muted/50 text-left text-xs font-black uppercase text-muted-foreground"><tr>{["คำขอ", "วันที่", "ธนาคาร", "เลขบัญชี", "ชื่อผู้รับ", "ยอดโอน", "รายการ", "ประเภท", "สถานะ", "ใบกำกับ", "ดำเนินการ"].map((heading, index) => <th key={heading} className={`px-4 py-3 ${[5, 10].includes(index) ? "text-right" : "text-left"}`}>{heading}</th>)}</tr></thead>
       <tbody className="divide-y">{rows.map(row => <tr key={row.id} className="hover:bg-muted/40">
-        <td className="px-4 py-4"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="font-mono font-black text-primary hover:underline">{row.request_no}</Link><p className="mt-1 text-xs text-muted-foreground">{row.expense_type_name || "-"} · {row.department_name || "ไม่ระบุแผนก"}</p></td>
-        <td className="px-4 py-4"><p className="font-bold">{row.recipient_name || "-"}</p><p className="mt-1 text-xs text-muted-foreground">ผู้ส่งคำขอ: {row.requester_name || "-"}</p><p className="mt-1 text-[11px] text-muted-foreground/70">ส่งเมื่อ: {row.submitted_at ? formatDateTime(row.submitted_at) : "-"}</p></td>
-        <td className="px-4 py-4"><div className="flex items-center gap-2"><div className="min-w-0"><p className="font-bold">{row.bank_name || "-"} · {row.bank_account_name || "-"}</p><p className="font-mono text-xs text-muted-foreground">{row.bank_account_number || "-"}</p></div><button type="button" onClick={() => copyForScb(row)} className="inline-flex min-h-12 shrink-0 items-center gap-1.5 rounded-xl bg-muted px-3 text-xs font-black hover:bg-primary/10 hover:text-primary"><Clipboard className="h-3.5 w-3.5" />คัดลอก</button></div></td>
+        <td className="px-4 py-4"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="font-mono font-black text-primary hover:underline">{row.request_no}</Link><p className="mt-1 text-xs text-muted-foreground">{row.department_name || "ไม่ระบุแผนก"}</p></td>
+        <td className="whitespace-nowrap px-4 py-4 font-medium">{formatDate(`${row.request_date}T00:00:00`)}</td>
+        <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-bold">{row.bank_name || "-"}</span><CopyIconButton value={row.bank_name} label="ธนาคาร" onCopy={copyField} /></div></td>
+        <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-mono text-xs">{row.bank_account_number || "-"}</span><CopyIconButton value={row.bank_account_number} label="เลขบัญชี" onCopy={copyField} /></div></td>
+        <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-bold">{row.bank_account_name || "-"}</span><CopyIconButton value={row.bank_account_name} label="ชื่อผู้รับ" onCopy={copyField} /></div></td>
+        <td className="px-4 py-4 text-right"><div className="flex items-center justify-end gap-2"><span className="font-black text-primary">{formatCurrency(row.transfer_amount)}</span><CopyIconButton value={row.transfer_amount != null ? String(row.transfer_amount) : undefined} label="ยอดโอน" onCopy={copyField} /></div></td>
         <td className="px-4 py-4"><p className="max-w-xs break-words">{row.title || "-"}</p></td>
-        <td className="px-4 py-4 text-right font-black text-primary">{formatCurrency(row.is_adjustment_transfer ? row.transfer_amount : row.net)}{row.is_adjustment_transfer ? <p className="text-xs font-bold text-amber-600">ส่วนต่างเงินทดรอง</p> : row.withholding > 0 ? <p className="text-xs font-bold text-rose-500">หัก {formatCurrency(row.withholding)}</p> : null}</td>
+        <td className="px-4 py-4"><p className="font-bold">{row.expense_type_name || "-"}</p></td>
         <td className="px-4 py-4">
           <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${statusColor[row.status] || "bg-muted"}`}>{statusLabel[row.status] || row.status}</span>
           {row.installment_no && <span className="ml-1.5 inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">งวด {row.installment_no}</span>}
           {row.installment_chain_status === "in_progress" && <p className="mt-1 text-xs font-bold text-orange-600">แบ่งจ่ายยังไม่ครบ</p>}
         </td>
+        <td className="px-4 py-4"><Link to={`/expense-requests/${row.id}#documents`} state={{ from: "accounting" }} className="inline-flex h-10 items-center gap-2 whitespace-nowrap rounded-md border border-primary/20 bg-primary/5 px-4 text-xs font-black text-primary hover:bg-primary/10"><Receipt className="h-4 w-4" />ดูเอกสาร</Link></td>
         <td className="px-4 py-4 text-right"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="inline-flex h-10 items-center rounded-md bg-primary/10 px-6 text-xs font-black text-primary hover:bg-primary/20 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700">เปิดรายการ</Link></td>
       </tr>)}</tbody></table>
       {loading && <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>}

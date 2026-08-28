@@ -176,6 +176,13 @@ export function ExpenseRequestDetailPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    if (!request || location.hash !== "#documents") return;
+    window.requestAnimationFrame(() => {
+      document.getElementById("documents")?.scrollIntoView({ block: "start" });
+    });
+  }, [request, location.hash]);
+
   const pendingStep = useMemo(
     () => request?.steps.find((step) => step.status === "pending" && step.resolved_approver_user_id === user?.id),
     [request, user?.id],
@@ -461,7 +468,7 @@ export function ExpenseRequestDetailPage() {
       </CardContent></Card>
     </div>
 
-    <Card><CardContent className="space-y-6 p-6">
+    <Card id="documents" className="scroll-mt-6"><CardContent className="space-y-6 p-6">
       <SectionTitle description="ตรวจสอบความครบถ้วนและชื่อไฟล์ของเอกสารคำขอ">เอกสาร</SectionTitle>
       {[{ title: "เอกสารหลักสำหรับอนุมัติ (PDF)", files: primary }, { title: "เอกสารประกอบเพิ่มเติม", files: supporting }].map((group) => <div key={group.title}>
         <div className="mb-2 flex items-center gap-2"><h3 className="font-medium">{group.title}</h3><span className="rounded-full bg-muted px-2 py-0.5 text-xs">{group.files.length} ไฟล์</span></div>
