@@ -386,6 +386,9 @@ export function ExpenseRequestDetailPage() {
   const latestActivePaymentId = activePayments[activePayments.length - 1]?.id;
   const primary = request.attachments.filter((item) => item.attachment_type === "primary");
   const supporting = request.attachments.filter((item) => item.attachment_type === "supporting");
+  const showFinancialDocuments = payments.length > 0
+    || whtCertificates.length > 0
+    || (canAccountingView && request.withholding_amount > 0);
   const backToAccounting = (location.state as { from?: string } | null)?.from === "accounting";
 
   return <div className="mx-auto max-w-6xl space-y-5 p-6">
@@ -501,7 +504,7 @@ export function ExpenseRequestDetailPage() {
       )}
     </CardContent></Card>}
 
-    {canAccountingView && <div className="grid gap-5 xl:grid-cols-[1.35fr_0.65fr]">
+    {(canAccountingView || showFinancialDocuments) && <div className={canAccountingView ? "grid gap-5 xl:grid-cols-[1.35fr_0.65fr]" : ""}>
       <div className="space-y-5">
         {request.status === "accounting_review" && canAccountingUpdate && <Card className="border-cyan-200 bg-cyan-50 dark:border-cyan-800 dark:bg-cyan-950/30"><CardContent className="space-y-4 p-6"><SectionTitle description="รายการนี้เป็นข้อมูลจากรอบเดิม ระบบจะใช้สถานะและอัตราหัก ณ ที่จ่ายที่ผู้ขอระบุไว้ ไม่ต้องให้บัญชีเลือกฐานหรืออัตราซ้ำ">ส่งต่อพร้อมจ่าย</SectionTitle><button onClick={reviewLegacy} disabled={saving} className="min-h-12 w-full rounded-xl bg-cyan-700 px-4 text-sm font-black text-white hover:bg-cyan-800 disabled:opacity-60">ใช้ข้อมูลผู้ขอและส่งต่อพร้อมจ่าย</button><div className="border-t border-cyan-200 pt-4"><label className="text-xs font-black text-cyan-800">เหตุผลที่ส่งคืน (ผู้ขอจะเห็นข้อความนี้ในการแจ้งเตือน) *<textarea rows={2} value={accountingReturnReason} onChange={event => setAccountingReturnReason(event.target.value)} placeholder="เช่น ขาดข้อมูลผู้เสียภาษี, ยอดไม่ตรงกับใบเสร็จ, เลขบัญชีผู้รับเงินไม่ถูกต้อง" className="mt-2 w-full rounded-xl border bg-background px-3 py-2 text-sm font-normal text-foreground" /></label><button onClick={returnByAccounting} disabled={saving} className="mt-3 min-h-12 w-full rounded-xl bg-blue-50 px-4 text-sm font-black text-blue-700 hover:bg-blue-100 disabled:opacity-60">ส่งคืนให้ผู้ขอแก้ไข</button></div></CardContent></Card>}
 
@@ -517,7 +520,7 @@ export function ExpenseRequestDetailPage() {
             : <p className="text-lg font-black">{formatCurrency(request.remaining)}</p>}
         </div></div><div className="grid gap-4 sm:grid-cols-2"><label className="text-xs font-black text-indigo-800">วันที่โอนเงิน *<input type="date" value={paymentDate} onChange={event => setPaymentDate(event.target.value)} className="mt-2 h-11 w-full rounded-md border bg-background px-4 text-sm font-normal text-foreground" /></label><label className="text-xs font-black text-indigo-800">เลขอ้างอิงธนาคาร<input value={paymentReference} onChange={event => setPaymentReference(event.target.value)} placeholder="เช่น เลขที่รายการโอน" className="mt-2 h-11 w-full rounded-md border bg-background px-4 text-sm font-normal text-foreground" /></label></div><label className="block text-xs font-black text-indigo-800">หลักฐานการโอน * <span className="font-normal">(บังคับแนบ)</span><span className="mt-2 flex h-11 cursor-pointer items-center rounded-md border border-dashed border-indigo-300 bg-background px-4 text-sm font-normal text-indigo-700"><input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={event => setPaymentProof(event.target.files?.[0] || null)} className="w-full" /></span></label><button onClick={payByAccounting} disabled={saving} className="h-11 w-full rounded-md bg-indigo-700 px-8 text-sm font-black text-white hover:bg-indigo-800 disabled:opacity-60">ยืนยันจ่ายเงิน</button>{canAccountingUpdate && <div className="border-t border-indigo-200 pt-4"><p className="mb-2 text-xs text-amber-700">การส่งคืนจากขั้นนี้จะให้ผู้ขอแก้ไขและส่งเข้ากระบวนการอนุมัติใหม่</p><textarea rows={2} value={accountingReturnReason} onChange={event => setAccountingReturnReason(event.target.value)} placeholder="ระบุเหตุผลที่ส่งคืนให้ผู้ขอแก้ไข" className="w-full rounded-md border bg-background px-4 py-2 text-sm" /><button onClick={returnByAccounting} disabled={saving} className="mt-3 h-11 w-full rounded-md bg-blue-50 px-8 text-sm font-black text-blue-700 hover:bg-blue-100 disabled:opacity-60">ส่งคืนให้ผู้ขอแก้ไข</button></div>}</CardContent></Card>}
 
-        {canAccountingView && (payments.length > 0 || whtCertificates.length > 0 || request.withholding_amount > 0) && <Card className="border-slate-200"><CardContent className="space-y-4 p-6">
+        {showFinancialDocuments && <Card className="border-slate-200"><CardContent className="space-y-4 p-6">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <SectionTitle description="หนังสือรับรอง ภาพสลิป และรายการจ่ายเงินของคำขอนี้">เอกสารการเงิน</SectionTitle>
             {canAccountingUpdate && request.withholding_amount > 0 && whtCertificates.length === 0 && activePayments.length > 0 &&
