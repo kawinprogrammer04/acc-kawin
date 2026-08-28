@@ -67,21 +67,33 @@ class AccountingFilterTests(unittest.TestCase):
 
     def test_accounting_stats_use_the_same_filters_as_the_list(self):
         class Result:
+            def __init__(self, rows):
+                self.rows = rows
+
             def scalars(self):
                 return self
 
             def all(self):
-                return [SimpleNamespace(
-                    status="ready_to_pay", remaining_amount=Decimal("125.00"),
-                    net_amount=Decimal("125.00"), settlement_due_date=None,
-                )]
+                return self.rows
 
         class Database:
             statement = None
 
+            def __init__(self):
+                self.results = iter([
+                    [SimpleNamespace(
+                        id="request-1", status="ready_to_pay",
+                        remaining_amount=Decimal("125.00"), net_amount=Decimal("125.00"),
+                        settlement_due_date=None,
+                    )],
+                    [],
+                    [],
+                ])
+
             async def execute(self, statement):
-                self.statement = statement
-                return Result()
+                if self.statement is None:
+                    self.statement = statement
+                return Result(next(self.results))
 
         database = Database()
         result = asyncio.run(accounting_stats(
@@ -98,6 +110,7 @@ class AccountingFilterTests(unittest.TestCase):
         self.assertIn("%ACC-EXP%", parameters)
         self.assertEqual(result.ready_to_pay_count, 1)
         self.assertEqual(result.pending_approval_count, 0)
+        self.assertEqual(result.transfer_amount_total, Decimal("125.00"))
 
 
 def request(**overrides):

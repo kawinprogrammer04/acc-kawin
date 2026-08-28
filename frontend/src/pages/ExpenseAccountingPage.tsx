@@ -397,8 +397,8 @@ function toApiFilters(filters: FilterForm): AccountingFilters {
 //   })}</nav>;
 // }
 
-function StatCard({ label, value, tone, icon: Icon }: { label: string; value: number; tone: string; icon: typeof RotateCcw }) {
-  return <Card className="overflow-hidden"><CardContent className="flex items-center justify-between p-5"><div><p className="text-sm font-semibold text-muted-foreground">{label}</p><p className="mt-2 text-3xl font-black">{value.toLocaleString("th-TH")}</p></div><div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${tone}`}><Icon className="h-6 w-6" /></div></CardContent></Card>;
+function StatCard({ label, value, tone, icon: Icon, currency = false }: { label: string; value: number; tone: string; icon: typeof RotateCcw; currency?: boolean }) {
+  return <Card className="overflow-hidden"><CardContent className="flex items-center justify-between p-5"><div><p className="text-sm font-semibold text-muted-foreground">{label}</p><p className="mt-2 text-3xl font-black">{currency ? formatCurrency(value) : value.toLocaleString("th-TH")}</p></div><div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${tone}`}><Icon className="h-6 w-6" /></div></CardContent></Card>;
 }
 
 export function ExpenseAccountingPage() {
@@ -493,12 +493,13 @@ export function ExpenseAccountingPage() {
       <button type="button" onClick={exportExcel} disabled={exporting} aria-busy={exporting} className="group relative flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-emerald-500/50 disabled:cursor-wait disabled:opacity-60 md:w-auto">{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4 transition-transform group-hover:scale-110" />}ส่งออก Excel</button>
     </div>
 
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
       <StatCard label="กำลังอนุมัติ" value={stats.pending_approval_count || 0} tone="bg-violet-100 text-violet-700 dark:bg-violet-950" icon={FileSignature} />
       <StatCard label="รายการเก่ารอส่งต่อ" value={stats.accounting_review_count || 0} tone="bg-cyan-100 text-cyan-700 dark:bg-cyan-950" icon={RotateCcw} />
       <StatCard label="พร้อมจ่าย" value={stats.ready_to_pay_count || 0} tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-950" icon={WalletCards} />
       <StatCard label="จ่ายบางส่วน" value={stats.partially_paid_count || 0} tone="bg-teal-100 text-teal-700 dark:bg-teal-950" icon={WalletCards} />
       <StatCard label="รอตรวจเคลียร์" value={stats.settlement_review_count || 0} tone="bg-amber-100 text-amber-700 dark:bg-amber-950" icon={Landmark} />
+      <StatCard label="ยอดโอนรวม" value={Number(stats.transfer_amount_total || 0)} currency tone="bg-emerald-100 text-emerald-700 dark:bg-emerald-950" icon={Wallet} />
     </div>
 
     <form onSubmit={event => event.preventDefault()} className="space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
@@ -551,6 +552,7 @@ export function ExpenseAccountingPage() {
     {!loading && total > 0 && <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card px-4 py-3 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-center gap-2">
         <span>แสดง {displayedFrom.toLocaleString("th-TH")}–{displayedTo.toLocaleString("th-TH")} จาก {total.toLocaleString("th-TH")} รายการ</span>
+        <span className="font-black text-primary">· ยอดโอนรวม {formatCurrency(stats.transfer_amount_total || 0)}</span>
         <span>· ต่อหน้า</span>
         <select aria-label="จำนวนรายการต่อหน้า" value={pageSize === 0 ? "all" : String(pageSize)} onChange={event => changePageSize(event.target.value)} className="h-9 rounded-lg border border-input bg-background px-3 text-sm font-black text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
           <option value="10">10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="all">ทั้งหมด</option>

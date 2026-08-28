@@ -330,6 +330,29 @@ def _apply_accounting_pagination(stmt, limit: int, offset: int):
     return stmt.limit(limit).offset(offset)
 
 
+def _is_adjustment_transfer(
+    request: ExpenseRequest,
+    paid_request_ids: set[str],
+    settlements: dict[str, ExpenseSettlement],
+) -> bool:
+    settlement = settlements.get(request.id)
+    return bool(
+        request.id in paid_request_ids and settlement
+        and settlement.settlement_type == "additional"
+        and request.status in {"accounting_review", "ready_to_pay"}
+    )
+
+
+def _accounting_transfer_amount(
+    request: ExpenseRequest,
+    paid_request_ids: set[str],
+    settlements: dict[str, ExpenseSettlement],
+):
+    if _is_adjustment_transfer(request, paid_request_ids, settlements):
+        return settlements[request.id].difference_amount
+    return request.remaining_amount
+
+
 @router.get("/expense-requests/accounting/list")
 async def accounting_list(
     status: Optional[str] = None, statuses: Optional[str] = None, query: Optional[str] = None,
@@ -440,18 +463,8 @@ async def accounting_list(
         "installment_payment_amount": r.installment_payment_amount,
         "settlement_due_date": r.settlement_due_date, "submitted_at": r.submitted_at,
         "approved_at": r.approved_at, "approval_steps": steps_by_request[r.id],
-        "is_adjustment_transfer": (
-            r.id in paid_request_ids and r.id in settlements
-            and settlements[r.id].settlement_type == "additional"
-            and r.status in {"accounting_review", "ready_to_pay"}
-        ),
-        "transfer_amount": (
-            settlements[r.id].difference_amount
-            if r.id in paid_request_ids and r.id in settlements
-            and settlements[r.id].settlement_type == "additional"
-            and r.status in {"accounting_review", "ready_to_pay"}
-            else r.remaining_amount
-        ),
+        "is_adjustment_transfer": _is_adjustment_transfer(r, paid_request_ids, settlements),
+        "transfer_amount": _accounting_transfer_amount(r, paid_request_ids, settlements),
     } for r in rows]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -475,6 +488,17 @@ async def accounting_stats(
     ))).scalars().all()
     today = datetime.now(timezone.utc).date()
     ready = [r for r in rows if r.status == "ready_to_pay"]
+    request_ids = [r.id for r in rows]
+    paid_request_ids: set[str] = set()
+    settlements: dict[str, ExpenseSettlement] = {}
+    if request_ids:
+        paid_request_ids = set((await db.execute(select(ExpensePayment.expense_request_id).where(
+            ExpensePayment.expense_request_id.in_(request_ids), ExpensePayment.voided_at.is_(None)
+        ))).scalars().all())
+        settlement_rows = (await db.execute(select(ExpenseSettlement).where(
+            ExpenseSettlement.expense_request_id.in_(request_ids)
+        ).order_by(ExpenseSettlement.created_at))).scalars().all()
+        settlements = {item.expense_request_id: item for item in settlement_rows}
     return AccountingStatsOut(
         pending_approval_count=sum(
             r.status in {"pending_approval", "pending_adjustment_approval"} for r in rows
@@ -484,6 +508,9 @@ async def accounting_stats(
         overdue_count=sum(r.status == "settlement_due" and r.settlement_due_date and r.settlement_due_date < today for r in rows),
         ready_to_pay_amount=sum((Decimal(r.remaining_amount or r.net_amount or 0) for r in ready), Decimal("0")),
         partially_paid_count=sum(r.status == "partially_paid" for r in rows),
+        transfer_amount_total=sum((
+            Decimal(_accounting_transfer_amount(r, paid_request_ids, settlements) or 0) for r in rows
+        ), Decimal("0")),
     )
 
 
