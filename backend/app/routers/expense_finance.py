@@ -323,6 +323,13 @@ def _append_legacy_approval_steps(
         })
 
 
+def _apply_accounting_pagination(stmt, limit: int, offset: int):
+    """A zero limit is the explicit "show all" mode used by accounting."""
+    if limit == 0:
+        return stmt
+    return stmt.limit(limit).offset(offset)
+
+
 @router.get("/expense-requests/accounting/list")
 async def accounting_list(
     status: Optional[str] = None, statuses: Optional[str] = None, query: Optional[str] = None,
@@ -330,7 +337,7 @@ async def accounting_list(
     type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
     withholding_only: bool = False,
-    limit: int = Query(100, le=500), offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=0, le=5000), offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
     company: Company = Depends(get_current_company),
 ):
@@ -342,11 +349,13 @@ async def accounting_list(
         query=query,
     )
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
-    rows = (await db.execute(stmt.order_by(
+    ordered_stmt = stmt.order_by(
         case((ExpenseRequest.status.in_(["pending_approval", "pending_adjustment_approval"]), 0), else_=1),
         ExpenseRequest.approved_at.desc().nullslast(),
         ExpenseRequest.updated_at.desc(),
-    ).limit(limit).offset(offset))).scalars().all()
+    )
+    ordered_stmt = _apply_accounting_pagination(ordered_stmt, limit, offset)
+    rows = (await db.execute(ordered_stmt)).scalars().all()
     if not rows:
         return {"items": [], "total": total, "limit": limit, "offset": offset}
     request_ids = [row.id for row in rows]

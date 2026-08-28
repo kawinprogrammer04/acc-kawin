@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Eraser, FileSignature, FileSpreadsheet,
-  Filter, Landmark, Loader2, RotateCcw, Settings2, Wallet, WalletCards,
+  Landmark, Loader2, RotateCcw, Settings2, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { DatePicker } from "@/components/ui/date-picker";
+import { Calendar } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import type { DateRange } from "react-day-picker";
 import { getApiErrorMessage } from "@/api/client";
 import {
   expenseAccountingApi, expenseSettingsApi, expenseTypesApi,
@@ -16,19 +17,19 @@ import type {
 } from "@/api/approvals";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency, formatDate, localDateInput, today } from "@/lib/format";
 
 const FILTER_STORAGE_KEY = "expense_accounting_filters";
-const PAGE_SIZE = 25;
+const DEFAULT_PAGE_SIZE = 25;
 
 type FilterForm = {
   statuses: string[]; company_id: string; department_ids: string[]; type_ids: string[];
-  date_from: string; date_to: string; withholding_only: boolean;
+  query: string; date_from: string; date_to: string; withholding_only: boolean;
 };
 
 const emptyFilters = (companyId?: number): FilterForm => ({
   statuses: [], company_id: companyId ? String(companyId) : "", department_ids: [],
-  type_ids: [], date_from: "", date_to: "", withholding_only: false,
+  type_ids: [], query: "", date_from: today(), date_to: today(), withholding_only: false,
 });
 
 function storedStringArray(value: unknown, legacyValue: unknown): string[] {
@@ -41,14 +42,19 @@ function storedStringArray(value: unknown, legacyValue: unknown): string[] {
 function readStoredFilters(): FilterForm {
   try {
     const stored = JSON.parse(sessionStorage.getItem(FILTER_STORAGE_KEY) || "{}") as Record<string, unknown>;
+    const storedDateFrom = typeof stored.date_from === "string" ? stored.date_from : "";
+    const storedDateTo = typeof stored.date_to === "string" ? stored.date_to : "";
+    const hasStoredDateRange = typeof stored.date_from === "string" || typeof stored.date_to === "string";
+    const defaultDate = today();
     return {
       ...emptyFilters(),
       statuses: storedStringArray(stored.statuses, stored.status),
       company_id: typeof stored.company_id === "string" ? stored.company_id : "",
       department_ids: storedStringArray(stored.department_ids, stored.department_id),
       type_ids: storedStringArray(stored.type_ids, stored.type_id),
-      date_from: typeof stored.date_from === "string" ? stored.date_from : "",
-      date_to: typeof stored.date_to === "string" ? stored.date_to : "",
+      query: typeof stored.query === "string" ? stored.query : "",
+      date_from: hasStoredDateRange ? storedDateFrom : defaultDate,
+      date_to: hasStoredDateRange ? storedDateTo : defaultDate,
       withholding_only: stored.withholding_only === true,
     };
   } catch {
@@ -88,6 +94,165 @@ function CopyIconButton({ value, label, onCopy }: { value?: string; label: strin
 
 type FilterSelectOption = { value: string; label: string };
 const filterControlClass = "mt-2 box-border h-12 w-full rounded-xl border border-input bg-background px-3 text-sm outline-none transition hover:border-primary/50 hover:bg-muted/30 focus:border-primary focus:ring-2 focus:ring-primary/20";
+
+type DatePreset = "all" | "today" | "yesterday" | "last_7_days" | "this_month" | "previous_month" | "custom";
+
+const datePresetOptions: Array<{ value: DatePreset; label: string }> = [
+  { value: "all", label: "ไม่กรองวันที่" },
+  { value: "today", label: "วันนี้" },
+  { value: "yesterday", label: "เมื่อวาน" },
+  { value: "last_7_days", label: "7 วันย้อนหลัง" },
+  { value: "this_month", label: "เดือนนี้" },
+  { value: "previous_month", label: "เดือนก่อน" },
+  { value: "custom", label: "กำหนดเอง" },
+];
+
+function dateRangeForPreset(preset: Exclude<DatePreset, "custom">) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  if (preset === "all") return { from: "", to: "" };
+  if (preset === "today") return { from: today(), to: today() };
+  if (preset === "yesterday") {
+    const value = localDateInput(new Date(year, month, now.getDate() - 1));
+    return { from: value, to: value };
+  }
+  if (preset === "last_7_days") return {
+    from: localDateInput(new Date(year, month, now.getDate() - 6)), to: today(),
+  };
+  if (preset === "this_month") return {
+    from: localDateInput(new Date(year, month, 1)),
+    to: localDateInput(new Date(year, month + 1, 0)),
+  };
+  return {
+    from: localDateInput(new Date(year, month - 1, 1)),
+    to: localDateInput(new Date(year, month, 0)),
+  };
+}
+
+function detectDatePreset(dateFrom: string, dateTo: string): DatePreset {
+  for (const preset of ["all", "today", "yesterday", "last_7_days", "this_month", "previous_month"] as const) {
+    const range = dateRangeForPreset(preset);
+    if (dateFrom === range.from && dateTo === range.to) return preset;
+  }
+  return "custom";
+}
+
+function parseLocalDate(value: string): Date | undefined {
+  if (!value) return undefined;
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return undefined;
+  return new Date(year, month - 1, day);
+}
+
+function formatThaiDate(value: Date): string {
+  return new Intl.DateTimeFormat("th-TH", {
+    day: "numeric", month: "long", year: "numeric",
+  }).format(value);
+}
+
+function orderedRange(first: Date, second: Date): { from: Date; to: Date } {
+  return first <= second ? { from: first, to: second } : { from: second, to: first };
+}
+
+function DateRangeFilter({
+  dateFrom, dateTo, onChange,
+}: { dateFrom: string; dateTo: string; onChange: (dateFrom: string, dateTo: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [customMode, setCustomMode] = useState(() => detectDatePreset(dateFrom, dateTo) === "custom");
+  const [customRange, setCustomRange] = useState<DateRange | undefined>(() => dateFrom || dateTo ? {
+    from: parseLocalDate(dateFrom), to: parseLocalDate(dateTo),
+  } : undefined);
+  const [hoveredDay, setHoveredDay] = useState<Date>();
+  const detectedPreset = detectDatePreset(dateFrom, dateTo);
+  const selectedPreset = customMode ? "custom" : detectedPreset;
+  const selectedFrom = parseLocalDate(dateFrom);
+  const selectedTo = parseLocalDate(dateTo);
+  const selectedLabel = selectedFrom && selectedTo
+    ? selectedFrom.getTime() === selectedTo.getTime()
+      ? formatThaiDate(selectedFrom)
+      : `${formatThaiDate(selectedFrom)} – ${formatThaiDate(selectedTo)}`
+    : datePresetOptions.find(option => option.value === selectedPreset)?.label || "ช่วงวันที่";
+  const previewRange = customRange?.from && !customRange.to && hoveredDay
+    ? orderedRange(customRange.from, hoveredDay)
+    : customRange;
+
+  useEffect(() => {
+    if (!open && detectedPreset !== "custom") setCustomMode(false);
+  }, [dateFrom, dateTo, detectedPreset, open]);
+
+  const choosePreset = (preset: DatePreset) => {
+    if (preset === "custom") {
+      setCustomMode(true); setCustomRange(undefined); setHoveredDay(undefined); return;
+    }
+    const range = dateRangeForPreset(preset);
+    setCustomMode(false); setHoveredDay(undefined); onChange(range.from, range.to); setOpen(false);
+  };
+
+  const chooseCustomDay = (day: Date) => {
+    if (!customRange?.from || customRange.to) {
+      setCustomRange({ from: day, to: undefined });
+      setHoveredDay(undefined);
+      return;
+    }
+    const { from, to } = orderedRange(customRange.from, day);
+    setCustomRange({ from, to }); setHoveredDay(undefined);
+    onChange(localDateInput(from), localDateInput(to));
+    setOpen(false);
+  };
+
+  return <div className="min-w-0 text-sm font-bold">
+    <span>ช่วงวันที่</span>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" aria-label={`ช่วงวันที่: ${selectedLabel}`} className={`${filterControlClass} flex items-center justify-between gap-3 text-left font-medium`}>
+          <span className="truncate">{selectedLabel}</span><ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className={`${customMode ? "w-[640px]" : "w-[var(--radix-popover-trigger-width)] min-w-[320px]"} max-w-[calc(100vw-2rem)] p-2`}>
+        <div className={customMode ? "grid grid-cols-1 sm:grid-cols-[220px_minmax(0,1fr)]" : ""}>
+          <div className={customMode ? "sm:pr-2" : ""}>
+            <p className="border-b px-2 pb-2 text-xs font-bold text-muted-foreground">เลือกช่วงวันที่</p>
+            <div className="space-y-1 py-2">{datePresetOptions.map(option => {
+              const selected = selectedPreset === option.value;
+              return <button key={option.value} type="button" onClick={() => choosePreset(option.value)} className={`flex min-h-10 w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm transition ${selected ? "bg-primary/10 font-bold text-primary" : "font-medium hover:bg-muted"}`}>
+                <span>{option.label}</span>{selected && <Check className="h-4 w-4" />}
+              </button>;
+            })}</div>
+          </div>
+          {customMode && <div className="border-t px-2 pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-1">
+            <p className="text-center text-xs font-bold text-muted-foreground">
+              {customRange?.from && !customRange.to
+                ? `วันเริ่มต้น ${formatThaiDate(customRange.from)} · เลือกวันสิ้นสุด`
+                : "เลือกวันเริ่มต้น แล้วเลือกวันสิ้นสุด"}
+            </p>
+            {previewRange?.from && previewRange.to && <p className="mt-1 text-center text-xs font-bold text-primary">
+              {formatThaiDate(previewRange.from)} – {formatThaiDate(previewRange.to)}
+            </p>}
+            <Calendar
+              mode="range"
+              selected={previewRange}
+              defaultMonth={customRange?.from || parseLocalDate(dateFrom)}
+              onDayClick={chooseCustomDay}
+              onDayMouseEnter={day => setHoveredDay(day)}
+              onDayMouseLeave={() => setHoveredDay(undefined)}
+              numberOfMonths={1}
+              formatters={{
+                formatCaption: date => new Intl.DateTimeFormat("th-TH", { month: "long", year: "numeric" }).format(date),
+              }}
+              classNames={{
+                day_range_start: "rounded-l-md bg-primary text-primary-foreground",
+                day_range_end: "rounded-r-md bg-primary text-primary-foreground",
+                day_range_middle: "aria-selected:bg-primary/[0.08] aria-selected:text-foreground",
+              }}
+              className="mx-auto"
+            />
+          </div>}
+        </div>
+      </PopoverContent>
+    </Popover>
+  </div>;
+}
 
 function FilterSelect({
   label, value, allLabel, options, onChange, allowEmpty = true,
@@ -211,6 +376,7 @@ function toApiFilters(filters: FilterForm): AccountingFilters {
     statuses: filters.statuses.length ? filters.statuses.join(",") : undefined,
     department_ids: filters.department_ids.length ? filters.department_ids.join(",") : undefined,
     type_ids: filters.type_ids.length ? filters.type_ids.join(",") : undefined,
+    query: filters.query.trim() || undefined,
     date_from: filters.date_from || undefined,
     date_to: filters.date_to || undefined,
     withholding_only: filters.withholding_only || undefined,
@@ -240,6 +406,7 @@ export function ExpenseAccountingPage() {
   const [rows, setRows] = useState<AccountingRequest[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [stats, setStats] = useState<Record<string, number>>({});
   const [departments, setDepartments] = useState<Department[]>([]);
   const [types, setTypes] = useState<ExpenseType[]>([]);
@@ -254,8 +421,21 @@ export function ExpenseAccountingPage() {
     if (!currentCompany) return;
     setPage(1);
     setFilters(current => ({ ...current, company_id: String(currentCompany.id) }));
-    setApplied(current => ({ ...current, company_id: String(currentCompany.id) }));
   }, [currentCompany?.id]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const selectedCompany = companies.find(company => company.id === Number(filters.company_id));
+      if (selectedCompany && selectedCompany.id !== currentCompany?.id) {
+        setCurrentCompany(selectedCompany);
+        return;
+      }
+      setPage(1);
+      sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(filters));
+      setApplied(current => JSON.stringify(current) === JSON.stringify(filters) ? current : { ...filters });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [companies, currentCompany?.id, filters, setCurrentCompany]);
 
   useEffect(() => {
     Promise.all([expenseSettingsApi.departments(), expenseTypesApi.list()])
@@ -267,29 +447,22 @@ export function ExpenseAccountingPage() {
     setLoading(true); setError("");
     try {
       const [result, summary] = await Promise.all([
-        expenseAccountingApi.list(toApiFilters(applied), page, PAGE_SIZE), expenseAccountingApi.stats(),
+        expenseAccountingApi.list(toApiFilters(applied), page, pageSize), expenseAccountingApi.stats(),
       ]);
       setRows(result.items); setTotal(result.total); setStats(summary);
     } catch (e) { setError(getApiErrorMessage(e, "โหลดรายการบัญชีไม่สำเร็จ")); }
     finally { setLoading(false); }
-  }, [applied, page]);
+  }, [applied, page, pageSize]);
   useEffect(() => { load(); }, [load]);
-
-  const submitFilters = (event: React.FormEvent) => {
-    event.preventDefault();
-    setPage(1);
-    sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(filters));
-    const selectedCompany = companies.find(company => company.id === Number(filters.company_id));
-    if (selectedCompany && selectedCompany.id !== currentCompany?.id) {
-      setCurrentCompany(selectedCompany); return;
-    }
-    setApplied({ ...filters });
-  };
 
   const resetFilters = () => {
     const cleared = emptyFilters(currentCompany?.id);
     setPage(1);
     sessionStorage.removeItem(FILTER_STORAGE_KEY); setFilters(cleared); setApplied(cleared);
+  };
+
+  const changePageSize = (value: string) => {
+    setError(""); setPage(1); setPageSize(value === "all" ? 0 : Number(value));
   };
 
   const exportExcel = async () => {
@@ -307,6 +480,9 @@ export function ExpenseAccountingPage() {
 
   const visibleDepartments = useMemo(() => departments.filter(item => item.is_active), [departments]);
   const visibleTypes = useMemo(() => types.filter(item => item.is_active), [types]);
+  const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(total / pageSize));
+  const displayedFrom = total === 0 ? 0 : pageSize === 0 ? 1 : ((page - 1) * pageSize) + 1;
+  const displayedTo = pageSize === 0 ? total : Math.min(page * pageSize, total);
 
   return <div className="w-full space-y-6 p-6">
     {/* <FinanceNav /> */}
@@ -324,7 +500,11 @@ export function ExpenseAccountingPage() {
       <StatCard label="รอตรวจเคลียร์" value={stats.settlement_review_count || 0} tone="bg-amber-100 text-amber-700 dark:bg-amber-950" icon={Landmark} />
     </div>
 
-    <form onSubmit={submitFilters} className="space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
+    <form onSubmit={event => event.preventDefault()} className="space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
+      <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
+        <input className={filterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ หรือชื่อผู้รับ" />
+      </label>
+
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <MultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
         <FilterSelect label="บริษัท" value={filters.company_id} allLabel="เลือกบริษัท" allowEmpty={false} options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: company.name_th }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
@@ -333,14 +513,13 @@ export function ExpenseAccountingPage() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
-        <div className="min-w-0 text-sm font-bold">ตั้งแต่วันที่<DatePicker value={filters.date_from} onChange={date_from => setFilters(current => ({ ...current, date_from }))} placeholder="เลือกวันเริ่มต้น" className={`${filterControlClass} !h-12 !rounded-xl`} /></div>
-        <div className="min-w-0 text-sm font-bold">ถึงวันที่<DatePicker value={filters.date_to} onChange={date_to => setFilters(current => ({ ...current, date_to }))} placeholder="เลือกวันสิ้นสุด" className={`${filterControlClass} !h-12 !rounded-xl`} /></div>
-        <label className="flex min-h-12 items-center gap-3 rounded-xl border border-input bg-background px-4 text-sm font-bold transition hover:border-primary/50 hover:bg-muted/30 sm:col-span-2 lg:col-span-2"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>
+        <DateRangeFilter dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))} />
+        <label className="flex min-h-12 items-center gap-3 px-1 text-sm font-bold sm:col-span-1 lg:col-span-3"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>
       </div>
 
-      <div className="flex flex-wrap items-center justify-end gap-3 border-t pt-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
+        <span className="text-xs font-bold text-muted-foreground">ตัวกรองทำงานอัตโนมัติเมื่อเลือกหรือกรอกข้อมูล</span>
         <button type="button" onClick={resetFilters} className="inline-flex h-11 items-center gap-2 rounded-md border border-input bg-background px-8 text-sm font-bold text-muted-foreground transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/30"><Eraser className="h-4 w-4" />ล้างตัวกรอง</button>
-        <button type="submit" className="inline-flex h-11 items-center gap-2 rounded-md bg-slate-900 px-8 text-sm font-black text-white shadow-sm transition hover:bg-slate-700 dark:bg-primary dark:hover:bg-primary/90"><Filter className="h-4 w-4" />กรองข้อมูล</button>
       </div>
     </form>
 
@@ -368,6 +547,16 @@ export function ExpenseAccountingPage() {
       {loading && <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>}
       {!loading && rows.length === 0 && <div className="flex flex-col items-center py-14 text-muted-foreground"><Building2 className="mb-3 h-9 w-9" /><p>ไม่มีรายการตามตัวกรอง</p></div>}
     </div></CardContent></Card>
-    {!loading && total > 0 && <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-muted-foreground"><p>แสดง {((page - 1) * PAGE_SIZE + 1).toLocaleString("th-TH")}–{Math.min(page * PAGE_SIZE, total).toLocaleString("th-TH")} จาก {total.toLocaleString("th-TH")} รายการ · อัปเดตล่าสุด {formatDate(new Date().toISOString())}</p><div className="flex items-center gap-2"><button type="button" onClick={() => setPage(current => Math.max(1, current - 1))} disabled={page === 1} className="inline-flex h-10 items-center gap-1 rounded-lg border px-3 font-bold disabled:opacity-40"><ChevronLeft className="h-4 w-4" />ก่อนหน้า</button><span className="px-2 font-bold">หน้า {page.toLocaleString("th-TH")} / {Math.max(1, Math.ceil(total / PAGE_SIZE)).toLocaleString("th-TH")}</span><button type="button" onClick={() => setPage(current => Math.min(Math.ceil(total / PAGE_SIZE), current + 1))} disabled={page >= Math.ceil(total / PAGE_SIZE)} className="inline-flex h-10 items-center gap-1 rounded-lg border px-3 font-bold disabled:opacity-40">ถัดไป<ChevronRight className="h-4 w-4" /></button></div></div>}
+    {!loading && total > 0 && <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card px-4 py-3 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-2">
+        <span>แสดง {displayedFrom.toLocaleString("th-TH")}–{displayedTo.toLocaleString("th-TH")} จาก {total.toLocaleString("th-TH")} รายการ</span>
+        <span>· ต่อหน้า</span>
+        <select aria-label="จำนวนรายการต่อหน้า" value={pageSize === 0 ? "all" : String(pageSize)} onChange={event => changePageSize(event.target.value)} className="h-9 rounded-lg border border-input bg-background px-3 text-sm font-black text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
+          <option value="10">10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="all">ทั้งหมด</option>
+        </select>
+        <span>· อัปเดตล่าสุด {formatDate(new Date().toISOString())}</span>
+      </div>
+      {pageSize !== 0 && <div className="flex items-center gap-2"><button type="button" onClick={() => setPage(current => Math.max(1, current - 1))} disabled={page === 1} className="inline-flex h-10 items-center gap-1 rounded-lg border px-3 font-bold disabled:opacity-40"><ChevronLeft className="h-4 w-4" />ก่อนหน้า</button><span className="px-2 font-bold">หน้า {page.toLocaleString("th-TH")} / {totalPages.toLocaleString("th-TH")}</span><button type="button" onClick={() => setPage(current => Math.min(totalPages, current + 1))} disabled={page >= totalPages} className="inline-flex h-10 items-center gap-1 rounded-lg border px-3 font-bold disabled:opacity-40">ถัดไป<ChevronRight className="h-4 w-4" /></button></div>}
+    </div>}
   </div>;
 }

@@ -17,7 +17,8 @@ from app.services.expense_signature_service import _placement_box, _request_sign
 from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
 from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import (
-    _accounting_query, _append_legacy_approval_steps, _parse_csv_ints, _parse_csv_values,
+    _accounting_query, _append_legacy_approval_steps, _apply_accounting_pagination,
+    _parse_csv_ints, _parse_csv_values,
 )
 
 
@@ -42,6 +43,27 @@ class AccountingFilterTests(unittest.TestCase):
         self.assertIn(["ready_to_pay", "partially_paid"], parameters)
         self.assertIn([3, 7], parameters)
         self.assertIn([11, 12], parameters)
+
+    def test_zero_page_limit_returns_the_unlimited_statement(self):
+        statement = SimpleNamespace()
+        self.assertIs(_apply_accounting_pagination(statement, 0, 100), statement)
+
+    def test_custom_page_limit_applies_limit_and_offset(self):
+        class Statement:
+            def __init__(self):
+                self.calls = []
+
+            def limit(self, value):
+                self.calls.append(("limit", value))
+                return self
+
+            def offset(self, value):
+                self.calls.append(("offset", value))
+                return self
+
+        statement = Statement()
+        self.assertIs(_apply_accounting_pagination(statement, 75, 150), statement)
+        self.assertEqual(statement.calls, [("limit", 75), ("offset", 150)])
 
 
 def request(**overrides):
