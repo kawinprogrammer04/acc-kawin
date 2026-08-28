@@ -350,7 +350,10 @@ def _accounting_transfer_amount(
 ):
     if _is_adjustment_transfer(request, paid_request_ids, settlements):
         return settlements[request.id].difference_amount
-    return request.remaining_amount
+    # The accounting list mirrors HR's approved transfer amount.  A completed
+    # request legitimately has remaining_amount=0 after its payment is recorded,
+    # but its historical transfer amount must continue to show the approved net.
+    return request.net_amount
 
 
 @router.get("/expense-requests/accounting/list")

@@ -17,12 +17,35 @@ from app.services.expense_signature_service import _placement_box, _request_sign
 from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
 from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import (
-    _accounting_query, _append_legacy_approval_steps, _apply_accounting_pagination, accounting_stats,
-    _parse_csv_ints, _parse_csv_values,
+    _accounting_query, _accounting_transfer_amount, _append_legacy_approval_steps,
+    _apply_accounting_pagination, accounting_stats, _parse_csv_ints, _parse_csv_values,
 )
 
 
 class AccountingFilterTests(unittest.TestCase):
+    def test_completed_request_keeps_approved_net_as_transfer_amount(self):
+        row = SimpleNamespace(
+            id="request-1", status="completed",
+            net_amount=Decimal("87.00"), remaining_amount=Decimal("0.00"),
+        )
+        self.assertEqual(
+            _accounting_transfer_amount(row, {"request-1"}, {}),
+            Decimal("87.00"),
+        )
+
+    def test_adjustment_transfer_keeps_settlement_difference(self):
+        row = SimpleNamespace(
+            id="request-1", status="accounting_review",
+            net_amount=Decimal("1000.00"), remaining_amount=Decimal("0.00"),
+        )
+        settlement = SimpleNamespace(
+            settlement_type="additional", difference_amount=Decimal("125.00"),
+        )
+        self.assertEqual(
+            _accounting_transfer_amount(row, {"request-1"}, {"request-1": settlement}),
+            Decimal("125.00"),
+        )
+
     def test_csv_filters_trim_empty_values_and_remove_duplicates(self):
         self.assertEqual(
             _parse_csv_values("ready_to_pay, partially_paid,ready_to_pay,,"),
