@@ -545,14 +545,21 @@ export function ExpenseAccountingPage() {
         </td>
         <td className="px-4 py-4" />
         <td className="px-4 py-4 text-right"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="inline-flex h-10 items-center rounded-md bg-primary/10 px-6 text-xs font-black text-primary hover:bg-primary/20 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700">เปิดรายการ</Link></td>
-      </tr>)}</tbody></table>
+      </tr>)}</tbody>
+      {!loading && total > 0 && <tfoot className="border-t-2 bg-muted/50">
+        <tr>
+          <td colSpan={5} className="px-4 py-4 text-right text-sm font-black">ยอดโอนรวม</td>
+          <td className="whitespace-nowrap px-4 py-4 text-right text-base font-black text-primary">{formatCurrency(stats.transfer_amount_total || 0)}</td>
+          <td colSpan={5} />
+        </tr>
+      </tfoot>}
+    </table>
       {loading && <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>}
       {!loading && rows.length === 0 && <div className="flex flex-col items-center py-14 text-muted-foreground"><Building2 className="mb-3 h-9 w-9" /><p>ไม่มีรายการตามตัวกรอง</p></div>}
     </div></CardContent></Card>
     {!loading && total > 0 && <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border bg-card px-4 py-3 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-center gap-2">
         <span>แสดง {displayedFrom.toLocaleString("th-TH")}–{displayedTo.toLocaleString("th-TH")} จาก {total.toLocaleString("th-TH")} รายการ</span>
-        <span className="font-black text-primary">· ยอดโอนรวม {formatCurrency(stats.transfer_amount_total || 0)}</span>
         <span>· ต่อหน้า</span>
         <select aria-label="จำนวนรายการต่อหน้า" value={pageSize === 0 ? "all" : String(pageSize)} onChange={event => changePageSize(event.target.value)} className="h-9 rounded-lg border border-input bg-background px-3 text-sm font-black text-foreground outline-none focus:border-primary focus:ring-2 focus:ring-primary/20">
           <option value="10">10</option><option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="all">ทั้งหมด</option>
