@@ -520,7 +520,6 @@ def _build_transaction(
         warnings=row_warnings,
     )
 
-
 def _tabular_statement(
     transactions: list[ParsedTransaction], extraction_method: str
 ) -> ParsedStatement:
@@ -1739,30 +1738,46 @@ def parse_statement(filename: str, data: bytes) -> list[ParsedTransaction]:
     return parse_statement_with_metadata(filename, data).transactions
 
 
-# ── Claude Vision OCR — image batch uploads ───────────────────────────────────
+# ── Vision-model OCR — image batch uploads ────────────────────────────────────
+# Uses a local Ollama vision model (free, self-hosted, no per-request API
+# cost) — same pattern as backend/app/services/ocr_service.py in the main
+# app. Ollama must run on the HOST machine, not in a container: Docker
+# Desktop on macOS can't pass the GPU through to a Linux container, so a
+# containerized Ollama would fall back to slow CPU-only inference.
+#
+# Setup on the host:
+#   brew install ollama
+#   ollama pull qwen2.5vl:7b   # default OLLAMA_VISION_MODEL — override via env
+#   ollama serve               # or let the Ollama menu-bar app run it
 
-_CLAUDE_IMAGE_OCR_PROMPT = """This screenshot is from TikTok Ads Manager (Tools → Transactions) or a billing portal.
-Extract ALL visible payment transaction rows from the table.
+_VISION_OCR_PROMPT = (
+    "Read this payment screenshot and return ONLY a JSON array. Each row may use these keys: "
+    "transaction_time, account_name, transaction_id, invoice_no, card_label, "
+    "payment_reference, card_last4, status, amount_thb. "
+    "Return [] when there are no visible payment rows. Never guess missing values. "
+    "Copy transaction IDs, invoice numbers, card labels and reference codes exactly. "
+    "The short code beneath the card name is payment_reference, not the card number. "
+    "amount_thb must be a positive number."
+)
 
-Return a JSON array. Each element must have exactly these keys (use null when not visible):
-{
-  "transaction_time": "YYYY-MM-DD HH:MM:SS",
-  "account_name": "advertiser account or company name",
-  "transaction_id": "full transaction ID — join both parts with | if separated",
-  "invoice_no": "invoice or document reference (e.g. THTT202602881921)",
-  "card_label": "FIRST line of payment method column — card type and last 4 digits (e.g. MasterCard ••• 1889)",
-  "payment_reference": "SECOND line of payment method column — the short reference/auth code below the card name (e.g. NJSA6KMPM2). This is NOT the card number.",
-  "card_last4": "last 4 digits of payment card extracted from card_label",
-  "status": "Success or payment status as shown",
-  "amount_thb": 19706.61
+_VISION_TRANSACTION_SCHEMA: dict = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "transaction_time": {"type": "string"},
+            "account_name": {"type": "string"},
+            "transaction_id": {"type": "string"},
+            "invoice_no": {"type": "string"},
+            "card_label": {"type": "string"},
+            "payment_reference": {"type": "string"},
+            "card_last4": {"type": "string"},
+            "status": {"type": "string"},
+            "amount_thb": {"type": "number"},
+        },
+        "required": ["amount_thb"],
+    },
 }
-
-Rules:
-- amount_thb is a positive float (no currency symbol, no sign)
-- The วิธีชำระเงิน / Payment Method cell contains two lines: line 1 = card info → card_label, line 2 = reference code → payment_reference
-- payment_reference is the short alphanumeric code on the second line (e.g. NJSA6KMPM2), copy it exactly
-- Return [] if no transaction rows are visible
-- Return ONLY valid JSON array, no markdown fences, no explanation"""
 
 
 async def _ocr_one_image(
@@ -1772,96 +1787,96 @@ async def _ocr_one_image(
     sem: Any,
     model: str,
 ) -> list[dict]:
-    import asyncio as _asyncio
     import base64 as _base64
     import json as _json
+    import logging as _logging
 
     async with sem:
-        ext = Path(filename).suffix.lower().lstrip(".")
-        media_map = {
-            "jpg": "image/jpeg",
-            "jpeg": "image/jpeg",
-            "png": "image/png",
-            "webp": "image/webp",
-        }
-        media_type = media_map.get(ext, "image/jpeg")
         b64 = _base64.b64encode(data).decode()
-        resp = await client.messages.create(
-            model=model,
-            max_tokens=2048,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": b64,
-                            },
-                        },
-                        {"type": "text", "text": _CLAUDE_IMAGE_OCR_PROMPT},
-                    ],
-                }
-            ],
-        )
-        text = resp.content[0].text.strip()
-        import logging as _logging
+        payload = {
+            "model": model,
+            "prompt": _VISION_OCR_PROMPT,
+            "images": [b64],
+            # JSON mode is substantially faster on small local vision models
+            # than full grammar-constrained JSON Schema decoding.
+            "format": "json",
+            "stream": False,
+            "options": {
+                # A screenshot needs only a compact structured answer. Without
+                # a cap, a small local model can spend minutes over-generating
+                # before the JSON parser ever gets a response.
+                "num_predict": 128,
+                "temperature": 0,
+            },
+        }
+        resp = await client.post("/api/generate", json=payload)
+        resp.raise_for_status()
+        text = str(resp.json().get("response", "")).strip()
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
         _logging.getLogger(__name__).info(
             "[OCR] %s → raw response: %.500s", filename, text
         )
-        # strip optional markdown code fences
-        text = re.sub(r"^```[a-z]*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text.strip())
-        rows: list[dict] = _json.loads(text.strip())
+        parsed = _json.loads(text) if text else []
+        if isinstance(parsed, list):
+            rows: list[dict] = parsed
+        elif isinstance(parsed, dict) and isinstance(parsed.get("transactions"), list):
+            rows = parsed["transactions"]
+        elif isinstance(parsed, dict) and parsed.get("amount_thb") is not None:
+            rows = [parsed]
+        else:
+            rows = []
         _logging.getLogger(__name__).info(
             "[OCR] %s → parsed %d rows", filename, len(rows)
         )
-        for row in rows:
+        clean_rows = [row for row in rows if isinstance(row, dict)]
+        for row in clean_rows:
             row["_src"] = filename
-        return rows
+        return clean_rows
 
 
-async def parse_images_with_claude(
+async def parse_images_with_vision_model(
     image_items: list[tuple[str, bytes]],
     *,
-    concurrency: int = 8,
+    concurrency: int | None = None,
 ) -> "ParsedStatement":
     """
-    OCR a list of (filename, image_bytes) screenshots with Claude Vision.
-    Returns a ParsedStatement compatible with the existing upload/preview pipeline.
-    Requires ANTHROPIC_API_KEY env var.
+    OCR a list of (filename, image_bytes) screenshots with a local Ollama
+    vision model (free — see the module comment above for setup). Returns a
+    ParsedStatement compatible with the existing upload/preview pipeline.
+
+    concurrency defaults to one request at a time since
+    Ollama on a single host GPU processes requests basically serially anyway
+    — piling on concurrent requests just queues them and risks timeouts.
     """
     import asyncio as _asyncio
+    import logging as _logging
 
-    try:
-        import anthropic as _anthropic
-    except ImportError as exc:
-        raise ValueError(
-            "ต้องติดตั้ง anthropic library: pip install anthropic"
-        ) from exc
+    import httpx as _httpx
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError(
-            "ต้องตั้งค่า ANTHROPIC_API_KEY ใน environment variable ของ statement service"
-        )
+    ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434").rstrip("/")
+    model = os.getenv("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")
+    timeout = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
 
-    model = os.getenv("STATEMENT_CLAUDE_MODEL", "claude-haiku-4-5-20251001")
-    client = _anthropic.AsyncAnthropic(api_key=api_key)
-    sem = _asyncio.Semaphore(concurrency)
-
-    tasks = [_ocr_one_image(client, name, data, sem, model) for name, data in image_items]
-    results = await _asyncio.gather(*tasks, return_exceptions=True)
+    configured_concurrency = int(os.getenv("STATEMENT_VISION_CONCURRENCY", "1"))
+    request_concurrency = max(1, concurrency if concurrency is not None else configured_concurrency)
+    sem = _asyncio.Semaphore(request_concurrency)
+    async with _httpx.AsyncClient(base_url=ollama_url, timeout=timeout) as client:
+        tasks = [_ocr_one_image(client, name, data, sem, model) for name, data in image_items]
+        results = await _asyncio.gather(*tasks, return_exceptions=True)
 
     transactions: list[ParsedTransaction] = []
     warn: list[str] = []
     error_count = 0
 
-    for result in results:
+    for (filename, _), result in zip(image_items, results):
         if isinstance(result, Exception):
             error_count += 1
+            _logging.getLogger(__name__).error(
+                "[OCR] %s failed: %s: %s",
+                filename,
+                type(result).__name__,
+                result,
+            )
             continue
         for row in result:
             src = str(row.get("_src") or "")
@@ -1874,7 +1889,14 @@ async def parse_images_with_claude(
             except (TypeError, ValueError):
                 amount = None
 
-            if not date_part or amount is None:
+            # Real TikTok "Transactions" screenshots sometimes don't show a
+            # date per row at all (the model honestly returns empty rather than
+            # guessing) — don't discard an otherwise-valid row over that;
+            # only a missing amount makes it useless. date_part=None still
+            # flows through fine: reference_items.transaction_date is
+            # nullable, and matching falls back to token/description overlap
+            # (see _common_token_match) instead of an exact-date match.
+            if amount is None:
                 continue
 
             invoice = str(row.get("invoice_no") or "").strip()
@@ -1897,7 +1919,7 @@ async def parse_images_with_claude(
             # fallback: transaction_id
             tr_code = (payment_ref[:50] if payment_ref else None) or (tx_id[:50] if tx_id else None)
             amt = round(amount, 2)
-            row_hash = make_row_hash(date_part, time_part, amt, description, channel, tr_code)
+            row_hash = make_row_hash(date_part or "", time_part, amt, description, channel, tr_code)
 
             transactions.append(
                 ParsedTransaction(
@@ -1920,6 +1942,12 @@ async def parse_images_with_claude(
     if error_count:
         warn.append(f"OCR ล้มเหลว {error_count} จาก {len(image_items)} ไฟล์")
     if not transactions:
+        if image_items and error_count == len(image_items):
+            raise ValueError(
+                f"เชื่อมต่อ Ollama ไม่ได้ที่ {ollama_url} หรืออ่านคำตอบไม่ได้ — "
+                f"ตรวจสอบว่า `ollama serve` รันอยู่บนเครื่อง host และ pull โมเดล "
+                f"{model} แล้ว (ollama pull {model})"
+            )
         raise ValueError(
             f"ไม่พบรายการชำระเงินใน {len(image_items)} ภาพที่อัปโหลด"
             + (f" (ล้มเหลว {error_count} ไฟล์)" if error_count else "")
@@ -1930,7 +1958,7 @@ async def parse_images_with_claude(
     return ParsedStatement(
         issuer="TikTok Ads",
         statement_type="ads_screenshot",
-        extraction_method="claude_vision",
+        extraction_method="ollama_vision",
         masked_reference=None,
         statement_date_from=start,
         statement_date_to=end,

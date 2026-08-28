@@ -5,10 +5,17 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import time
 import uuid
+
+# Without this, the root logger defaults to WARNING and the OCR debug logs in
+# parsers.py (_ocr_one_image's "raw response"/"parsed N rows" INFO lines —
+# the only visibility we have into *why* a screenshot failed to parse) are
+# silently dropped. `docker logs acc_statement` needs this to show anything.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 from contextlib import asynccontextmanager, closing
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
@@ -30,7 +37,7 @@ from app.parsers import (
     make_row_hash,
     parse_amount,
     parse_date,
-    parse_images_with_claude,
+    parse_images_with_vision_model,
     parse_statement_with_metadata,
     parse_time,
 )
@@ -917,7 +924,7 @@ async def process_image_upload_job(
                 processing_started_at=time.time(),
                 updated_at=time.time(),
             )
-            statement = await parse_images_with_claude(image_items)
+            statement = await parse_images_with_vision_model(image_items)
             preview_token = await asyncio.to_thread(
                 create_preview,
                 UPLOAD_DIR,
@@ -978,11 +985,17 @@ def _preview_rows(
     statement: dict[str, Any],
     submitted: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    # Ads-evidence screenshots (statement_type == "ads_screenshot") land in
+    # reference_items, whose transaction_date column is nullable — unlike a
+    # real statement's transactions.transaction_date (NOT NULL). Real TikTok
+    # screenshots sometimes don't show a date per row at all, so requiring
+    # one there would silently discard otherwise-valid rows.
+    is_ads_screenshot = statement.get("statement_type") == "ads_screenshot"
     rows: list[dict[str, Any]] = []
     for index, original in enumerate(statement.get("transactions") or []):
         row = dict(original)
         valid = bool(
-            row.get("transaction_date")
+            (row.get("transaction_date") or is_ads_screenshot)
             and row.get("description")
             and row.get("amount") is not None
         )
@@ -1028,6 +1041,8 @@ def _render_preview(
 def _submitted_preview_rows(
     statement: dict[str, Any], form: Any
 ) -> tuple[list[ParsedTransaction], list[dict[str, Any]], list[str]]:
+    # See _preview_rows — same "date optional for ads_screenshot" exception.
+    is_ads_screenshot = statement.get("statement_type") == "ads_screenshot"
     parsed: list[ParsedTransaction] = []
     submitted: dict[int, dict[str, Any]] = {}
     errors: list[str] = []
@@ -1046,12 +1061,12 @@ def _submitted_preview_rows(
         row_errors: list[str] = []
         requires_review = (
             float(original.get("confidence") or 0) < 60
-            or not original.get("transaction_date")
+            or (not original.get("transaction_date") and not is_ads_screenshot)
             or original.get("amount") is None
             or not str(original.get("description") or "").strip()
         )
         if include:
-            if not transaction_date:
+            if not transaction_date and not is_ads_screenshot:
                 row_errors.append("วันที่ไม่ถูกต้อง")
             if not raw_description:
                 row_errors.append("กรุณาระบุรายละเอียด")
@@ -1081,7 +1096,7 @@ def _submitted_preview_rows(
         channel = str(original.get("channel") or "").strip()[:100] or None
         tr_code = raw_tr_code_form[:50] or None
         row_hash = make_row_hash(
-            transaction_date,
+            transaction_date or "",
             transaction_time,
             signed_amount,
             raw_description,
@@ -1648,6 +1663,112 @@ def transaction_filters(
         clauses.append("(t.description LIKE ? OR t.reference LIKE ? OR t.notes LIKE ?)")
         term = f"%{query.strip()}%"
         values.extend((term, term, term))
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, values
+
+
+SUMMARY_PLATFORM_LABELS = {
+    "facebook": "Facebook/Meta",
+    "tiktok": "TikTok",
+    "google": "Google",
+    "payment": "ชำระบัตร/เงินคืน",
+    "other": "อื่น ๆ/ไม่ระบุ",
+}
+
+SUMMARY_STATUS_LABELS = {
+    "matched": "ตรวจเรียบร้อย",
+    "unmatched": "ต้องตรวจ",
+    "duplicates": "รายการซ้ำ",
+    "missing-attachments": "ไม่มีหลักฐาน",
+    "ignored": "ไม่นำมาคำนวณ",
+}
+
+
+def summary_platform_sql(alias: str = "t") -> str:
+    """Return the shared, user-facing platform grouping for statement rows."""
+    haystack = (
+        f"LOWER(COALESCE({alias}.channel, '') || ' ' || "
+        f"COALESCE({alias}.description, ''))"
+    )
+    category = f"LOWER(COALESCE({alias}.category, ''))"
+    return f"""
+        CASE
+            WHEN {category} LIKE '%%ชำระบัตร%%'
+              OR {category} LIKE '%%คืนเงิน%%' THEN 'payment'
+            WHEN {haystack} LIKE '%%facebook%%'
+              OR {haystack} LIKE '%%meta%%' THEN 'facebook'
+            WHEN {haystack} LIKE '%%tiktok%%' THEN 'tiktok'
+            WHEN {haystack} LIKE '%%google%%' THEN 'google'
+            ELSE 'other'
+        END
+    """
+
+
+def summary_transaction_filter_parts(
+    *,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    card_last4: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    statement_id: int | None = None,
+    alias: str = "t",
+) -> tuple[list[str], list[Any]]:
+    """Build one set of filters shared by summary, review, and exports."""
+    clauses: list[str] = []
+    values: list[Any] = []
+
+    start = parse_iso_date(date_from)
+    end = parse_iso_date(date_to)
+    if date_from and not start:
+        raise HTTPException(status_code=422, detail="วันที่เริ่มต้นไม่ถูกต้อง")
+    if date_to and not end:
+        raise HTTPException(status_code=422, detail="วันที่สิ้นสุดไม่ถูกต้อง")
+    if start and end and start > end:
+        raise HTTPException(status_code=422, detail="วันที่เริ่มต้นต้องไม่อยู่หลังวันที่สิ้นสุด")
+    if start:
+        clauses.append(f"{alias}.transaction_date >= ?")
+        values.append(start.isoformat())
+    if end:
+        clauses.append(f"{alias}.transaction_date <= ?")
+        values.append(end.isoformat())
+
+    if card_last4:
+        clean_last4 = re.sub(r"\D", "", card_last4)[-4:]
+        if len(clean_last4) != 4:
+            raise HTTPException(status_code=422, detail="เลขท้ายบัตรต้องมี 4 หลัก")
+        clauses.append(f"{alias}.card_last4 = ?")
+        values.append(clean_last4)
+
+    if platform:
+        if platform not in SUMMARY_PLATFORM_LABELS:
+            raise HTTPException(status_code=422, detail="แพลตฟอร์มที่เลือกไม่ถูกต้อง")
+        clauses.append(f"({summary_platform_sql(alias)}) = ?")
+        values.append(platform)
+
+    if status:
+        if status == "duplicates":
+            clauses.append(f"{alias}.is_duplicate = 1")
+        elif status == "missing-attachments":
+            clauses.append(
+                f"{alias}.match_status = 'matched' AND {alias}.has_attachment = 0"
+            )
+        elif status in {"matched", "unmatched", "ignored"}:
+            clauses.append(f"{alias}.match_status = ?")
+            values.append(status)
+        else:
+            raise HTTPException(status_code=422, detail="สถานะที่เลือกไม่ถูกต้อง")
+
+    if statement_id is not None:
+        if statement_id <= 0:
+            raise HTTPException(status_code=422, detail="ไฟล์ Statement ที่เลือกไม่ถูกต้อง")
+        clauses.append(f"{alias}.statement_id = ?")
+        values.append(statement_id)
+    return clauses, values
+
+
+def summary_transaction_filters(**kwargs: Any) -> tuple[str, list[Any]]:
+    clauses, values = summary_transaction_filter_parts(**kwargs)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     return where, values
 
@@ -2253,14 +2374,32 @@ async def audit_page(request: Request) -> HTMLResponse:
 
 
 @app.get("/export/{kind}.csv")
-async def export_csv(kind: str) -> Response:
+async def export_csv(
+    kind: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    card_last4: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    statement_id: int | None = None,
+) -> Response:
     if kind not in {"matched", "unmatched", "missing-attachments"}:
         raise HTTPException(status_code=404, detail="Export not found")
-    where = {
+    export_clause = {
         "matched": "t.match_status = 'matched'",
         "unmatched": "t.match_status = 'unmatched'",
         "missing-attachments": "t.match_status = 'matched' AND t.has_attachment = 0",
     }[kind]
+    clauses, values = summary_transaction_filter_parts(
+        date_from=date_from,
+        date_to=date_to,
+        card_last4=card_last4,
+        platform=platform,
+        status=status,
+        statement_id=statement_id,
+    )
+    clauses.append(export_clause)
+    where = f"WHERE {' AND '.join(clauses)}"
     with closing(connect()) as db:
         rows = db.execute(
             f"""
@@ -2283,9 +2422,10 @@ async def export_csv(kind: str) -> Response:
             JOIN statements s ON s.id = t.statement_id
             LEFT JOIN match_groups mg ON mg.id = t.match_group_id
             LEFT JOIN reference_items ri ON ri.id = mg.reference_item_id
-            WHERE {where}
+            {where}
             ORDER BY t.transaction_date, t.transaction_time, t.id
-            """
+            """,
+            values,
         ).fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
@@ -2380,11 +2520,28 @@ def _xlsx_data_sheet(wb: Any, title: str, rows: list[dict], fill_hex: str) -> No
 
 
 @app.get("/export/report.xlsx")
-async def export_excel_report() -> Response:
+async def export_excel_report(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    card_last4: str | None = None,
+    platform: str | None = None,
+    status: str | None = None,
+    statement_id: int | None = None,
+) -> Response:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill
 
+    base_clauses, base_values = summary_transaction_filter_parts(
+        date_from=date_from,
+        date_to=date_to,
+        card_last4=card_last4,
+        platform=platform,
+        status=status,
+        statement_id=statement_id,
+    )
+
     def fetch(where_clause: str) -> list[dict]:
+        clauses = [*base_clauses, where_clause]
         return db.execute(
             f"""
             SELECT
@@ -2398,25 +2555,40 @@ async def export_excel_report() -> Response:
             JOIN statements s ON s.id = t.statement_id
             LEFT JOIN match_groups mg ON mg.id = t.match_group_id
             LEFT JOIN reference_items ri ON ri.id = mg.reference_item_id
-            WHERE {where_clause}
+            WHERE {' AND '.join(clauses)}
             ORDER BY t.transaction_date DESC, t.transaction_time DESC, t.id DESC
-            """
+            """,
+            base_values,
         ).fetchall()
 
     with closing(connect()) as db:
         matched = fetch("t.match_status = 'matched' AND t.is_duplicate = 0")
         unmatched = fetch("t.match_status = 'unmatched' AND t.is_duplicate = 0")
         duplicates = fetch("t.is_duplicate = 1")
+        totals_where = f"WHERE {' AND '.join(base_clauses)}" if base_clauses else ""
         totals = db.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS total,
                 SUM(CASE WHEN match_status='matched' AND is_duplicate=0 THEN 1 ELSE 0 END) AS matched,
                 SUM(CASE WHEN match_status='unmatched' AND is_duplicate=0 THEN 1 ELSE 0 END) AS unmatched,
                 SUM(CASE WHEN is_duplicate=1 THEN 1 ELSE 0 END) AS duplicates
-            FROM transactions
-            """
+            FROM transactions t
+            {totals_where}
+            """,
+            base_values,
         ).fetchone()
+        statement_name = ""
+        if statement_id:
+            statement_row = db.execute(
+                "SELECT original_filename FROM statements WHERE id = ?", (statement_id,)
+            ).fetchone()
+            statement_name = str(statement_row["original_filename"] or "") if statement_row else ""
+        card_name = ""
+        if card_last4:
+            clean_last4 = re.sub(r"\D", "", card_last4)[-4:]
+            card_row = db.execute("SELECT name FROM cards WHERE last4 = ?", (clean_last4,)).fetchone()
+            card_name = str(card_row["name"] or "") if card_row else ""
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -2429,6 +2601,21 @@ async def export_excel_report() -> Response:
     ws_s.append(["✅ Matched", int(totals["matched"] or 0)])
     ws_s.append(["❌ Unmatched", int(totals["unmatched"] or 0)])
     ws_s.append(["⚠ Duplicate", int(totals["duplicates"] or 0)])
+    selected_filters: list[tuple[str, str]] = []
+    if date_from or date_to:
+        selected_filters.append(("ช่วงวันที่", f"{date_from or 'เริ่มต้น'} ถึง {date_to or 'ปัจจุบัน'}"))
+    if card_last4:
+        clean_last4 = re.sub(r"\D", "", card_last4)[-4:]
+        selected_filters.append(("บัตร", f"{card_name + ' ' if card_name else ''}••••{clean_last4}"))
+    if platform:
+        selected_filters.append(("แพลตฟอร์ม", SUMMARY_PLATFORM_LABELS.get(platform, platform)))
+    if status:
+        selected_filters.append(("สถานะ", SUMMARY_STATUS_LABELS.get(status, status)))
+    if statement_id:
+        selected_filters.append(("ไฟล์ Statement", statement_name or f"ID {statement_id}"))
+    ws_s.append(["ตัวกรอง", "ข้อมูลทั้งหมด" if not selected_filters else "ตามรายการด้านล่าง"])
+    for label, selected_value in selected_filters:
+        ws_s.append([label, selected_value])
     ws_s["A1"].font = Font(bold=True, size=13, color="FFFFFF")
     ws_s["A1"].fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     ws_s.column_dimensions["A"].width = 28
@@ -2576,3 +2763,12 @@ async def delete_card(card_id: int) -> RedirectResponse:
         db.execute("DELETE FROM cards WHERE id = ?", (card_id,))
         db.commit()
     return redirect("/cards")
+
+
+# Imported here (not at module top, and not interleaved earlier) so
+# `app.api` can safely do `from app.main import ...` for every helper
+# defined throughout this file without a circular-import error — by the
+# end of module execution all of them exist.
+from app.api import api_router  # noqa: E402
+
+app.include_router(api_router)
