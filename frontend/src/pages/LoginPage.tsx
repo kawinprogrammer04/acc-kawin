@@ -15,18 +15,19 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [searchParams] = useSearchParams();
-  const [ssoLoading, setSsoLoading] = useState(false);
+  const [hrSsoToken] = useState(() => searchParams.get("token"));
+  const [ssoLoading, setSsoLoading] = useState(() => Boolean(hrSsoToken));
+  const [ssoAuthenticated, setSsoAuthenticated] = useState(false);
   const [ssoError, setSsoError] = useState("");
 
   useEffect(() => {
-    const hrToken = searchParams.get("token");
-    if (!hrToken) return;
+    if (!hrSsoToken) return;
     // Strip the token from the address bar immediately, before the exchange
     // even resolves — it must not linger in browser history/back-button
     // state whether the exchange succeeds or fails.
     window.history.replaceState({}, "", "/login");
-    setSsoLoading(true);
-    loginWithHrToken(hrToken)
+    loginWithHrToken(hrSsoToken)
+      .then(() => setSsoAuthenticated(true))
       .catch((e) => {
         const status = e?.response?.status;
         if (status === 401) {
@@ -43,7 +44,9 @@ export function LoginPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (user) return <Navigate to="/" replace />;
+  if (user && (!hrSsoToken || ssoAuthenticated)) {
+    return <Navigate to={ssoAuthenticated ? "/expense-requests" : "/"} replace />;
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
