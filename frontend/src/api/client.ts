@@ -1,4 +1,4 @@
-import axios from "axios";
+import axios, { type AxiosInstance } from "axios";
 
 export const api = axios.create({ baseURL: "/api" });
 
@@ -34,72 +34,82 @@ export function getApiErrorMessage(error: unknown, fallback = "เกิดข�
   return fallback;
 }
 
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+// Attaches the same Authorization/X-Company-Id + debug-logging + 401 handling
+// to any axios instance — shared by the main `/api` client above and the
+// standalone statement-matcher client (see api/statement.ts) so both carry
+// the logged-in user's bearer token automatically.
+export function attachAuth(instance: AxiosInstance): AxiosInstance {
+  instance.interceptors.request.use((config) => {
+    const token = localStorage.getItem("token");
+    if (token) config.headers.Authorization = `Bearer ${token}`;
 
-  const companyId = localStorage.getItem("company_id");
-  if (companyId) config.headers["X-Company-Id"] = companyId;
+    const companyId = localStorage.getItem("company_id");
+    if (companyId) config.headers["X-Company-Id"] = companyId;
 
-  (config as typeof config & { _startedAt?: number })._startedAt = performance.now();
-  if (apiDebugEnabled && localStorage.getItem("debug_api") === "verbose") {
-    console.debug(`[API] ${config.method?.toUpperCase()} ${config.url}`, {
-      params: config.params,
-      data: sanitizePayload(config.data),
-      companyId: companyId || null,
-    });
-  }
-  return config;
-});
-
-api.interceptors.response.use(
-  (res) => {
+    (config as typeof config & { _startedAt?: number })._startedAt = performance.now();
     if (apiDebugEnabled && localStorage.getItem("debug_api") === "verbose") {
-      const startedAt = (res.config as typeof res.config & { _startedAt?: number })._startedAt;
-      console.debug(
-        `[API OK] ${res.config.method?.toUpperCase()} ${res.config.url} → ${res.status}`,
-        { durationMs: startedAt ? Math.round(performance.now() - startedAt) : undefined }
-      );
-    }
-    return res;
-  },
-  (err) => {
-    const config = err.config || {};
-    const startedAt = (config as typeof config & { _startedAt?: number })._startedAt;
-    const responseData = err.response?.data;
-    const requestId =
-      err.response?.headers?.["x-request-id"] || responseData?.request_id || null;
-
-    if (apiDebugEnabled) {
-      const method = config.method?.toUpperCase() || "REQUEST";
-      const status = err.response?.status ?? "NETWORK";
-      console.groupCollapsed(
-        `%c[API ERROR] ${method} ${config.url || "(unknown)"} → ${status}`,
-        "color:#dc2626;font-weight:bold"
-      );
-      console.error({
-        message: err.message,
-        status: err.response?.status,
-        detail: responseData?.detail,
-        debug: responseData?.debug,
-        errorType: responseData?.error_type,
-        requestId,
-        durationMs: startedAt ? Math.round(performance.now() - startedAt) : undefined,
+      console.debug(`[API] ${config.method?.toUpperCase()} ${config.url}`, {
         params: config.params,
-        requestData: sanitizePayload(config.data),
-        responseData,
+        data: sanitizePayload(config.data),
+        companyId: companyId || null,
       });
-      console.trace("Action stack");
-      console.groupEnd();
     }
+    return config;
+  });
 
-    if (err.response?.status === 401 && localStorage.getItem("token")) {
-      localStorage.removeItem("token");
-      if (window.location.pathname !== "/login") window.location.href = "/login";
+  instance.interceptors.response.use(
+    (res) => {
+      if (apiDebugEnabled && localStorage.getItem("debug_api") === "verbose") {
+        const startedAt = (res.config as typeof res.config & { _startedAt?: number })._startedAt;
+        console.debug(
+          `[API OK] ${res.config.method?.toUpperCase()} ${res.config.url} → ${res.status}`,
+          { durationMs: startedAt ? Math.round(performance.now() - startedAt) : undefined }
+        );
+      }
+      return res;
+    },
+    (err) => {
+      const config = err.config || {};
+      const startedAt = (config as typeof config & { _startedAt?: number })._startedAt;
+      const responseData = err.response?.data;
+      const requestId =
+        err.response?.headers?.["x-request-id"] || responseData?.request_id || null;
+
+      if (apiDebugEnabled) {
+        const method = config.method?.toUpperCase() || "REQUEST";
+        const status = err.response?.status ?? "NETWORK";
+        console.groupCollapsed(
+          `%c[API ERROR] ${method} ${config.url || "(unknown)"} → ${status}`,
+          "color:#dc2626;font-weight:bold"
+        );
+        console.error({
+          message: err.message,
+          status: err.response?.status,
+          detail: responseData?.detail,
+          debug: responseData?.debug,
+          errorType: responseData?.error_type,
+          requestId,
+          durationMs: startedAt ? Math.round(performance.now() - startedAt) : undefined,
+          params: config.params,
+          requestData: sanitizePayload(config.data),
+          responseData,
+        });
+        console.trace("Action stack");
+        console.groupEnd();
+      }
+
+      if (err.response?.status === 401 && localStorage.getItem("token")) {
+        localStorage.removeItem("token");
+        if (window.location.pathname !== "/login") window.location.href = "/login";
+      }
+      return Promise.reject(err);
     }
-    return Promise.reject(err);
-  }
-);
+  );
+
+  return instance;
+}
+
+attachAuth(api);
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 export const authApi = {
@@ -110,7 +120,6 @@ export const authApi = {
   me: () => api.get("/auth/me").then((r) => r.data),
   mySignature: () => api.get("/auth/me/signature").then((r) => r.data as { signature_data_url: string }),
 };
-
 // ── Accounts ─────────────────────────────────────────────────────────────────
 export const accountsApi = {
   list: (params?: { account_type?: string; is_active?: boolean; is_header?: boolean }) =>
