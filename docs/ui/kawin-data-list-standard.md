@@ -80,6 +80,10 @@ Behavior:
 ## Data table and summary row
 
 - Use explicit, task-approved column order.
+- Long tables use the shared `dataListTableScrollClass` scroll container and
+  `dataListTableHeaderCellClass` on every header cell. Column headers remain
+  visible while the user scrolls vertically, with an opaque background and a
+  subtle divider above the moving rows.
 - Numeric columns are right-aligned in the header, body, and footer.
 - Aggregate values belong in a table `<tfoot>` summary row and must occupy the
   exact column they summarize. Do not place a column total in the pagination bar.
