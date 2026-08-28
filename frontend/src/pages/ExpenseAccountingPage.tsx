@@ -9,7 +9,11 @@ import { DataListFilterSelect, DataListMultiFilterSelect } from "@/components/da
 import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
 import { PresetDateRangeFilter } from "@/components/data-list/PresetDateRangeFilter";
-import { dataListFilterControlClass } from "@/components/data-list/styles";
+import {
+  dataListFilterControlClass,
+  dataListTableHeaderCellClass,
+  dataListTableScrollClass,
+} from "@/components/data-list/styles";
 import { getApiErrorMessage } from "@/api/client";
 import {
   expenseAccountingApi, expenseSettingsApi, expenseTypesApi,
@@ -239,7 +243,7 @@ export function ExpenseAccountingPage() {
     {error && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-200">{error}</div>}
     {notice && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200">{notice}</div>}
 
-    <Card className="overflow-hidden"><CardContent className="p-0"><div className="overflow-x-auto"><table className="w-full min-w-[1760px] text-sm"><thead className="bg-muted/50 text-left text-xs font-black uppercase text-muted-foreground"><tr>{["คำขอ", "วันที่", "ธนาคาร", "เลขบัญชี", "ชื่อผู้รับ", "ยอดโอน", "รายการ", "ประเภท", "สถานะ", "ใบกำกับ", "ดำเนินการ"].map((heading, index) => <th key={heading} className={`px-4 py-3 ${[5, 10].includes(index) ? "text-right" : "text-left"}`}>{heading}</th>)}</tr></thead>
+    <Card className="overflow-hidden"><CardContent className="p-0"><div className={dataListTableScrollClass}><table className="w-full min-w-[1760px] text-sm"><thead className="text-left text-xs font-black uppercase text-muted-foreground"><tr>{["คำขอ", "วันที่", "ธนาคาร", "เลขบัญชี", "ชื่อผู้รับ", "ยอดโอน", "รายการ", "ประเภท", "สถานะ", "ใบกำกับ", "ดำเนินการ"].map((heading, index) => <th key={heading} className={`${dataListTableHeaderCellClass} px-4 py-3 ${[5, 10].includes(index) ? "text-right" : "text-left"}`}>{heading}</th>)}</tr></thead>
       <tbody className="divide-y">{rows.map(row => <tr key={row.id} className="hover:bg-muted/40">
         <td className="px-4 py-4"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="font-mono font-black text-primary hover:underline">{row.request_no}</Link><p className="mt-1 text-xs text-muted-foreground">{row.department_name || "ไม่ระบุแผนก"}</p></td>
         <td className="whitespace-nowrap px-4 py-4 font-medium">{formatDate(`${row.request_date}T00:00:00`)}</td>
