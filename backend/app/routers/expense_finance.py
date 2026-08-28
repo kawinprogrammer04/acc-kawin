@@ -458,20 +458,27 @@ async def accounting_list(
 
 @router.get("/expense-requests/accounting/stats", response_model=AccountingStatsOut)
 async def accounting_stats(
+    status: Optional[str] = None, statuses: Optional[str] = None, query: Optional[str] = None,
+    department_id: Optional[int] = None, department_ids: Optional[str] = None,
+    type_id: Optional[int] = None, type_ids: Optional[str] = None,
+    date_from: Optional[date] = None, date_to: Optional[date] = None,
+    withholding_only: bool = False,
     db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
     company: Company = Depends(get_current_company),
 ):
-    rows = (await db.execute(_accounting_query(company))).scalars().all()
-    pending_approval_count = (await db.execute(
-        select(func.count()).select_from(ExpenseRequest).where(
-            ExpenseRequest.company_id == company.id,
-            ExpenseRequest.status.in_(["pending_approval", "pending_adjustment_approval"]),
-        )
-    )).scalar_one()
+    rows = (await db.execute(_accounting_query(
+        company, status=status, statuses=_parse_csv_values(statuses),
+        department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
+        type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
+        date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        query=query,
+    ))).scalars().all()
     today = datetime.now(timezone.utc).date()
     ready = [r for r in rows if r.status == "ready_to_pay"]
     return AccountingStatsOut(
-        pending_approval_count=pending_approval_count,
+        pending_approval_count=sum(
+            r.status in {"pending_approval", "pending_adjustment_approval"} for r in rows
+        ),
         accounting_review_count=sum(r.status == "accounting_review" for r in rows),
         ready_to_pay_count=len(ready), settlement_review_count=sum(r.status == "settlement_review" for r in rows),
         overdue_count=sum(r.status == "settlement_due" and r.settlement_due_date and r.settlement_due_date < today for r in rows),

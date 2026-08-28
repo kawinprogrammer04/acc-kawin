@@ -17,7 +17,7 @@ from app.services.expense_signature_service import _placement_box, _request_sign
 from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
 from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import (
-    _accounting_query, _append_legacy_approval_steps, _apply_accounting_pagination,
+    _accounting_query, _append_legacy_approval_steps, _apply_accounting_pagination, accounting_stats,
     _parse_csv_ints, _parse_csv_values,
 )
 
@@ -64,6 +64,40 @@ class AccountingFilterTests(unittest.TestCase):
         statement = Statement()
         self.assertIs(_apply_accounting_pagination(statement, 75, 150), statement)
         self.assertEqual(statement.calls, [("limit", 75), ("offset", 150)])
+
+    def test_accounting_stats_use_the_same_filters_as_the_list(self):
+        class Result:
+            def scalars(self):
+                return self
+
+            def all(self):
+                return [SimpleNamespace(
+                    status="ready_to_pay", remaining_amount=Decimal("125.00"),
+                    net_amount=Decimal("125.00"), settlement_due_date=None,
+                )]
+
+        class Database:
+            statement = None
+
+            async def execute(self, statement):
+                self.statement = statement
+                return Result()
+
+        database = Database()
+        result = asyncio.run(accounting_stats(
+            statuses="ready_to_pay", query="ACC-EXP", department_ids="3,7",
+            type_ids="11", date_from=date(2026, 8, 1), date_to=date(2026, 8, 31),
+            withholding_only=True, db=database, current_user=SimpleNamespace(),
+            company=SimpleNamespace(id=9),
+        ))
+
+        parameters = list(database.statement.compile().params.values())
+        self.assertIn(["ready_to_pay"], parameters)
+        self.assertIn([3, 7], parameters)
+        self.assertIn([11], parameters)
+        self.assertIn("%ACC-EXP%", parameters)
+        self.assertEqual(result.ready_to_pay_count, 1)
+        self.assertEqual(result.pending_approval_count, 0)
 
 
 def request(**overrides):

@@ -447,7 +447,8 @@ export function ExpenseAccountingPage() {
     setLoading(true); setError("");
     try {
       const [result, summary] = await Promise.all([
-        expenseAccountingApi.list(toApiFilters(applied), page, pageSize), expenseAccountingApi.stats(),
+        expenseAccountingApi.list(toApiFilters(applied), page, pageSize),
+        expenseAccountingApi.stats(toApiFilters(applied)),
       ]);
       setRows(result.items); setTotal(result.total); setStats(summary);
     } catch (e) { setError(getApiErrorMessage(e, "โหลดรายการบัญชีไม่สำเร็จ")); }
