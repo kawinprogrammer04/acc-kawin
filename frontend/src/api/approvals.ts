@@ -600,7 +600,7 @@ export const expenseAccountingApi = {
     api.get("/expense-requests/accounting/list", {
       params: { ...params, limit, offset: (page - 1) * limit },
     }).then(r => r.data),
-  stats: () => api.get("/expense-requests/accounting/stats").then(r => r.data),
+  stats: (params?: AccountingFilters) => api.get("/expense-requests/accounting/stats", { params }).then(r => r.data),
   exportUrl: async (params?: AccountingFilters) => {
     const response = await api.get("/expense-requests/accounting/export", { params, responseType: "blob" });
     const url = URL.createObjectURL(response.data); const link = document.createElement("a");
