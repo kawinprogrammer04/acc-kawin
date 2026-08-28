@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Loader2, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { api, getApiErrorMessage } from "@/api/client";
 import {
@@ -29,6 +29,7 @@ type RuleDraft = {
   steps: DraftStep[];
 };
 type RuleGroup = Rule & { members: Rule[] };
+export type ApprovalRuleEditRequest = { ruleId: number; nonce: number };
 
 const inputCls = "w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
 const kindLabels: Record<string, string> = {
@@ -157,7 +158,19 @@ function StepEditor({
   );
 }
 
-export function HrStyleApprovalSettings() {
+export function HrStyleApprovalSettings({
+  editRuleRequest,
+  onRulesChanged,
+  refreshKey = 0,
+  onEditStarted,
+  showList = true,
+}: {
+  editRuleRequest?: ApprovalRuleEditRequest | null;
+  onRulesChanged?: () => void;
+  refreshKey?: number;
+  onEditStarted?: (ruleId: number) => void;
+  showList?: boolean;
+}) {
   const { currentCompany } = useCompany();
   const [positions, setPositions] = useState<Position[]>([]);
   const [types, setTypes] = useState<ExpenseType[]>([]);
@@ -177,6 +190,7 @@ export function HrStyleApprovalSettings() {
   const [draft, setDraft] = useState<RuleDraft | null>(null);
   const [editingRule, setEditingRule] = useState<RuleGroup | null>(null);
   const [saving, setSaving] = useState(false);
+  const handledEditRequest = useRef<number | null>(null);
   const activeVersion = versions.find((version) => version.status === "active") ?? versions[0];
 
   const load = useCallback(async () => {
@@ -196,7 +210,7 @@ export function HrStyleApprovalSettings() {
     } catch (loadError) {
       setError(getApiErrorMessage(loadError, "โหลดกฎอนุมัติไม่สำเร็จ"));
     } finally { setLoading(false); }
-  }, [currentCompany]);
+  }, [currentCompany, refreshKey]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -239,7 +253,7 @@ export function HrStyleApprovalSettings() {
   }, [amountFilter, departmentFilter, kindFilter, logicalRules, positionFilter, search, statusFilter, typeFilter]);
 
   const openCreate = () => { setEditingRule(null); setDraft(blankDraft(positions, types)); };
-  const openEdit = (rule: RuleGroup) => { setEditingRule(rule); setDraft(ruleToDraft(rule, departments)); };
+  const openEdit = (rule: RuleGroup, notify = true) => { if (notify) onEditStarted?.(rule.id); setEditingRule(rule); setDraft(ruleToDraft(rule, departments)); };
   const closeDialog = () => { if (!saving) { setDraft(null); setEditingRule(null); } };
   const updateStep = (index: number, patch: Partial<DraftStep>) => setDraft((current) => current ? { ...current, steps: current.steps.map((step, i) => i === index ? { ...step, ...patch } : step) } : current);
   const moveStep = (index: number, direction: -1 | 1) => setDraft((current) => {
@@ -247,6 +261,16 @@ export function HrStyleApprovalSettings() {
     const steps = [...current.steps]; [steps[index], steps[index + direction]] = [steps[index + direction], steps[index]];
     return { ...current, steps };
   });
+
+  useEffect(() => {
+    if (!editRuleRequest || handledEditRequest.current === editRuleRequest.nonce) return;
+    const requestedRule = logicalRules.find((rule) =>
+      rule.id === editRuleRequest.ruleId || rule.members.some((member) => member.id === editRuleRequest.ruleId),
+    );
+    if (!requestedRule) return;
+    handledEditRequest.current = editRuleRequest.nonce;
+    openEdit(requestedRule, false);
+  }, [departments, editRuleRequest, logicalRules]);
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -315,32 +339,33 @@ export function HrStyleApprovalSettings() {
           logical_group_key: logicalGroupKey,
         })));
       }
-      closeDialog(); await load();
+      closeDialog(); await load(); onRulesChanged?.();
     } catch (saveError) { setError(getApiErrorMessage(saveError, "บันทึกกฎไม่สำเร็จ")); }
     finally { setSaving(false); }
   };
 
   const toggleActive = async (rule: RuleGroup) => {
-    try { await Promise.all(rule.members.map((member) => rulesApi.update(member.id, { is_active: !rule.is_active }))); await load(); }
+    try { await Promise.all(rule.members.map((member) => rulesApi.update(member.id, { is_active: !rule.is_active }))); await load(); onRulesChanged?.(); }
     catch (toggleError) { setError(getApiErrorMessage(toggleError, "เปลี่ยนสถานะกฎไม่สำเร็จ")); }
   };
   const remove = async (rule: RuleGroup) => {
     if (!window.confirm(`ลบกฎ “${rule.name || rule.expense_type_name || rule.id}” หรือไม่?`)) return;
-    try { await Promise.all(rule.members.map((member) => rulesApi.delete(member.id))); await load(); }
+    try { await Promise.all(rule.members.map((member) => rulesApi.delete(member.id))); await load(); onRulesChanged?.(); }
     catch (deleteError) { setError(getApiErrorMessage(deleteError, "ลบกฎไม่สำเร็จ")); }
   };
 
   return (
-    <div className="space-y-4 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h2 className="text-xl font-semibold">กฎอนุมัติ</h2><p className="mt-1 text-sm text-muted-foreground">ตั้งค่าขอบเขต วงเงิน ลำดับขั้น และผู้อนุมัติแบบเดียวกับ HR</p></div>
-        <Button onClick={openCreate} disabled={!activeVersion}><Plus className="h-4 w-4" /> เพิ่มกฎอนุมัติ</Button>
-      </div>
-      {activeVersion && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">เวอร์ชัน {activeVersion.version_no} · {logicalRules.filter((rule) => rule.is_active).length} กฎที่เปิดใช้งาน · {rules.filter((rule) => rule.is_active).length} เส้นทางภายใน</div>}
-      {!activeVersion && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">ยังไม่มีเวอร์ชันสายอนุมัติที่ใช้งานอยู่</div>}
-      {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
+    <div className={showList ? "space-y-4 p-6" : ""}>
+      {showList && <>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><h2 className="text-xl font-semibold">กฎอนุมัติ</h2><p className="mt-1 text-sm text-muted-foreground">ตั้งค่าขอบเขต วงเงิน ลำดับขั้น และผู้อนุมัติแบบเดียวกับ HR</p></div>
+          <Button onClick={openCreate} disabled={!activeVersion}><Plus className="h-4 w-4" /> เพิ่มกฎอนุมัติ</Button>
+        </div>
+        {activeVersion && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">เวอร์ชัน {activeVersion.version_no} · {logicalRules.filter((rule) => rule.is_active).length} กฎที่เปิดใช้งาน · {rules.filter((rule) => rule.is_active).length} เส้นทางภายใน</div>}
+        {!activeVersion && <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">ยังไม่มีเวอร์ชันสายอนุมัติที่ใช้งานอยู่</div>}
+        {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
 
-      <Card><CardContent className="space-y-4 p-5">
+        <Card><CardContent className="space-y-4 p-5">
         <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
           <div className="relative lg:col-span-2"><Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" /><Input className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ค้นหาชื่อกฎ ตำแหน่ง แผนก หรือขั้นอนุมัติ" /></div>
           <select className={inputCls} value={departmentFilter} onChange={(e) => setDepartmentFilter(e.target.value)}><option value="">ทุกแผนก</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select>
@@ -368,9 +393,11 @@ export function HrStyleApprovalSettings() {
             </tr>;
           })}{!loading && filteredRules.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-sm text-muted-foreground">ไม่พบกฎตามเงื่อนไข</td></tr>}</tbody>
         </table></div>
-      </CardContent></Card>
+        </CardContent></Card>
+      </>}
 
       <Dialog open={!!draft} onOpenChange={(open) => !open && closeDialog()}><DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto"><DialogHeader><DialogTitle>{editingRule ? "แก้ไขกฎอนุมัติ" : "เพิ่มกฎอนุมัติ"}</DialogTitle><DialogDescription>กำหนดข้อมูลและขั้นอนุมัติให้ตรงกับการตั้งค่า HR</DialogDescription></DialogHeader>{draft && <form onSubmit={save} className="space-y-5 p-6 pt-4">
+        {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>}
         <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1"><Label>ชื่อกฎ</Label><Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="เช่น ค่าใช้จ่ายทั่วไปของฝ่ายขาย" /></div><div className="space-y-1"><Label>ประเภทการเบิก</Label><select className={inputCls} value={draft.expense_type_id} onChange={(e) => setDraft({ ...draft, expense_type_id: e.target.value })}><option value="">ทุกประเภท</option>{types.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select></div></div>
         <div className="grid gap-3 md:grid-cols-2"><div className="space-y-1"><Label>ขอบเขตผู้ขอ *</Label><div className="flex flex-wrap gap-3 pt-2 text-sm"><label><input type="radio" checked={draft.requester_mode === "position"} onChange={() => setDraft({ ...draft, requester_mode: "position" })} /> ตำแหน่งเดียว</label><label><input type="radio" checked={draft.requester_mode === "department"} onChange={() => setDraft({ ...draft, requester_mode: "department" })} /> ทั้งแผนก</label><label><input type="radio" checked={draft.requester_mode === "all"} onChange={() => setDraft({ ...draft, requester_mode: "all" })} /> ทุกตำแหน่ง</label></div></div>{draft.requester_mode === "position" ? <div className="space-y-1"><Label>ตำแหน่งผู้ขอ *</Label><select className={inputCls} required value={draft.requester_position_id} onChange={(e) => setDraft({ ...draft, requester_position_id: e.target.value })}>{positions.map((position) => <option key={position.id} value={position.id}>{position.name}</option>)}</select></div> : draft.requester_mode === "department" ? <div className="space-y-1"><Label>แผนกผู้ขอ *</Label><select className={inputCls} required value={draft.department_id} onChange={(e) => setDraft({ ...draft, department_id: e.target.value })}><option value="">-- เลือกแผนก --</option>{departments.map((department) => <option key={department.id} value={department.id}>{department.name}</option>)}</select></div> : <div className="space-y-1"><Label>ตำแหน่งผู้ขอ</Label><div className={`${inputCls} text-muted-foreground`}>ทุกตำแหน่ง</div></div>}</div>
         <div className="grid gap-3 md:grid-cols-4"><div className="space-y-1"><Label>รูปแบบคำขอ</Label><select className={inputCls} value={draft.request_kind} onChange={(e) => setDraft({ ...draft, request_kind: e.target.value as RequestKind })}><option value="">ทุกรูปแบบ</option>{Object.entries(kindLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div><div className="space-y-1"><Label>ยอดต่ำสุด *</Label><Input type="number" min="0" step="0.01" required value={draft.amount_min} onChange={(e) => setDraft({ ...draft, amount_min: e.target.value })} /></div><div className="space-y-1"><Label>ยอดสูงสุด</Label><Input type="number" min="0" step="0.01" value={draft.amount_max} onChange={(e) => setDraft({ ...draft, amount_max: e.target.value })} placeholder="ไม่จำกัด" /></div><div className="space-y-1"><Label>Priority</Label><Input type="number" min="1" value={draft.priority} onChange={(e) => setDraft({ ...draft, priority: e.target.value })} /></div></div>

@@ -16,7 +16,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { ApprovalRuleFlow } from "@/components/expense/ApprovalRuleFlow";
+import { useCompany } from "@/context/CompanyContext";
 import { HrStyleApprovalSettings } from "@/pages/HrStyleApprovalSettings";
+import type { ApprovalRuleEditRequest } from "@/pages/HrStyleApprovalSettings";
 
 const MIME_OPTIONS = [
   { value: "application/pdf", label: "PDF" },
@@ -113,7 +116,8 @@ function FieldSection({ title, subtitle, children }: { title: string; subtitle?:
 }
 
 export function ExpenseSettingsPage() {
-  const [tab, setTab] = useState<"types" | "workflow">("types");
+  const { currentCompany } = useCompany();
+  const [tab, setTab] = useState<"types" | "workflow">("workflow");
   const [types, setTypes] = useState<ExpenseType[]>([]);
   const [selectedType, setSelectedType] = useState<number>();
   const [requirements, setRequirements] = useState<AttachmentRequirement[]>([]);
@@ -130,6 +134,17 @@ export function ExpenseSettingsPage() {
   const [deletingTypeId, setDeletingTypeId] = useState<number | null>(null);
   const [togglingTypeId, setTogglingTypeId] = useState<number | null>(null);
   const [typeDialogError, setTypeDialogError] = useState<string | null>(null);
+  const [ruleEditRequest, setRuleEditRequest] = useState<ApprovalRuleEditRequest | null>(null);
+  const [ruleFlowRevision, setRuleFlowRevision] = useState(0);
+
+  const rememberRuleFocus = (ruleId: number, departmentName?: string, ruleKey?: string) => {
+    try {
+      localStorage.setItem(
+        `expense_settings_last_rule_focus:${currentCompany?.id ?? "default"}`,
+        JSON.stringify({ ruleId, ruleKey, departmentName, savedAt: Date.now() }),
+      );
+    } catch { /* browser storage may be unavailable */ }
+  };
 
   const loadTypes = async () => {
     const rows: ExpenseType[] = await expenseTypesApi.list();
@@ -541,8 +556,25 @@ export function ExpenseSettingsPage() {
       )}
 
       {tab === "workflow" && (
-        <div className="-mx-6 -mt-4">
-          <HrStyleApprovalSettings />
+        <div className="-mx-6 -mt-4 space-y-6">
+          <div className="px-6 pt-6">
+            <ApprovalRuleFlow
+              companyId={currentCompany?.id}
+              refreshKey={ruleFlowRevision}
+              onEditRule={(ruleId, departmentName, ruleKey) => {
+                rememberRuleFocus(ruleId, departmentName, ruleKey);
+                setRuleEditRequest({ ruleId, nonce: Date.now() });
+              }}
+              onRulesChanged={() => setRuleFlowRevision((current) => current + 1)}
+            />
+          </div>
+          <HrStyleApprovalSettings
+            editRuleRequest={ruleEditRequest}
+            onRulesChanged={() => setRuleFlowRevision((current) => current + 1)}
+            refreshKey={ruleFlowRevision}
+            onEditStarted={(ruleId) => rememberRuleFocus(ruleId)}
+            showList={false}
+          />
         </div>
       )}
 
