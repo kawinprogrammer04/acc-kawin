@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Building2, Check, ChevronDown, ChevronLeft, ChevronRight, Clipboard, Eraser, FileSignature, FileSpreadsheet,
-  Filter, Landmark, Loader2, Receipt, RotateCcw, Settings2, Wallet, WalletCards,
+  Filter, Landmark, Loader2, RotateCcw, Settings2, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { DatePicker } from "@/components/ui/date-picker";
@@ -362,7 +362,7 @@ export function ExpenseAccountingPage() {
           {row.installment_no && <span className="ml-1.5 inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">งวด {row.installment_no}</span>}
           {row.installment_chain_status === "in_progress" && <p className="mt-1 text-xs font-bold text-orange-600">แบ่งจ่ายยังไม่ครบ</p>}
         </td>
-        <td className="px-4 py-4"><Link to={`/expense-requests/${row.id}#documents`} state={{ from: "accounting" }} className="inline-flex h-10 items-center gap-2 whitespace-nowrap rounded-md border border-primary/20 bg-primary/5 px-4 text-xs font-black text-primary hover:bg-primary/10"><Receipt className="h-4 w-4" />ดูเอกสาร</Link></td>
+        <td className="px-4 py-4" />
         <td className="px-4 py-4 text-right"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="inline-flex h-10 items-center rounded-md bg-primary/10 px-6 text-xs font-black text-primary hover:bg-primary/20 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700">เปิดรายการ</Link></td>
       </tr>)}</tbody></table>
       {loading && <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>}
