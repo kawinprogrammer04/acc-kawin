@@ -204,6 +204,8 @@ services:
       STATEMENT_DATABASE_URL: ${STATEMENT_DATABASE_URL:-}
       UPLOAD_DIR: /tmp/statement_uploads
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - statement_uploads:/tmp/statement_uploads
     depends_on:
       db:
         condition: service_healthy
@@ -289,3 +291,5 @@ volumes:
     name: finn_accounting_backups
   nginx_logs:
     name: finn_accounting_nginx_logs
+  statement_uploads:
+    name: finn_accounting_statement_uploads

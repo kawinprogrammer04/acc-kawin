@@ -6,7 +6,7 @@
     <div class="alert error"><strong>นำเข้าไม่สำเร็จ</strong><span>{{ error }}</span></div>
   {% endif %}
   {% if imported %}
-    <div class="alert success"><strong>นำเข้าสำเร็จ</strong><span>เพิ่มข้อมูลอีกฝั่งแล้ว กลับไปหน้า Review เพื่อ Auto match ได้เลย</span></div>
+    <div class="alert success"><strong>นำเข้าสำเร็จ</strong><span>ระบบบันทึกข้อมูลและลองจับคู่ให้อัตโนมัติแล้ว</span></div>
   {% endif %}
   {% if deleted %}
     <div class="alert success"><strong>ลบสำเร็จ</strong><span>ลบข้อมูลอีกฝั่งจากไฟล์ที่เลือกแล้ว</span></div>
@@ -102,7 +102,7 @@
         </thead>
         <tbody>
         {% for item in items %}
-          <tr class="clickable-row" data-dialog-target="ref-dialog-{{ item.id }}" tabindex="0">
+          <tr>
             <td>
               <strong style="font-family:monospace">{{ item.reference }}</strong>
               {% if item.notes %}<small>{{ item.notes }}</small>{% endif %}
@@ -120,10 +120,14 @@
               </span>
             </td>
             <td>
-              <button class="button secondary" style="font-size:12px;padding:4px 10px" type="button"
-                      onclick="event.stopPropagation();document.getElementById('ref-dialog-{{ item.id }}').showModal()">
-                แก้ไข
-              </button>
+              {% if item.stored_filename %}
+                <a class="button secondary" style="font-size:12px;padding:4px 10px"
+                   href="{{ root_path }}/evidence/{{ item.stored_filename }}" target="_blank" rel="noopener">
+                  ดูรูปต้นฉบับ
+                </a>
+              {% else %}
+                <span class="muted" style="font-size:12px">ข้อมูลอ่านอย่างเดียว</span>
+              {% endif %}
             </td>
           </tr>
         {% endfor %}
@@ -131,63 +135,7 @@
       </table>
     </div>
 
-    {# ── Edit dialogs for each reference item ── #}
-    {% for item in items %}
-      <dialog class="sheet-dialog narrow-dialog" id="ref-dialog-{{ item.id }}">
-        <div class="dialog-head">
-          <div>
-            <p class="eyebrow">แก้ไข Ads Ref #{{ item.id }}</p>
-            <h2 style="font-family:monospace">{{ item.reference }}</h2>
-            <small>{{ item.source_filename or "manual" }} · {{ item.transaction_date or "—" }}</small>
-          </div>
-          <button class="icon-button js-close-dialog" type="button" aria-label="ปิด">×</button>
-        </div>
-
-        <form action="{{ root_path }}/references/{{ item.id }}/update" method="post">
-          <input type="hidden" name="next_path" value="/references">
-          <input type="hidden" name="amount" value="{{ item.amount }}">
-          <input type="hidden" name="transaction_date" value="{{ item.transaction_date or '' }}">
-          <input type="hidden" name="transaction_time" value="{{ item.transaction_time or '' }}">
-          <input type="hidden" name="party_name" value="{{ item.party_name or '' }}">
-          <input type="hidden" name="notes" value="{{ item.notes or '' }}">
-
-          <div class="readonly-info">
-            <div class="ro-row"><span>วันที่</span><strong>{{ item.transaction_date or "—" }}{% if item.transaction_time and item.transaction_time[:5] != '00:00' %} {{ item.transaction_time[:5] }}{% endif %}</strong></div>
-            <div class="ro-row"><span>ยอดเงิน</span><strong>฿{{ item.amount|money }}</strong></div>
-            {% if item.party_name %}<div class="ro-row"><span>Invoice</span>{{ item.party_name }}</div>{% endif %}
-            <div class="ro-row"><span>ไฟล์</span><small>{{ item.source_filename or "manual" }}</small></div>
-          </div>
-
-          <label style="margin-top:12px;display:block">
-            รหัสอ้างอิง
-            <small style="color:var(--green-dark);font-weight:700">แก้ OCR ผิดได้</small>
-            <input name="reference" value="{{ item.reference }}" required
-                   placeholder="เช่น LCGEWIJVSU2"
-                   style="font-family:monospace;font-size:15px;font-weight:700;margin-top:6px">
-          </label>
-
-          <div class="edit-actions">
-            <button class="button secondary" type="submit">บันทึก</button>
-          </div>
-        </form>
-      </dialog>
-    {% endfor %}
-
   {% else %}
     <div class="empty">ยังไม่มีข้อมูลอีกฝั่งสำหรับนำไปชนกับ Statement</div>
   {% endif %}
-
-  <script>
-    document.querySelectorAll(".js-close-dialog").forEach((btn) => {
-      btn.addEventListener("click", () => btn.closest("dialog")?.close());
-    });
-    document.querySelectorAll("dialog").forEach((dialog) => {
-      dialog.addEventListener("click", (e) => { if (e.target === dialog) dialog.close(); });
-    });
-    document.querySelectorAll(".clickable-row[data-dialog-target]").forEach((row) => {
-      row.addEventListener("click", () => {
-        document.getElementById(row.dataset.dialogTarget)?.showModal();
-      });
-    });
-  </script>
 {% endblock %}

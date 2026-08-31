@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 from app.parsers import (
     OcrLine,
     ParsedStatement,
+    ParsedTransaction,
     PositionedWord,
     TrustedAmount,
     _build_transaction,
@@ -34,7 +35,12 @@ from app.staging import (
     read_preview_image,
     read_preview_source,
 )
-from app.main import _readonly_preview_form, _submitted_preview_rows, upload_job_progress
+from app.main import (
+    _auto_savable_transactions,
+    _readonly_preview_form,
+    _submitted_preview_rows,
+    upload_job_progress,
+)
 
 
 class FakeCrop:
@@ -556,6 +562,54 @@ class UploadJobTests(unittest.TestCase):
         self.assertEqual(
             result["redirect_url"], "/statement/preview/" + "a" * 32
         )
+
+    def test_completed_auto_save_returns_dashboard_redirect(self):
+        result = upload_job_progress(
+            {
+                "status": "complete",
+                "created_at": time.time(),
+                "redirect_url": "/statement/review?auto_saved=1",
+            }
+        )
+
+        self.assertEqual(
+            result["redirect_url"], "/statement/review?auto_saved=1"
+        )
+        self.assertIn("จับคู่", result["message"])
+
+    def test_automatic_save_keeps_ocr_values_and_skips_invalid_statement_rows(self):
+        statement = ParsedStatement(
+            issuer="Test",
+            statement_type="credit_card",
+            extraction_method="test",
+            masked_reference=None,
+            statement_date_from=None,
+            statement_date_to=None,
+            summary_totals={},
+            transactions=[
+                ParsedTransaction(
+                    transaction_date="2026-04-21",
+                    description="META ADS",
+                    amount=-304.0,
+                    card_last4="1889",
+                    category="ค่าโฆษณาออนไลน์",
+                    tr_code="QSRCTMRPM2",
+                ),
+                ParsedTransaction(
+                    transaction_date=None,
+                    description="อ่านวันที่ไม่ครบ",
+                    amount=-100.0,
+                    card_last4="1889",
+                    category="ค่าโฆษณาออนไลน์",
+                ),
+            ],
+        )
+
+        rows, skipped = _auto_savable_transactions(statement)
+
+        self.assertEqual(skipped, 1)
+        self.assertEqual(rows[0].description, "META ADS")
+        self.assertEqual(rows[0].tr_code, "QSRCTMRPM2")
 
 
 class PreviewValidationTests(unittest.TestCase):

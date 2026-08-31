@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS reference_items (
         CHECK (match_status IN ('unmatched', 'matched', 'ignored')),
     notes TEXT,
     row_hash TEXT,
+    stored_filename TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
