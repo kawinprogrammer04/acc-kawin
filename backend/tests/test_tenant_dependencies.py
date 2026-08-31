@@ -1,9 +1,13 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
-from app.core.dependencies import _resolve_company_access, require_min_role
+from app.core.dependencies import (
+    _resolve_company_access,
+    has_company_permission,
+    require_min_role,
+)
 from app.models.company import Company
 from app.models.user import User
 
@@ -46,6 +50,60 @@ def _company(company_id: int = 2) -> Company:
 
 
 class TenantDependencyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit_permission_allows_optional_company_access(self):
+        with patch(
+            "app.core.dependencies._catalog_permission_state",
+            new=AsyncMock(return_value=(True, True)),
+        ):
+            allowed = await has_company_permission(
+                AsyncMock(),
+                _user(),
+                2,
+                "expense_accounting.view",
+                legacy_min_role="accountant",
+                company_role="viewer",
+            )
+
+        self.assertTrue(allowed)
+
+    async def test_explicit_permission_configuration_disables_legacy_role_fallback(self):
+        with patch(
+            "app.core.dependencies._catalog_permission_state",
+            new=AsyncMock(return_value=(False, True)),
+        ):
+            allowed = await has_company_permission(
+                AsyncMock(),
+                _user(),
+                2,
+                "expense_accounting.view",
+                legacy_min_role="accountant",
+                company_role="accountant",
+            )
+
+        self.assertFalse(allowed)
+
+    async def test_unconfigured_accountant_keeps_legacy_permission(self):
+        with (
+            patch(
+                "app.core.dependencies._catalog_permission_state",
+                new=AsyncMock(return_value=(False, False)),
+            ),
+            patch(
+                "app.core.dependencies.get_role_levels",
+                new=AsyncMock(return_value={"viewer": 10, "accountant": 20, "admin": 40}),
+            ),
+        ):
+            allowed = await has_company_permission(
+                AsyncMock(),
+                _user(),
+                2,
+                "expense_accounting.view",
+                legacy_min_role="accountant",
+                company_role="accountant",
+            )
+
+        self.assertTrue(allowed)
+
     async def test_platform_admin_can_select_tenant_and_binds_rls_context(self):
         db = AsyncMock()
         company = _company()

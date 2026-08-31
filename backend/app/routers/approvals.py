@@ -24,7 +24,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_company, get_current_user, require_permission
+from app.core.dependencies import (
+    get_current_company,
+    get_current_user,
+    has_company_permission,
+    require_permission,
+)
 from app.models.approval import (
     ApprovalDelegation,
     ApprovalPolicyVersion,
@@ -121,13 +126,13 @@ async def _validate_position_department(
 
 
 async def _is_company_accounting(db: AsyncSession, user: User, company_id: int) -> bool:
-    if user.is_platform_admin:
-        return True
-    role = (await db.execute(select(UserCompany.role).where(
-        UserCompany.user_id == user.id, UserCompany.company_id == company_id,
-        UserCompany.is_active.is_(True),
-    ))).scalar_one_or_none()
-    return role in {"accountant", "admin", "super_admin"}
+    return await has_company_permission(
+        db,
+        user,
+        company_id,
+        "expense_accounting.view",
+        legacy_min_role="accountant",
+    )
 
 
 async def _can_view_all_company_requests(db: AsyncSession, user: User, company_id: int) -> bool:

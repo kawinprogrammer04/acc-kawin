@@ -1,6 +1,7 @@
 import io
 import asyncio
 import tempfile
+import inspect
 import unittest
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -18,11 +19,15 @@ from app.services.approval_service import _request_kind_filter, resolve_approver
 from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import (
     _accounting_query, _append_legacy_approval_steps, _apply_accounting_pagination, accounting_stats,
-    _parse_csv_ints, _parse_csv_values,
+    _parse_csv_ints, _parse_csv_values, accounting_view, replace_payment_proof,
 )
 
 
 class AccountingFilterTests(unittest.TestCase):
+    def test_payment_proof_upload_accepts_accounting_view_permission(self):
+        dependency = inspect.signature(replace_payment_proof).parameters["current_user"].default
+        self.assertIs(dependency.dependency, accounting_view)
+
     def test_csv_filters_trim_empty_values_and_remove_duplicates(self):
         self.assertEqual(
             _parse_csv_values("ready_to_pay, partially_paid,ready_to_pay,,"),
