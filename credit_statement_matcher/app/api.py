@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.auth import require_user
@@ -57,8 +58,14 @@ from app.main import (
     _save_confirmed_preview,
     _submitted_preview_rows,
 )
-from app.parsers import parse_date, parse_time
-from app.staging import PreviewNotFoundError, delete_preview, load_preview, read_preview_source
+from app.parsers import parse_date, parse_time, prepare_evidence_image
+from app.staging import (
+    PreviewNotFoundError,
+    delete_preview,
+    load_preview,
+    read_preview_image,
+    read_preview_source,
+)
 
 api_router = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
 
@@ -135,7 +142,7 @@ async def upload_images_api(files: list[UploadFile] = File(...)) -> dict[str, An
             data = b"".join(chunks)
             if not data:
                 continue
-            image_items.append((name, data))
+            image_items.append((name, prepare_evidence_image(data)))
             filenames.append(name)
 
         if not image_items:
@@ -155,12 +162,14 @@ async def upload_images_api(files: list[UploadFile] = File(...)) -> dict[str, An
             "original_name": original_name,
             "file_sha256": hashlib.sha256(bundle).hexdigest(),
             "status": "queued",
+            "kind": "evidence_images",
             "created_at": created_at,
             "updated_at": created_at,
         }
         upload_task = asyncio.create_task(
             process_image_upload_job(token, original_name, bundle, image_items)
         )
+        UPLOAD_JOBS[token]["_task"] = upload_task
         UPLOAD_TASKS.add(upload_task)
         upload_task.add_done_callback(UPLOAD_TASKS.discard)
     except ValueError as exc:
@@ -180,6 +189,22 @@ async def upload_job_status_api(job_token: str) -> dict[str, Any]:
     return result
 
 
+@api_router.post("/statements/upload-jobs/{job_token}/cancel")
+async def cancel_upload_job_api(job_token: str) -> dict[str, Any]:
+    job = UPLOAD_JOBS.get(_valid_token(job_token))
+    if not job:
+        raise HTTPException(status_code=404, detail="ไม่พบงานประมวลผล")
+    task = job.get("_task")
+    if isinstance(task, asyncio.Task) and not task.done():
+        task.cancel()
+    job.update(
+        status="failed",
+        error="ยกเลิกการอ่านข้อความแล้ว",
+        updated_at=time.time(),
+    )
+    return {"cancelled": True}
+
+
 @api_router.get("/statements/preview/{preview_token}")
 async def get_preview_api(preview_token: str) -> dict[str, Any]:
     try:
@@ -192,7 +217,21 @@ async def get_preview_api(preview_token: str) -> dict[str, Any]:
         "original_name": payload["original_name"],
         "statement": statement,
         "rows": _preview_rows(statement),
+        "preview_images": [
+            {"index": item["index"], "name": item["name"]}
+            for item in payload.get("preview_images") or []
+        ],
     }
+
+
+@api_router.get("/statements/preview/{preview_token}/images/{index}")
+async def get_preview_image_api(preview_token: str, index: int) -> Response:
+    try:
+        payload = load_preview(UPLOAD_DIR, _valid_token(preview_token))
+        data, _, media_type = read_preview_image(UPLOAD_DIR, payload, index)
+    except PreviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(content=data, media_type=media_type)
 
 
 class PreviewConfirmRow(BaseModel):
@@ -203,6 +242,7 @@ class PreviewConfirmRow(BaseModel):
     amount: str = ""
     card_last4: str = ""
     tr_code: str = ""
+    channel: str = ""
 
 
 class PreviewConfirmRequest(BaseModel):
@@ -223,8 +263,28 @@ async def confirm_preview_api(preview_token: str, body: PreviewConfirmRequest) -
             form[f"amount_{index}"] = row.amount
             form[f"card_last4_{index}"] = row.card_last4
             form[f"tr_code_{index}"] = row.tr_code
+            form[f"channel_{index}"] = row.channel
 
-        transactions, rows, errors = _submitted_preview_rows(dict(payload["statement"]), form)
+        statement = dict(payload["statement"])
+        originals = list(statement.get("transactions") or [])
+        while len(originals) < len(body.rows):
+            row = body.rows[len(originals)]
+            originals.append(
+                {
+                    "transaction_date": None,
+                    "transaction_time": None,
+                    "description": "",
+                    "amount": None,
+                    "card_last4": None,
+                    "category": "ค่าโฆษณาออนไลน์",
+                    "channel": row.channel.strip()[:100] or None,
+                    "tr_code": None,
+                    "confidence": 0,
+                    "warnings": ["ผู้ใช้เพิ่มรายการเองจากหน้าตรวจสอบ"],
+                }
+            )
+        statement["transactions"] = originals
+        transactions, rows, errors = _submitted_preview_rows(statement, form)
         if errors:
             visible_errors = "; ".join(errors[:6])
             if len(errors) > 6:
@@ -1169,4 +1229,3 @@ async def export_excel_report_api(
         status=status,
         statement_id=statement_id,
     )
-

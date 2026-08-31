@@ -91,19 +91,19 @@
       <div class="upload-ready" id="image-upload-ready">
         <div class="upload-icon">🖼</div>
         <h2>อัปโหลด Screenshot (Ads)</h2>
-        <p>เลือกรูปภาพ screenshot จาก Ads หลายไฟล์พร้อมกัน ระบบใช้ Claude AI อ่านข้อความในภาพแล้วดึงข้อมูลการชำระเงินอัตโนมัติ</p>
+        <p>เลือกรูปภาพ screenshot จาก Ads ระบบอ่านข้อความไทยและอังกฤษในเครื่อง แล้วให้ตรวจข้อมูลก่อนบันทึก</p>
         <label class="file-picker">
           <span>เลือกรูปภาพ (JPG, PNG, WEBP)</span>
           <input id="image-files" type="file" name="files" accept=".jpg,.jpeg,.png,.webp" multiple required>
         </label>
         <p id="image-file-count" class="muted" style="min-height:1.2em"></p>
         <button id="image-submit" class="button primary" type="submit">อ่านรูปภาพด้วย AI</button>
-        <small>สูงสุด 100 ไฟล์ · ไฟล์ละไม่เกิน 15 MB · อ่านด้วย Ollama vision model บนเครื่อง host</small>
+        <small>สูงสุด 10 ไฟล์ · ไฟล์ละไม่เกิน 8 MB · ไม่เรียก Ollama และไม่ส่งรูปออกนอกเครื่อง</small>
       </div>
 
       <div id="image-processing" class="upload-processing" hidden aria-live="polite" aria-busy="true">
         <div class="processing-spinner" aria-hidden="true"></div>
-        <p class="eyebrow">กำลัง OCR ด้วย Claude AI</p>
+        <p class="eyebrow">กำลังอ่านข้อความไทย + อังกฤษ</p>
         <h2 id="image-processing-title">กำลังส่งภาพให้ AI วิเคราะห์</h2>
         <p id="image-processing-file" class="processing-file"></p>
         <div class="processing-progress" aria-hidden="true"><span></span></div>
@@ -241,7 +241,7 @@
       imageProcessing.hidden = false;
       const imageTitles = [
         "กำลังอ่านรูปภาพและส่งให้ AI",
-        "Claude กำลัง OCR ทีละภาพแบบขนาน",
+        "กำลังอ่านข้อความทีละภาพ เพื่อลดการใช้หน่วยความจำ",
         "กำลังจัดรายการและเตรียม Preview",
       ];
       const startedAt = Date.now();

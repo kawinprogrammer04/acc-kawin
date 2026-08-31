@@ -37,9 +37,10 @@ from app.parsers import (
     make_row_hash,
     parse_amount,
     parse_date,
-    parse_images_with_vision_model,
+    parse_images_with_local_ocr,
     parse_statement_with_metadata,
     parse_time,
+    prepare_evidence_image,
 )
 from app.staging import (
     PreviewNotFoundError,
@@ -808,7 +809,16 @@ def upload_job_progress(job: dict[str, Any], *, now: float | None = None) -> dic
             0,
             int(current_time - float(job.get("processing_started_at") or current_time)),
         )
-        if processing_elapsed < 8:
+        if job.get("kind") == "evidence_images" and processing_elapsed < 8:
+            step = 1
+            message = "กำลังย่อรูปเพื่อให้เครื่องทำงานได้ลื่นขึ้น"
+        elif job.get("kind") == "evidence_images" and processing_elapsed < 45:
+            step = 2
+            message = "กำลังอ่านข้อความไทยและอังกฤษทีละรูป"
+        elif job.get("kind") == "evidence_images":
+            step = 2
+            message = "กำลังอ่านรูปที่เหลือ สามารถกดยกเลิกได้หากไม่ต้องการรอ"
+        elif processing_elapsed < 8:
             step = 1
             message = "กำลังตรวจ text layer และโครงสร้าง Statement"
         elif processing_elapsed < 45:
@@ -896,8 +906,8 @@ async def process_upload_job(
 
 
 ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
-MAX_IMAGE_FILES = 100
-MAX_IMAGE_BYTES_PER_FILE = 15 * 1024 * 1024  # 15 MB per image
+MAX_IMAGE_FILES = 10
+MAX_IMAGE_BYTES_PER_FILE = 8 * 1024 * 1024  # 8 MB before resizing
 
 
 async def process_image_upload_job(
@@ -924,13 +934,14 @@ async def process_image_upload_job(
                 processing_started_at=time.time(),
                 updated_at=time.time(),
             )
-            statement = await parse_images_with_vision_model(image_items)
+            statement = await parse_images_with_local_ocr(image_items)
             preview_token = await asyncio.to_thread(
                 create_preview,
                 UPLOAD_DIR,
                 original_name,
                 bundle_data,
                 statement,
+                preview_files=image_items,
             )
             job.update(
                 status="complete",
@@ -976,6 +987,7 @@ def queue_upload_job(original_name: str, data: bytes, digest: str) -> str:
         "updated_at": created_at,
     }
     task = asyncio.create_task(process_upload_job(token, original_name, data))
+    UPLOAD_JOBS[token]["_task"] = task
     UPLOAD_TASKS.add(task)
     task.add_done_callback(UPLOAD_TASKS.discard)
     return token
@@ -1093,7 +1105,9 @@ def _submitted_preview_rows(
             continue
         signed_amount = round(float(amount), 2)
         transaction_time = parse_time(original.get("transaction_time"))
-        channel = str(original.get("channel") or "").strip()[:100] or None
+        channel = str(
+            form.get(f"channel_{index}") or original.get("channel") or ""
+        ).strip()[:100] or None
         tr_code = raw_tr_code_form[:50] or None
         row_hash = make_row_hash(
             transaction_date or "",
@@ -1129,8 +1143,8 @@ def _save_as_reference_items(
     payload: dict[str, Any],
     transactions: list[ParsedTransaction],
 ) -> int:
-    """Save TikTok Ads OCR results as reference_items (not transactions)."""
-    source_filename = Path(str(payload.get("original_name") or "tiktok_ads")).name
+    """Save reviewed Ads evidence as reference_items (not transactions)."""
+    source_filename = Path(str(payload.get("original_name") or "ads_evidence")).name
     existing_hashes = {
         row["row_hash"]
         for row in db.execute(
@@ -1183,7 +1197,7 @@ def _save_as_reference_items(
         "upload_images_as_references",
         "reference_items",
         source_filename,
-        f"inserted {inserted} rows from TikTok Ads screenshots",
+        f"inserted {inserted} rows from Ads evidence images",
     )
     db.commit()
     return inserted
@@ -1475,7 +1489,7 @@ async def upload_image_batch(
             data = b"".join(chunks)
             if not data:
                 continue
-            image_items.append((name, data))
+            image_items.append((name, prepare_evidence_image(data)))
             filenames.append(name)
 
         if not image_items:
@@ -1504,12 +1518,14 @@ async def upload_image_batch(
             "original_name": original_name,
             "file_sha256": hashlib.sha256(bundle).hexdigest(),
             "status": "queued",
+            "kind": "evidence_images",
             "created_at": created_at,
             "updated_at": created_at,
         }
         task = asyncio.create_task(
             process_image_upload_job(token, original_name, bundle, image_items)
         )
+        UPLOAD_JOBS[token]["_task"] = task
         UPLOAD_TASKS.add(task)
         task.add_done_callback(UPLOAD_TASKS.discard)
 

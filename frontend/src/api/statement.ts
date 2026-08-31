@@ -171,6 +171,7 @@ export interface PreviewPayload {
   original_name: string;
   statement: Record<string, unknown>;
   rows: PreviewRow[];
+  preview_images: { index: number; name: string }[];
 }
 
 export interface ReviewData {
@@ -253,13 +254,19 @@ export const statementsApi = {
   },
   jobStatus: (jobToken: string) =>
     statementApi.get<UploadJobStatus>(`/statements/upload-jobs/${jobToken}`).then((r) => r.data),
+  cancelJob: (jobToken: string) =>
+    statementApi.post(`/statements/upload-jobs/${jobToken}/cancel`).then((r) => r.data),
   getPreview: (previewToken: string) =>
     statementApi.get<PreviewPayload>(`/statements/preview/${previewToken}`).then((r) => r.data),
+  getPreviewImage: (previewToken: string, index: number) =>
+    statementApi
+      .get<Blob>(`/statements/preview/${previewToken}/images/${index}`, { responseType: "blob" })
+      .then((r) => r.data),
   confirmPreview: (
     previewToken: string,
     rows: Array<{
       include: boolean; reviewed: boolean; transaction_date: string; description: string;
-      amount: string; card_last4: string; tr_code: string;
+      amount: string; card_last4: string; tr_code: string; channel: string;
     }>
   ) =>
     statementApi
@@ -358,4 +365,3 @@ export const summaryApi = {
     downloadBlob(response.data, "reconciliation.xlsx");
   },
 };
-
