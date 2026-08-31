@@ -557,8 +557,8 @@ async def update_user(
         user.is_active = payload.is_active
     if payload.password:
         user.password_hash = hash_password(payload.password)
-    if payload.hr_employee_id is not None:
-        new_hr_employee_id = payload.hr_employee_id or None
+    if "hr_employee_id" in payload.model_fields_set:
+        new_hr_employee_id = payload.hr_employee_id.strip() if payload.hr_employee_id else None
         if new_hr_employee_id:
             conflict = await db.execute(
                 select(User.id).where(
