@@ -493,12 +493,19 @@ export const expenseRequestsApi = {
 };
 
 // ── Approver inbox & decisions ────────────────────────────────────────────
+export const APPROVAL_INBOX_CHANGED_EVENT = "approval-inbox:changed";
+
 export const approvalInboxApi = {
   list: (params?: { scope?: "mine" | "all" }) => api.get("/approvals/inbox", { params }).then((r) => r.data),
+  count: (params?: { scope?: "mine" | "all" }): Promise<number> =>
+    api.get("/approvals/inbox/count", { params }).then((r) => Number(r.data.count || 0)),
   decide: (
     stepId: number,
     data: { action: "approve" | "reject" | "return"; comment?: string; idempotency_key: string; signature_data_url?: string; use_saved_signature?: boolean; save_signature?: boolean; placements?: Record<string, unknown>[] }
-  ) => api.post(`/approval-steps/${stepId}/decisions`, data).then((r) => r.data),
+  ) => api.post(`/approval-steps/${stepId}/decisions`, data).then((r) => {
+    if (typeof window !== "undefined") window.dispatchEvent(new Event(APPROVAL_INBOX_CHANGED_EVENT));
+    return r.data;
+  }),
 };
 
 export interface AccountingRequest {
