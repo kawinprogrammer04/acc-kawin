@@ -18,10 +18,20 @@ const STATUS_CLASS: Record<string, string> = {
 };
 type TransactionView = "charges" | "payments";
 
+function transactionAmount(value: unknown): number {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const text = String(value ?? "").trim();
+  if (!text) return 0;
+  const isParenthesizedNegative = /^\(.*\)$/.test(text);
+  const parsed = Number(text.replace(/,/g, "").replace(/[^0-9.+-]/g, ""));
+  if (!Number.isFinite(parsed)) return 0;
+  return isParenthesizedNegative ? -Math.abs(parsed) : parsed;
+}
+
 function splitBySign(transactions: Transaction[]) {
   const charges: Transaction[] = [];
   const payments: Transaction[] = [];
-  for (const transaction of transactions) (transaction.amount < 0 ? payments : charges).push(transaction);
+  for (const transaction of transactions) (transactionAmount(transaction.amount) < 0 ? payments : charges).push(transaction);
   return { charges, payments };
 }
 
@@ -83,8 +93,8 @@ export function TransactionsTab() {
   const selectedFilename = data?.statements.find((statement) => String(statement.id) === filters.statement_id)?.original_filename;
   const activeRows = activeView === "charges" ? charges : payments;
   const activeLabel = activeView === "charges" ? "ยอดใช้จ่าย" : "ยอดชำระหรือเงินคืน";
-  const chargesTotal = charges.reduce((sum, transaction) => sum + transaction.amount, 0);
-  const paymentsTotal = payments.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const chargesTotal = charges.reduce((sum, transaction) => sum + transactionAmount(transaction.amount), 0);
+  const paymentsTotal = payments.reduce((sum, transaction) => sum + transactionAmount(transaction.amount), 0);
   const hasFilters = Boolean(filters.status || filters.card || filters.q);
 
   return (
@@ -115,25 +125,7 @@ export function TransactionsTab() {
         </div>
       )}
 
-      <Tabs value={activeView} onValueChange={(value) => changeView(value as TransactionView)}>
-        <TabsList className="grid h-auto w-full grid-cols-2 gap-2 rounded-xl border bg-card p-2 shadow-sm">
-          <TabsTrigger value="charges" className="min-h-[76px] flex-col items-stretch gap-1 rounded-lg border border-transparent px-4 py-3 text-left data-[state=active]:border-sky-200 data-[state=active]:bg-sky-50 data-[state=active]:text-sky-900 data-[state=active]:shadow-none">
-            <span className="flex w-full items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-2 font-semibold"><CreditCard className="h-4 w-4" /> ยอดใช้จ่าย</span>
-              <span className="rounded-full bg-background px-2 py-0.5 text-xs font-semibold ring-1 ring-border">{charges.length.toLocaleString("th-TH")} รายการ</span>
-            </span>
-            <span className="w-full text-xs text-muted-foreground">ยอดรวม {formatCurrency(chargesTotal)}</span>
-          </TabsTrigger>
-          <TabsTrigger value="payments" className="min-h-[76px] flex-col items-stretch gap-1 rounded-lg border border-transparent px-4 py-3 text-left data-[state=active]:border-emerald-200 data-[state=active]:bg-emerald-50 data-[state=active]:text-emerald-900 data-[state=active]:shadow-none">
-            <span className="flex w-full items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-2 font-semibold"><RefreshCcw className="h-4 w-4" /> ยอดชำระหรือเงินคืน</span>
-              <span className="rounded-full bg-background px-2 py-0.5 text-xs font-semibold ring-1 ring-border">{payments.length.toLocaleString("th-TH")} รายการ</span>
-            </span>
-            <span className="w-full text-xs text-muted-foreground">ยอดรวม {formatCurrency(Math.abs(paymentsTotal))}</span>
-          </TabsTrigger>
-        </TabsList>
-
-        <FilterPanel resultText={`พบ ${activeRows.length} รายการใน “${activeLabel}” ตามเงื่อนไข`}>
+      <FilterPanel resultText={`พบ ${activeRows.length} รายการใน “${activeLabel}” ตามเงื่อนไข`}>
         <label className="min-w-[200px] flex-1 text-[11px] font-medium text-muted-foreground">ไฟล์ Statement
           <select value={filters.statement_id} onChange={(event) => changeStatement(event.target.value)} className="mt-1.5 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
             <option value="">ทุกไฟล์</option>
@@ -154,7 +146,31 @@ export function TransactionsTab() {
           <span className="mt-1.5 flex h-9 items-center gap-2 rounded-md border bg-background px-3"><Search className="h-3.5 w-3.5" /><input placeholder="รายละเอียดหรือเลขอ้างอิง" value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none" /></span>
         </label>
         {hasFilters && <button type="button" onClick={() => setFilters((current) => ({ ...current, status: "", card: "", q: "" }))} className="h-9 rounded-md px-3 text-xs font-medium text-sky-700 hover:bg-sky-50">ล้างตัวกรอง</button>}
-        </FilterPanel>
+      </FilterPanel>
+
+      <Tabs value={activeView} onValueChange={(value) => changeView(value as TransactionView)}>
+        <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+          <div className="border-b px-4 py-3">
+            <p className="text-sm font-semibold">เลือกแท็บรายการที่ต้องการดู</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">กดแท็บด้านล่างเพื่อสลับระหว่างยอดที่ตัดจากบัตรกับยอดที่ชำระเข้าหรือได้รับคืน</p>
+          </div>
+          <TabsList className="grid h-auto w-full grid-cols-2 rounded-none bg-transparent p-0 text-left">
+            <TabsTrigger value="charges" className="min-h-[88px] flex-col items-start gap-1.5 rounded-none border-b-4 border-transparent bg-transparent px-3 py-3 text-left sm:px-5 data-[state=active]:border-sky-600 data-[state=active]:bg-sky-50 data-[state=active]:text-sky-900 data-[state=active]:shadow-none">
+              <span className="flex w-full flex-wrap items-center justify-between gap-1.5">
+                <span className="inline-flex items-center gap-2 font-semibold"><CreditCard className="h-4 w-4" /> ยอดใช้จ่าย</span>
+                <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", activeView === "charges" ? "bg-sky-600 text-white" : "bg-muted text-muted-foreground")}>{activeView === "charges" ? "กำลังดูแท็บนี้" : "กดเพื่อดู"}</span>
+              </span>
+              <span className="text-xs text-muted-foreground">{charges.length.toLocaleString("th-TH")} รายการ · รวม {formatCurrency(chargesTotal)}</span>
+            </TabsTrigger>
+            <TabsTrigger value="payments" className="min-h-[88px] flex-col items-start gap-1.5 rounded-none border-b-4 border-transparent bg-transparent px-3 py-3 text-left sm:px-5 data-[state=active]:border-emerald-600 data-[state=active]:bg-emerald-50 data-[state=active]:text-emerald-900 data-[state=active]:shadow-none">
+              <span className="flex w-full flex-wrap items-center justify-between gap-1.5">
+                <span className="inline-flex items-center gap-2 font-semibold"><RefreshCcw className="h-4 w-4" /> ยอดชำระหรือเงินคืน</span>
+                <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-semibold", activeView === "payments" ? "bg-emerald-600 text-white" : "bg-muted text-muted-foreground")}>{activeView === "payments" ? "กำลังดูแท็บนี้" : "กดเพื่อดู"}</span>
+              </span>
+              <span className="text-xs text-muted-foreground">{payments.length.toLocaleString("th-TH")} รายการ · รวม {formatCurrency(Math.abs(paymentsTotal))}</span>
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
         <TabsContent value={activeView} className="mt-4">
           {loading ? (
@@ -180,7 +196,7 @@ function TransactionTable({ title, hint, rows, emptyText }: { title: string; hin
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   useEffect(() => { setPage(1); }, [rows]);
-  const total = rows.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const total = rows.reduce((sum, transaction) => sum + transactionAmount(transaction.amount), 0);
   const pageRows = pageSize === 0 ? rows : rows.slice((page - 1) * pageSize, page * pageSize);
 
   return (
@@ -203,7 +219,7 @@ function TransactionTable({ title, hint, rows, emptyText }: { title: string; hin
                       <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{formatDate(transaction.transaction_date)}</td>
                       <td className="whitespace-nowrap px-4 py-3">{transaction.card_last4 ? `••••${transaction.card_last4}` : "-"}</td>
                       <td className="max-w-[320px] px-4 py-3"><p className="truncate font-medium">{transaction.description}</p>{transaction.is_duplicate && <p className="mt-0.5 text-[10px] text-rose-600">อาจเป็นรายการซ้ำ</p>}</td>
-                      <td className={cn("whitespace-nowrap px-4 py-3 text-right font-semibold", transaction.amount < 0 ? "text-rose-600" : "text-slate-800")}>{formatCurrency(transaction.amount)}</td>
+                      <td className={cn("whitespace-nowrap px-4 py-3 text-right font-semibold", transactionAmount(transaction.amount) < 0 ? "text-rose-600" : "text-slate-800")}>{formatCurrency(transactionAmount(transaction.amount))}</td>
                       <td className="max-w-[180px] truncate px-4 py-3 text-muted-foreground">{transaction.original_filename}</td>
                       <td className="px-4 py-3"><span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", STATUS_CLASS[transaction.match_status] ?? "bg-muted")}>{STATUS_LABEL[transaction.match_status] ?? transaction.match_status}</span></td>
                     </tr>
@@ -214,7 +230,7 @@ function TransactionTable({ title, hint, rows, emptyText }: { title: string; hin
             <div className="divide-y md:hidden">
               {pageRows.map((transaction) => (
                 <div key={transaction.id} className="space-y-2 p-4">
-                  <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{transaction.description}</p><p className="mt-1 text-xs text-muted-foreground">{formatDate(transaction.transaction_date)} · {transaction.card_last4 ? `••••${transaction.card_last4}` : "ไม่พบเลขบัตร"}</p></div><span className={cn("whitespace-nowrap text-sm font-bold", transaction.amount < 0 ? "text-rose-600" : "text-slate-800")}>{formatCurrency(transaction.amount)}</span></div>
+                  <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{transaction.description}</p><p className="mt-1 text-xs text-muted-foreground">{formatDate(transaction.transaction_date)} · {transaction.card_last4 ? `••••${transaction.card_last4}` : "ไม่พบเลขบัตร"}</p></div><span className={cn("whitespace-nowrap text-sm font-bold", transactionAmount(transaction.amount) < 0 ? "text-rose-600" : "text-slate-800")}>{formatCurrency(transactionAmount(transaction.amount))}</span></div>
                   <div className="flex items-center justify-between gap-2"><span className="min-w-0 truncate text-[11px] text-muted-foreground">{transaction.original_filename}</span><span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium", STATUS_CLASS[transaction.match_status] ?? "bg-muted")}>{STATUS_LABEL[transaction.match_status] ?? transaction.match_status}</span></div>
                 </div>
               ))}
