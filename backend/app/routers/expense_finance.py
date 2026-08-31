@@ -38,7 +38,6 @@ from app.services import expense_finance_service, expense_request_service
 router = APIRouter(tags=["Expense Finance"])
 
 accounting_view = require_permission("expense_accounting.view", legacy_min_role="accountant")
-accounting_pay = require_permission("expense_accounting.create", legacy_min_role="accountant")
 accounting_update = require_permission("expense_accounting.update", legacy_min_role="accountant")
 accounting_cancel_permission = require_permission("expense_accounting.delete", legacy_min_role="accountant")
 accounting_approve = require_permission("expense_accounting.approve", legacy_min_role="accountant")
@@ -612,7 +611,7 @@ async def list_payments(
 @router.post("/expense-requests/{request_id}/payments", response_model=PaymentOut, status_code=201)
 async def create_payment(
     request_id: str, payload: PaymentIn,
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_pay),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
     company: Company = Depends(get_current_company),
 ):
     req = await _request(db, request_id, company.id)
