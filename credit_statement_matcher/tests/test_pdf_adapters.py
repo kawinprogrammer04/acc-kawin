@@ -1,3 +1,4 @@
+import io
 import tempfile
 import time
 import unittest
@@ -12,18 +13,21 @@ from app.parsers import (
     TrustedAmount,
     _build_transaction,
     _parse_amex_ocr,
+    _parse_ads_ocr_lines,
     _parse_krungsri_ocr,
     _parse_scb_pdf,
     _parse_tesseract_tsv,
     _ocr_image_variants,
     _parse_ocr_currency_values,
     parse_statement_with_metadata,
+    prepare_evidence_image,
 )
 from app.staging import (
     PreviewNotFoundError,
     cleanup_expired_previews,
     create_preview,
     load_preview,
+    read_preview_image,
     read_preview_source,
 )
 from app.main import _submitted_preview_rows, upload_job_progress
@@ -98,6 +102,36 @@ def ocr_line(text, confidence=95, page=1, left=0, top=0):
 
 
 class PdfAdapterTests(unittest.TestCase):
+    def test_ads_image_ocr_extracts_amount_reference_card_and_platform(self):
+        lines = [
+            ocr_line(
+                "2026-07-20 12:30 TikTok Ads Invoice THTT202602881921 "
+                "Transaction ID TXN12345678 MasterCard •••• 0101 "
+                "Ref NJSA6KMPM2 THB 286.00",
+                confidence=91,
+            )
+        ]
+
+        rows = _parse_ads_ocr_lines(lines, "tiktok-july.png")
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].transaction_date, "2026-07-20")
+        self.assertEqual(rows[0].transaction_time, "12:30:00")
+        self.assertEqual(rows[0].amount, 286.0)
+        self.assertEqual(rows[0].card_last4, "0101")
+        self.assertEqual(rows[0].tr_code, "NJSA6KMPM2")
+        self.assertIn("TikTok Ads", rows[0].description)
+
+    def test_evidence_image_is_resized_before_ocr(self):
+        source = Image.new("RGB", (4000, 1200), "white")
+        output = io.BytesIO()
+        source.save(output, format="PNG")
+
+        prepared = prepare_evidence_image(output.getvalue())
+
+        with Image.open(io.BytesIO(prepared)) as resized:
+            self.assertLessEqual(max(resized.size), 1800)
+
     def test_scb_position_parser_signs_debit_and_credit(self):
         statement = _parse_scb_pdf(
             FakeScbDocument(),
@@ -340,6 +374,24 @@ class PreviewStagingTests(unittest.TestCase):
 
             self.assertEqual(payload["statement"]["issuer"], "Test")
             self.assertEqual(read_preview_source(upload_dir, payload), b"%PDF-test")
+
+    def test_image_preview_round_trip_and_integrity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            upload_dir = Path(temp_dir)
+            token = create_preview(
+                upload_dir,
+                "images_1_files.imgbatch",
+                b"batch",
+                self.sample_statement(),
+                preview_files=[("proof.jpg", b"image-bytes")],
+            )
+
+            payload = load_preview(upload_dir, token)
+            data, filename, media_type = read_preview_image(upload_dir, payload, 0)
+
+            self.assertEqual(data, b"image-bytes")
+            self.assertEqual(filename, "proof.jpg")
+            self.assertEqual(media_type, "image/jpeg")
 
     def test_expired_preview_is_removed(self):
         with tempfile.TemporaryDirectory() as temp_dir:

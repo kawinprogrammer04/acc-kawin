@@ -2,13 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AlertCircle, ArrowRight, CheckCircle2, FileImage, FileSearch, FileSpreadsheet,
-  FileText, ImagePlus, Loader2, Trash2, UploadCloud,
+  FileText, ImagePlus, Loader2, Plus, Save, Trash2, UploadCloud,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { getApiErrorMessage } from "@/api/client";
 import {
-  referenceItemsApi, statementsApi, type ReferenceSource, type Statement, type UploadJobStatus,
+  referenceItemsApi, statementsApi, type PreviewPayload, type ReferenceSource, type Statement, type UploadJobStatus,
 } from "@/api/statement";
 import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -16,6 +19,16 @@ import { FriendlyEmpty, StatementJourney } from "./StatementUx";
 
 type Phase = "idle" | "uploading" | "processing" | "saving";
 type DropTarget = "statement" | "evidence" | null;
+type EvidenceReviewRow = {
+  include: boolean;
+  transaction_date: string;
+  description: string;
+  amount: string;
+  card_last4: string;
+  tr_code: string;
+  channel: string;
+  warnings: string[];
+};
 
 const PHASE_MESSAGE: Record<Phase, string> = {
   idle: "",
@@ -38,9 +51,18 @@ export function UploadTab() {
   const [currentFiles, setCurrentFiles] = useState<string[]>([]);
   const [lastSavedStatementId, setLastSavedStatementId] = useState<number | null>(null);
   const [dragTarget, setDragTarget] = useState<DropTarget>(null);
+  const [currentJobToken, setCurrentJobToken] = useState<string | null>(null);
+  const [preview, setPreview] = useState<PreviewPayload | null>(null);
+  const [reviewRows, setReviewRows] = useState<EvidenceReviewRow[]>([]);
+  const [previewImages, setPreviewImages] = useState<{ name: string; url: string }[]>([]);
+  const [selectedPreviewImage, setSelectedPreviewImage] = useState(0);
+  const [reviewConfirmed, setReviewConfirmed] = useState(false);
+  const [savingReview, setSavingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const evidenceInputRef = useRef<HTMLInputElement | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const previewImageUrlsRef = useRef<string[]>([]);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -64,13 +86,21 @@ export function UploadTab() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => () => { if (pollRef.current) window.clearInterval(pollRef.current); }, []);
+  useEffect(() => () => {
+    if (pollRef.current) window.clearInterval(pollRef.current);
+    previewImageUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+  }, []);
 
-  const saveAutomatically = useCallback(async (previewToken: string) => {
+  const replacePreviewImages = (images: { name: string; url: string }[]) => {
+    previewImageUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    previewImageUrlsRef.current = images.map((image) => image.url);
+    setPreviewImages(images);
+  };
+
+  const saveStatementAutomatically = useCallback(async (previewToken: string, previewData: PreviewPayload) => {
     setPhase("saving");
     try {
-      const preview = await statementsApi.getPreview(previewToken);
-      const rows = preview.rows.map((row) => ({
+      const rows = previewData.rows.map((row) => ({
         include: row.include,
         reviewed: true,
         transaction_date: row.transaction_date ?? "",
@@ -78,14 +108,11 @@ export function UploadTab() {
         amount: row.amount != null ? String(row.amount) : "",
         card_last4: row.card_last4 ?? "",
         tr_code: row.tr_code ?? "",
+        channel: String(row.channel ?? ""),
       }));
       const result = await statementsApi.confirmPreview(previewToken, rows);
-      if (result.kind === "reference_items") {
-        showToast(`อ่านหลักฐานสำเร็จ ${result.inserted ?? 0} รายการ`);
-      } else {
-        setLastSavedStatementId(result.statement_id ?? null);
-        showToast("อัปโหลด Statement สำเร็จแล้ว — กดชื่อไฟล์เพื่อดูรายการได้ทันที");
-      }
+      setLastSavedStatementId(result.statement_id ?? null);
+      showToast("อัปโหลด Statement สำเร็จแล้ว — กดชื่อไฟล์เพื่อดูรายการได้ทันที");
       await load();
     } catch (err) {
       setError(getApiErrorMessage(err, "บันทึกข้อมูลจากไฟล์ไม่สำเร็จ"));
@@ -94,8 +121,64 @@ export function UploadTab() {
       setPhase("idle");
       setCurrentFiles([]);
       setJobMessage("");
+      setCurrentJobToken(null);
     }
   }, [load]);
+
+  const openEvidenceReview = useCallback(async (previewToken: string, previewData: PreviewPayload) => {
+    const defaultChannel = previewData.preview_images[0]?.name ?? "manual";
+    const rows: EvidenceReviewRow[] = previewData.rows.length > 0
+      ? previewData.rows.map((row) => ({
+          include: row.include,
+          transaction_date: row.transaction_date ?? "",
+          description: row.description ?? "",
+          amount: row.amount != null ? String(row.amount) : "",
+          card_last4: row.card_last4 ?? "",
+          tr_code: row.tr_code ?? "",
+          channel: String(row.channel ?? defaultChannel),
+          warnings: row.warnings ?? [],
+        }))
+      : [{
+          include: true, transaction_date: "", description: "ค่าโฆษณา",
+          amount: "", card_last4: "", tr_code: "", channel: defaultChannel,
+          warnings: ["ระบบยังแยกรายการไม่ได้ กรุณากรอกข้อมูลจากรูป"],
+        }];
+    const loadedImages = await Promise.all(previewData.preview_images.map(async (image) => {
+      try {
+        const blob = await statementsApi.getPreviewImage(previewToken, image.index);
+        return { name: image.name, url: URL.createObjectURL(blob) };
+      } catch {
+        return null;
+      }
+    }));
+    const images = loadedImages.filter((image): image is { name: string; url: string } => image !== null);
+    replacePreviewImages(images);
+    setPreview(previewData);
+    setReviewRows(rows);
+    setSelectedPreviewImage(0);
+    setReviewConfirmed(false);
+    setReviewError(null);
+    setPhase("idle");
+    setCurrentFiles([]);
+    setJobMessage("");
+    setCurrentJobToken(null);
+  }, []);
+
+  const handleCompletedPreview = useCallback(async (previewToken: string) => {
+    try {
+      const previewData = await statementsApi.getPreview(previewToken);
+      if (previewData.statement.statement_type === "ads_screenshot") {
+        await openEvidenceReview(previewToken, previewData);
+      } else {
+        await saveStatementAutomatically(previewToken, previewData);
+      }
+    } catch (err) {
+      setError(getApiErrorMessage(err, "เปิดข้อมูลที่อ่านได้ไม่สำเร็จ"));
+      setPhase("idle");
+      setCurrentFiles([]);
+      setCurrentJobToken(null);
+    }
+  }, [openEvidenceReview, saveStatementAutomatically]);
 
   const pollJob = useCallback((jobToken: string) => {
     setPhase("processing");
@@ -105,21 +188,33 @@ export function UploadTab() {
         setJobMessage(status.message);
         if (status.status === "complete" && status.preview_token) {
           if (pollRef.current) window.clearInterval(pollRef.current);
-          await saveAutomatically(status.preview_token);
+          await handleCompletedPreview(status.preview_token);
         } else if (status.status === "failed" || status.status === "missing") {
           if (pollRef.current) window.clearInterval(pollRef.current);
           setError(status.error || "ระบบอ่านไฟล์ไม่สำเร็จ กรุณาตรวจไฟล์แล้วลองอีกครั้ง");
           setPhase("idle");
           setCurrentFiles([]);
+          setCurrentJobToken(null);
         }
       } catch (err) {
         if (pollRef.current) window.clearInterval(pollRef.current);
         setError(getApiErrorMessage(err, "ตรวจสอบสถานะการอ่านไฟล์ไม่สำเร็จ"));
         setPhase("idle");
         setCurrentFiles([]);
+        setCurrentJobToken(null);
       }
     }, 1500);
-  }, [saveAutomatically]);
+  }, [handleCompletedPreview]);
+
+  const cancelCurrentJob = async () => {
+    if (pollRef.current) window.clearInterval(pollRef.current);
+    if (currentJobToken) await statementsApi.cancelJob(currentJobToken).catch(() => undefined);
+    setPhase("idle");
+    setCurrentFiles([]);
+    setCurrentJobToken(null);
+    setJobMessage("");
+    showToast("ยกเลิกการอ่านข้อความแล้ว");
+  };
 
   const handleStatementFile = async (file: File) => {
     setError(null);
@@ -128,6 +223,7 @@ export function UploadTab() {
     setPhase("uploading");
     try {
       const { job_token } = await statementsApi.upload(file);
+      setCurrentJobToken(job_token);
       pollJob(job_token);
     } catch (err) {
       setError(getApiErrorMessage(err, "อัปโหลด Statement ไม่สำเร็จ"));
@@ -143,6 +239,9 @@ export function UploadTab() {
     try {
       const images = files.filter((file) => imageExtensions.has(file.name.split(".").pop()?.toLowerCase() ?? ""));
       const documents = files.filter((file) => !images.includes(file));
+      if (images.length > 10) throw new Error("เลือกภาพได้ไม่เกิน 10 ไฟล์ต่อครั้ง");
+      const oversizedImage = images.find((file) => file.size > 8 * 1024 * 1024);
+      if (oversizedImage) throw new Error(`${oversizedImage.name} มีขนาดเกิน 8 MB`);
       let documentRows = 0;
       for (const file of documents) {
         const result = await referenceItemsApi.upload(file);
@@ -150,6 +249,7 @@ export function UploadTab() {
       }
       if (images.length > 0) {
         const { job_token } = await statementsApi.uploadImages(images);
+        setCurrentJobToken(job_token);
         if (documentRows > 0) showToast(`อ่านไฟล์เอกสารแล้ว ${documentRows} รายการ กำลังอ่านรูปภาพต่อ...`);
         pollJob(job_token);
         return;
@@ -162,6 +262,63 @@ export function UploadTab() {
       setError(getApiErrorMessage(err, "อัปโหลดหลักฐานไม่สำเร็จ"));
       setPhase("idle");
       setCurrentFiles([]);
+    }
+  };
+
+  const updateReviewRow = (index: number, patch: Partial<EvidenceReviewRow>) => {
+    setReviewRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
+    setReviewConfirmed(false);
+  };
+
+  const addReviewRow = () => {
+    setReviewRows((current) => [...current, {
+      include: true,
+      transaction_date: "",
+      description: "ค่าโฆษณา",
+      amount: "",
+      card_last4: "",
+      tr_code: "",
+      channel: previewImages[selectedPreviewImage]?.name ?? previewImages[0]?.name ?? "manual",
+      warnings: ["รายการที่ผู้ใช้เพิ่มเอง"],
+    }]);
+    setReviewConfirmed(false);
+  };
+
+  const closeEvidenceReview = async () => {
+    const token = preview?.preview_token;
+    setPreview(null);
+    setReviewRows([]);
+    setReviewError(null);
+    setReviewConfirmed(false);
+    replacePreviewImages([]);
+    if (token) await statementsApi.cancelPreview(token).catch(() => undefined);
+  };
+
+  const saveEvidenceReview = async () => {
+    if (!preview || !reviewConfirmed) return;
+    const includedRows = reviewRows.filter((row) => row.include);
+    if (includedRows.length === 0) {
+      setReviewError("กรุณาเลือกอย่างน้อย 1 รายการที่จะบันทึก");
+      return;
+    }
+    setSavingReview(true);
+    setReviewError(null);
+    try {
+      const result = await statementsApi.confirmPreview(
+        preview.preview_token,
+        reviewRows.map((row) => ({ ...row, reviewed: true })),
+      );
+      const inserted = result.inserted ?? 0;
+      setPreview(null);
+      setReviewRows([]);
+      setReviewConfirmed(false);
+      replacePreviewImages([]);
+      showToast(`บันทึกหลักฐานแล้ว ${inserted} รายการ`);
+      await load();
+    } catch (err) {
+      setReviewError(getApiErrorMessage(err, "บันทึกหลักฐานไม่สำเร็จ กรุณาตรวจช่องที่ยังไม่ครบ"));
+    } finally {
+      setSavingReview(false);
     }
   };
 
@@ -185,6 +342,9 @@ export function UploadTab() {
   };
 
   const busy = phase !== "idle";
+  const previewWarnings = preview && Array.isArray(preview.statement.warnings)
+    ? preview.statement.warnings as string[]
+    : [];
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
@@ -234,8 +394,8 @@ export function UploadTab() {
         <UploadCard
           icon={<ImagePlus className="h-5 w-5" />}
           title="หลักฐานค่าโฆษณา"
-          description="ระบบจะพยายามอ่านช่องทาง ยอด วันที่ เลขอ้างอิง และเลขบัตรจากไฟล์ให้"
-          formats="รูปภาพหลายไฟล์ หรือ PDF, XLSX, CSV"
+          description="ระบบอ่านข้อความในเครื่อง แล้วให้คุณตรวจและแก้ก่อนบันทึกทุกครั้ง"
+          formats="รูปภาพไม่เกิน 10 ไฟล์ (ไฟล์ละไม่เกิน 8 MB) หรือ PDF, XLSX, CSV"
           actionLabel="เลือกไฟล์หลักฐาน"
           tone="violet"
           active={dragTarget === "evidence"}
@@ -276,6 +436,9 @@ export function UploadTab() {
                   })}
                 </div>
               </div>
+              {currentJobToken && phase === "processing" && (
+                <button type="button" onClick={cancelCurrentJob} className="shrink-0 rounded-md border bg-background px-3 py-2 text-xs font-semibold text-muted-foreground hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600">ยกเลิก</button>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -353,6 +516,110 @@ export function UploadTab() {
         </Card>
       </div>
 
+      <Dialog open={!!preview} onOpenChange={(open) => { if (!open && !savingReview) void closeEvidenceReview(); }}>
+        <DialogContent className="flex max-h-[92vh] max-w-7xl flex-col overflow-hidden">
+          <DialogHeader className="border-b pb-4 pr-12">
+            <DialogTitle>ตรวจข้อมูลจากรูปก่อนบันทึก</DialogTitle>
+            <DialogDescription>เทียบข้อมูลด้านขวากับรูปต้นฉบับ หากอ่านไม่ครบสามารถแก้ไขหรือเพิ่มรายการได้ทันที</DialogDescription>
+          </DialogHeader>
+
+          <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[minmax(0,.9fr)_minmax(520px,1.1fr)]">
+            <section className="min-h-0 overflow-auto border-b bg-slate-50 p-4 lg:border-b-0 lg:border-r">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">รูปหลักฐาน</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">{previewImages[selectedPreviewImage]?.name ?? "ไม่พบรูป Preview"}</p>
+                </div>
+                <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-violet-700 shadow-sm">{previewImages.length} รูป</span>
+              </div>
+              {previewImages.length > 0 ? (
+                <>
+                  <div className="grid min-h-[340px] place-items-center overflow-hidden rounded-xl border bg-white p-2">
+                    <img src={previewImages[selectedPreviewImage]?.url} alt={previewImages[selectedPreviewImage]?.name ?? "รูปหลักฐาน"} className="max-h-[55vh] w-full object-contain" />
+                  </div>
+                  {previewImages.length > 1 && (
+                    <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+                      {previewImages.map((image, index) => (
+                        <button key={image.url} type="button" onClick={() => setSelectedPreviewImage(index)} className={cn("h-16 w-24 shrink-0 overflow-hidden rounded-lg border-2 bg-white", selectedPreviewImage === index ? "border-violet-500" : "border-transparent")}>
+                          <img src={image.url} alt={image.name} className="h-full w-full object-cover" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <FriendlyEmpty title="เปิดรูปตัวอย่างไม่ได้" description="ยังตรวจและกรอกข้อมูลด้านขวาได้ตามปกติ" icon={<FileImage className="h-5 w-5" />} />
+              )}
+            </section>
+
+            <section className="min-h-0 overflow-auto p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold">รายการที่อ่านได้</p>
+                  <p className="mt-0.5 text-xs text-muted-foreground">เลือกเฉพาะรายการที่ต้องการบันทึก · แก้ข้อมูลได้ทุกช่อง</p>
+                </div>
+                <button type="button" onClick={addReviewRow} className="inline-flex h-9 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-semibold hover:bg-muted"><Plus className="h-3.5 w-3.5" />เพิ่มรายการ</button>
+              </div>
+
+              {previewWarnings.length > 0 && (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                  {previewWarnings.map((warning) => <p key={warning}>• {warning}</p>)}
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {reviewRows.map((row, index) => (
+                  <div key={index} className={cn("rounded-xl border p-3 transition", row.include ? "bg-white" : "bg-muted/30 opacity-60")}>
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={row.include} onChange={(event) => updateReviewRow(index, { include: event.target.checked })} />รายการที่ {index + 1}</label>
+                      {row.warnings.length > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">กรุณาตรวจ</span>}
+                    </div>
+                    {row.warnings.length > 0 && <p className="mb-3 text-[11px] leading-5 text-amber-700">{row.warnings.join(" · ")}</p>}
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="text-xs font-medium text-muted-foreground">วันที่ (ถ้ามี)
+                        <input type="date" value={row.transaction_date} onChange={(event) => updateReviewRow(index, { transaction_date: event.target.value })} disabled={!row.include} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" />
+                      </label>
+                      <label className="text-xs font-medium text-muted-foreground">ยอดเงิน <span className="text-rose-500">*</span>
+                        <input inputMode="decimal" value={row.amount} onChange={(event) => updateReviewRow(index, { amount: event.target.value })} disabled={!row.include} placeholder="0.00" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-right text-sm font-semibold text-foreground" />
+                      </label>
+                      <label className="text-xs font-medium text-muted-foreground sm:col-span-2">รายละเอียด <span className="text-rose-500">*</span>
+                        <input value={row.description} onChange={(event) => updateReviewRow(index, { description: event.target.value })} disabled={!row.include} placeholder="เช่น TikTok Ads · เลข Invoice" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" />
+                      </label>
+                      <label className="text-xs font-medium text-muted-foreground">เลขอ้างอิง
+                        <input value={row.tr_code} onChange={(event) => updateReviewRow(index, { tr_code: event.target.value })} disabled={!row.include} placeholder="Reference / Transaction ID" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" />
+                      </label>
+                      <label className="text-xs font-medium text-muted-foreground">เลขท้ายบัตร
+                        <input value={row.card_last4} onChange={(event) => updateReviewRow(index, { card_last4: event.target.value.replace(/\D/g, "").slice(-4) })} disabled={!row.include} inputMode="numeric" maxLength={4} placeholder="4 หลัก" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" />
+                      </label>
+                      <label className="text-xs font-medium text-muted-foreground sm:col-span-2">มาจากรูป
+                        <select value={row.channel} onChange={(event) => updateReviewRow(index, { channel: event.target.value })} disabled={!row.include} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
+                          {previewImages.map((image) => <option key={image.name} value={image.name}>{image.name}</option>)}
+                          {previewImages.length === 0 && <option value={row.channel}>{row.channel}</option>}
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+
+          {reviewError && <div className="mx-6 mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{reviewError}</div>}
+          <DialogFooter className="flex-col border-t sm:flex-row sm:items-center sm:justify-between">
+            <label className="flex items-start gap-2 text-xs leading-5 text-muted-foreground">
+              <input type="checkbox" checked={reviewConfirmed} onChange={(event) => setReviewConfirmed(event.target.checked)} className="mt-0.5" />
+              ฉันตรวจยอดและข้อมูลกับรูปต้นฉบับแล้ว
+            </label>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => void closeEvidenceReview()} disabled={savingReview} className="h-10 rounded-md border bg-background px-4 text-sm font-semibold hover:bg-muted disabled:opacity-50">ยกเลิก</button>
+              <button type="button" onClick={saveEvidenceReview} disabled={!reviewConfirmed || savingReview} className="inline-flex h-10 items-center gap-2 rounded-md bg-violet-600 px-4 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
+                {savingReview ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}ยืนยันและบันทึก
+              </button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {toast && (
         <div className="fixed bottom-6 right-6 z-[70] flex max-w-sm items-center gap-3 rounded-xl border border-emerald-200 bg-white px-4 py-3 shadow-xl">
           <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-emerald-50 text-emerald-600"><CheckCircle2 className="h-4 w-4" /></span>
@@ -411,4 +678,3 @@ function UploadCard({
     </Card>
   );
 }
-

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import os
 import re
 import time
@@ -73,6 +74,8 @@ def create_preview(
     original_name: str,
     data: bytes,
     statement: ParsedStatement,
+    *,
+    preview_files: list[tuple[str, bytes]] | None = None,
 ) -> str:
     cleanup_expired_previews(upload_dir)
     token = uuid.uuid4().hex
@@ -86,10 +89,35 @@ def create_preview(
         "suffix": suffix,
         "file_sha256": hashlib.sha256(data).hexdigest(),
         "statement": asdict(statement),
+        "preview_images": [],
     }
     source_path.write_bytes(data)
     source_path.chmod(0o600)
+    written_preview_paths: list[Path] = []
     try:
+        for index, (filename, image_data) in enumerate(preview_files or []):
+            if image_data.startswith(b"\xff\xd8\xff"):
+                suffix, media_type = ".jpg", "image/jpeg"
+            elif image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+                suffix, media_type = ".png", "image/png"
+            elif image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP":
+                suffix, media_type = ".webp", "image/webp"
+            else:
+                suffix = Path(filename).suffix.lower()
+                media_type = mimetypes.guess_type(f"file{suffix}")[0] or "application/octet-stream"
+            image_path = _preview_dir(upload_dir) / f"{token}.preview-{index}{suffix}"
+            image_path.write_bytes(image_data)
+            image_path.chmod(0o600)
+            written_preview_paths.append(image_path)
+            payload["preview_images"].append(
+                {
+                    "index": index,
+                    "name": Path(filename).name,
+                    "suffix": suffix,
+                    "sha256": hashlib.sha256(image_data).hexdigest(),
+                    "media_type": media_type,
+                }
+            )
         metadata_path.write_text(
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
@@ -97,6 +125,8 @@ def create_preview(
         metadata_path.chmod(0o600)
     except Exception:
         source_path.unlink(missing_ok=True)
+        for image_path in written_preview_paths:
+            image_path.unlink(missing_ok=True)
         raise
     return token
 
@@ -128,6 +158,31 @@ def read_preview_source(upload_dir: Path, payload: dict[str, Any]) -> bytes:
     if digest != payload.get("file_sha256"):
         raise PreviewNotFoundError("ไฟล์ Preview ไม่ผ่านการตรวจสอบความถูกต้อง")
     return data
+
+
+def read_preview_image(
+    upload_dir: Path,
+    payload: dict[str, Any],
+    index: int,
+) -> tuple[bytes, str, str]:
+    token = _validate_token(str(payload.get("token") or ""))
+    images = list(payload.get("preview_images") or [])
+    match = next((item for item in images if int(item.get("index", -1)) == index), None)
+    if not match:
+        raise PreviewNotFoundError("ไม่พบรูปหลักฐานที่ต้องการเปิด")
+    suffix = str(match.get("suffix") or ".jpg")
+    image_path = _preview_dir(upload_dir) / f"{token}.preview-{index}{suffix}"
+    try:
+        data = image_path.read_bytes()
+    except OSError as exc:
+        raise PreviewNotFoundError("ไม่พบไฟล์รูปหลักฐานของ Preview") from exc
+    if hashlib.sha256(data).hexdigest() != match.get("sha256"):
+        raise PreviewNotFoundError("รูปหลักฐานไม่ผ่านการตรวจสอบความถูกต้อง")
+    return (
+        data,
+        str(match.get("name") or f"evidence-{index + 1}{suffix}"),
+        str(match.get("media_type") or "image/jpeg"),
+    )
 
 
 def delete_preview(upload_dir: Path, token: str) -> None:

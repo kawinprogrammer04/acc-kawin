@@ -46,7 +46,7 @@
     <div class="metric">
       <span>วิธีอ่านเอกสาร</span>
       <strong class="metric-date">
-        {% if is_tiktok %}Claude Vision OCR{% elif statement.extraction_method == "ocr" %}OCR ไทย + อังกฤษ{% else %}PDF text layer{% endif %}
+        {% if is_tiktok %}OCR ไทย + อังกฤษในเครื่อง{% elif statement.extraction_method == "ocr" %}OCR ไทย + อังกฤษ{% else %}PDF text layer{% endif %}
       </strong>
       <small>{% if is_tiktok %}จะบันทึกลง Reference Items{% else %}แถวความมั่นใจต่ำต้องยืนยันการตรวจทาน{% endif %}</small>
     </div>

@@ -740,6 +740,7 @@ def _run_tesseract_tsv(
     psm: int,
     environment: dict[str, str],
     error_label: str,
+    timeout: int = 60,
 ) -> list[OcrLine]:
     try:
         completed = subprocess.run(
@@ -756,7 +757,7 @@ def _run_tesseract_tsv(
             check=True,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=timeout,
             env=environment,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
@@ -1738,233 +1739,267 @@ def parse_statement(filename: str, data: bytes) -> list[ParsedTransaction]:
     return parse_statement_with_metadata(filename, data).transactions
 
 
-# ── Vision-model OCR — image batch uploads ────────────────────────────────────
-# Uses a local Ollama vision model (free, self-hosted, no per-request API
-# cost) — same pattern as backend/app/services/ocr_service.py in the main
-# app. Ollama must run on the HOST machine, not in a container: Docker
-# Desktop on macOS can't pass the GPU through to a Linux container, so a
-# containerized Ollama would fall back to slow CPU-only inference.
-#
-# Setup on the host:
-#   brew install ollama
-#   ollama pull qwen2.5vl:7b   # default OLLAMA_VISION_MODEL — override via env
-#   ollama serve               # or let the Ollama menu-bar app run it
+# ── Lightweight local OCR — image evidence uploads ───────────────────────────
 
-_VISION_OCR_PROMPT = (
-    "Read this payment screenshot and return ONLY a JSON array. Each row may use these keys: "
-    "transaction_time, account_name, transaction_id, invoice_no, card_label, "
-    "payment_reference, card_last4, status, amount_thb. "
-    "Return [] when there are no visible payment rows. Never guess missing values. "
-    "Copy transaction IDs, invoice numbers, card labels and reference codes exactly. "
-    "The short code beneath the card name is payment_reference, not the card number. "
-    "amount_thb must be a positive number."
-)
-
-_VISION_TRANSACTION_SCHEMA: dict = {
-    "type": "array",
-    "items": {
-        "type": "object",
-        "properties": {
-            "transaction_time": {"type": "string"},
-            "account_name": {"type": "string"},
-            "transaction_id": {"type": "string"},
-            "invoice_no": {"type": "string"},
-            "card_label": {"type": "string"},
-            "payment_reference": {"type": "string"},
-            "card_last4": {"type": "string"},
-            "status": {"type": "string"},
-            "amount_thb": {"type": "number"},
-        },
-        "required": ["amount_thb"],
-    },
-}
+EVIDENCE_IMAGE_MAX_DIMENSION = int(os.getenv("STATEMENT_IMAGE_MAX_DIMENSION", "1800"))
+EVIDENCE_OCR_TIMEOUT_SECONDS = int(os.getenv("STATEMENT_IMAGE_OCR_TIMEOUT_SECONDS", "60"))
 
 
-async def _ocr_one_image(
-    client: Any,
-    filename: str,
-    data: bytes,
-    sem: Any,
-    model: str,
-) -> list[dict]:
-    import base64 as _base64
-    import json as _json
-    import logging as _logging
+def prepare_evidence_image(data: bytes) -> bytes:
+    """Validate, orient and shrink an evidence image before it enters the queue."""
+    from PIL import Image, ImageOps, UnidentifiedImageError
 
-    async with sem:
-        b64 = _base64.b64encode(data).decode()
-        payload = {
-            "model": model,
-            "prompt": _VISION_OCR_PROMPT,
-            "images": [b64],
-            # JSON mode is substantially faster on small local vision models
-            # than full grammar-constrained JSON Schema decoding.
-            "format": "json",
-            "stream": False,
-            "options": {
-                # A screenshot needs only a compact structured answer. Without
-                # a cap, a small local model can spend minutes over-generating
-                # before the JSON parser ever gets a response.
-                "num_predict": 128,
-                "temperature": 0,
-            },
-        }
-        resp = await client.post("/api/generate", json=payload)
-        resp.raise_for_status()
-        text = str(resp.json().get("response", "")).strip()
-        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE).strip()
-        _logging.getLogger(__name__).info(
-            "[OCR] %s → raw response: %.500s", filename, text
-        )
-        parsed = _json.loads(text) if text else []
-        if isinstance(parsed, list):
-            rows: list[dict] = parsed
-        elif isinstance(parsed, dict) and isinstance(parsed.get("transactions"), list):
-            rows = parsed["transactions"]
-        elif isinstance(parsed, dict) and parsed.get("amount_thb") is not None:
-            rows = [parsed]
+    try:
+        with Image.open(io.BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail(
+                (EVIDENCE_IMAGE_MAX_DIMENSION, EVIDENCE_IMAGE_MAX_DIMENSION),
+                Image.Resampling.LANCZOS,
+            )
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=88, optimize=True)
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise ValueError("ไฟล์รูปภาพเสียหรือไม่ใช่รูปภาพที่ระบบรองรับ") from exc
+    return output.getvalue()
+
+
+def _ads_platform(text: str) -> str:
+    clean = text.casefold()
+    if "facebook" in clean or "meta" in clean:
+        return "Facebook/Meta Ads"
+    if "google" in clean:
+        return "Google Ads"
+    if "tiktok" in clean:
+        return "TikTok Ads"
+    return "หลักฐานค่าโฆษณา"
+
+
+def _ads_row_texts(lines: list[OcrLine]) -> list[tuple[str, float]]:
+    words = [word for line in lines for word in line.words if word.text.strip()]
+    if not words:
+        return [(line.text, line.confidence) for line in lines if line.text.strip()]
+
+    heights = sorted(max(1.0, word.height) for word in words)
+    median_height = heights[len(heights) // 2]
+    tolerance = max(10.0, median_height * 0.8)
+    grouped: list[list[PositionedWord]] = []
+    centers: list[float] = []
+    for word in sorted(words, key=lambda item: (item.top + item.height / 2, item.left)):
+        center = word.top + word.height / 2
+        if not grouped or abs(center - centers[-1]) > tolerance:
+            grouped.append([word])
+            centers.append(center)
         else:
-            rows = []
-        _logging.getLogger(__name__).info(
-            "[OCR] %s → parsed %d rows", filename, len(rows)
+            grouped[-1].append(word)
+            centers[-1] = sum(item.top + item.height / 2 for item in grouped[-1]) / len(grouped[-1])
+
+    result: list[tuple[str, float]] = []
+    for group in grouped:
+        group.sort(key=lambda item: item.left)
+        text = " ".join(item.text for item in group).strip()
+        weight = sum(max(1, len(item.text)) for item in group)
+        confidence = sum(item.confidence * max(1, len(item.text)) for item in group) / max(1, weight)
+        if text:
+            result.append((text, confidence))
+    return result
+
+
+def _labelled_code(text: str, labels: str) -> str | None:
+    match = re.search(
+        rf"(?:{labels})\s*[:#-]?\s*([A-Z0-9][A-Z0-9|/_-]{{5,}})",
+        text,
+        re.IGNORECASE,
+    )
+    return match.group(1).strip("|/_-") if match else None
+
+
+def _parse_ads_ocr_lines(lines: list[OcrLine], filename: str) -> list[ParsedTransaction]:
+    transactions: list[ParsedTransaction] = []
+    all_text = "\n".join(line.text for line in lines)
+    platform = _ads_platform(all_text)
+    amount_pattern = re.compile(
+        r"(?<![\d:/-])(?:฿\s*)?(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})(?:\s*(?:THB|บาท))?(?!\d)",
+        re.IGNORECASE,
+    )
+
+    row_texts = _ads_row_texts(lines)
+    for row_index, (text, confidence) in enumerate(row_texts):
+        clean = re.sub(r"\s+", " ", text).strip()
+        lowered = clean.casefold()
+        if any(label in lowered for label in ("ยอดรวม", "total amount", "available balance", "current balance")):
+            continue
+        amount_matches = list(amount_pattern.finditer(clean))
+        if not amount_matches:
+            continue
+        amount = parse_amount(amount_matches[-1].group(1))
+        if amount is None or amount <= 0:
+            continue
+
+        context_parts = [clean]
+        for prior_index in range(row_index - 1, max(-1, row_index - 4), -1):
+            prior = re.sub(r"\s+", " ", row_texts[prior_index][0]).strip()
+            if amount_pattern.search(prior):
+                break
+            context_parts.insert(0, prior)
+        context = " ".join(context_parts)
+
+        date_match = re.search(
+            r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b",
+            context,
         )
-        clean_rows = [row for row in rows if isinstance(row, dict)]
-        for row in clean_rows:
-            row["_src"] = filename
-        return clean_rows
+        time_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", context)
+        transaction_date = parse_date(date_match.group(0)) if date_match else None
+        transaction_time = parse_time(time_match.group(0)) if time_match else None
+
+        card_match = re.search(
+            r"(?:•{2,}|\*{2,}|x{2,}|ending\s*(?:in)?|ลงท้าย)\s*[- ]?(\d{4})\b",
+            context,
+            re.IGNORECASE,
+        )
+        if not card_match:
+            card_match = re.search(
+                r"(?:visa|mastercard|master card|amex|card|บัตร)[^\d]{0,24}(\d{4})\b",
+                context,
+                re.IGNORECASE,
+            )
+        card_last4 = card_match.group(1) if card_match else None
+
+        invoice = _labelled_code(context, r"invoice(?:\s*(?:no|number))?|ใบแจ้งหนี้|เลขที่เอกสาร")
+        if not invoice:
+            invoice_match = re.search(r"\b(?:THTT|TH|INV)[A-Z0-9_-]{6,}\b", context, re.IGNORECASE)
+            invoice = invoice_match.group(0) if invoice_match else None
+        transaction_id = _labelled_code(context, r"transaction(?:\s*id)?|รหัสธุรกรรม|รหัสรายการ")
+        payment_reference = _labelled_code(context, r"reference|ref|รหัสอ้างอิง")
+
+        code_candidates = re.findall(r"\b(?=[A-Z0-9_-]{7,}\b)(?=[A-Z0-9_-]*[A-Z])(?=[A-Z0-9_-]*\d)[A-Z0-9_-]+\b", context.upper())
+        excluded = {value.upper() for value in (invoice, transaction_id) if value}
+        if not payment_reference:
+            payment_reference = next((value for value in code_candidates if value not in excluded), None)
+
+        description_parts = [value for value in (platform, invoice, transaction_id) if value]
+        description = " | ".join(description_parts)
+        if len(description_parts) == 1:
+            without_amount = re.sub(amount_pattern, "", context).strip(" |-")
+            if without_amount:
+                description = f"{platform} | {without_amount[:220]}"
+
+        warnings: list[str] = []
+        if confidence < 70:
+            warnings.append("ข้อความบางส่วนไม่ชัด กรุณาเทียบกับรูป")
+        if not transaction_date:
+            warnings.append("ไม่พบวันที่ กรุณาตรวจหรือกรอกเพิ่ม")
+        if not payment_reference:
+            warnings.append("ไม่พบเลขอ้างอิง กรุณาตรวจหรือกรอกเพิ่ม")
+        if not card_last4:
+            warnings.append("ไม่พบเลขท้ายบัตร กรุณาตรวจหรือกรอกเพิ่ม")
+
+        rounded_amount = round(abs(float(amount)), 2)
+        row_hash = make_row_hash(
+            transaction_date or "",
+            transaction_time,
+            rounded_amount,
+            description,
+            filename,
+            payment_reference,
+        )
+        transactions.append(
+            ParsedTransaction(
+                transaction_date=transaction_date,
+                transaction_time=transaction_time,
+                description=description[:500],
+                amount=rounded_amount,
+                card_last4=card_last4,
+                category="ค่าโฆษณาออนไลน์",
+                deposit_amount=rounded_amount,
+                withdraw_amount=None,
+                channel=Path(filename).name[:100],
+                tr_code=payment_reference or transaction_id or invoice,
+                row_hash=row_hash,
+                confidence=round(max(0.0, min(100.0, confidence)), 2),
+                warnings=warnings,
+            )
+        )
+    return _deduplicate_transactions(transactions)
 
 
-async def parse_images_with_vision_model(
+def _ocr_ads_image(filename: str, data: bytes) -> tuple[list[ParsedTransaction], str]:
+    from PIL import Image
+
+    if not shutil.which("tesseract"):
+        raise ValueError("เซิร์ฟเวอร์ยังไม่ได้ติดตั้ง Tesseract OCR")
+    with tempfile.TemporaryDirectory(prefix="ads-evidence-ocr-") as temp_dir:
+        source_path = Path(temp_dir) / "source.jpg"
+        source_path.write_bytes(data)
+        environment = {**os.environ, "OMP_THREAD_LIMIT": "2"}
+        with Image.open(source_path) as source:
+            variants = _ocr_image_variants(source)
+            grayscale_path = Path(temp_dir) / "grayscale.png"
+            variants["grayscale"].save(grayscale_path)
+            binary_path = Path(temp_dir) / "binary.png"
+            variants["binary"].save(binary_path)
+
+        lines = _run_tesseract_tsv(
+            grayscale_path,
+            1,
+            psm=6,
+            environment=environment,
+            error_label="อ่านข้อความจากรูป ",
+            timeout=max(10, min(25, EVIDENCE_OCR_TIMEOUT_SECONDS // 2)),
+        )
+        transactions = _parse_ads_ocr_lines(lines, filename)
+        if not transactions:
+            sparse_lines = _run_tesseract_tsv(
+                binary_path,
+                1,
+                psm=11,
+                environment=environment,
+                error_label="อ่านข้อความแบบแยกส่วน ",
+                timeout=max(10, min(25, EVIDENCE_OCR_TIMEOUT_SECONDS // 2)),
+            )
+            lines = _deduplicate_ocr_lines([*lines, *sparse_lines])
+            transactions = _parse_ads_ocr_lines(lines, filename)
+        return transactions, "\n".join(line.text for line in lines)
+
+
+async def parse_images_with_local_ocr(
     image_items: list[tuple[str, bytes]],
-    *,
-    concurrency: int | None = None,
-) -> "ParsedStatement":
-    """
-    OCR a list of (filename, image_bytes) screenshots with a local Ollama
-    vision model (free — see the module comment above for setup). Returns a
-    ParsedStatement compatible with the existing upload/preview pipeline.
-
-    concurrency defaults to one request at a time since
-    Ollama on a single host GPU processes requests basically serially anyway
-    — piling on concurrent requests just queues them and risks timeouts.
-    """
+) -> ParsedStatement:
+    """Read evidence sequentially with local Thai/English Tesseract OCR."""
     import asyncio as _asyncio
     import logging as _logging
 
-    import httpx as _httpx
-
-    ollama_url = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434").rstrip("/")
-    model = os.getenv("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")
-    timeout = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
-
-    configured_concurrency = int(os.getenv("STATEMENT_VISION_CONCURRENCY", "1"))
-    request_concurrency = max(1, concurrency if concurrency is not None else configured_concurrency)
-    sem = _asyncio.Semaphore(request_concurrency)
-    async with _httpx.AsyncClient(base_url=ollama_url, timeout=timeout) as client:
-        tasks = [_ocr_one_image(client, name, data, sem, model) for name, data in image_items]
-        results = await _asyncio.gather(*tasks, return_exceptions=True)
-
     transactions: list[ParsedTransaction] = []
-    warn: list[str] = []
-    error_count = 0
-
-    for (filename, _), result in zip(image_items, results):
-        if isinstance(result, Exception):
-            error_count += 1
-            _logging.getLogger(__name__).error(
-                "[OCR] %s failed: %s: %s",
-                filename,
-                type(result).__name__,
-                result,
+    warnings: list[str] = []
+    detected_text: list[str] = []
+    for filename, data in image_items:
+        try:
+            rows, text = await _asyncio.wait_for(
+                _asyncio.to_thread(_ocr_ads_image, filename, data),
+                timeout=EVIDENCE_OCR_TIMEOUT_SECONDS,
             )
-            continue
-        for row in result:
-            src = str(row.get("_src") or "")
-            raw_dt = str(row.get("transaction_time") or "").strip()
-            date_part = parse_date(raw_dt[:10]) if len(raw_dt) >= 10 else None
-            time_part = parse_time(raw_dt[11:]) if len(raw_dt) > 10 else None
-
-            try:
-                amount = float(row["amount_thb"]) if row.get("amount_thb") is not None else None
-            except (TypeError, ValueError):
-                amount = None
-
-            # Real TikTok "Transactions" screenshots sometimes don't show a
-            # date per row at all (the model honestly returns empty rather than
-            # guessing) — don't discard an otherwise-valid row over that;
-            # only a missing amount makes it useless. date_part=None still
-            # flows through fine: reference_items.transaction_date is
-            # nullable, and matching falls back to token/description overlap
-            # (see _common_token_match) instead of an exact-date match.
-            if amount is None:
-                continue
-
-            invoice = str(row.get("invoice_no") or "").strip()
-            tx_id = str(row.get("transaction_id") or "").strip()
-            acct = str(row.get("account_name") or "").strip()
-            payment_ref = str(row.get("payment_reference") or "").strip()
-            card_label = str(row.get("card_label") or "").strip()
-            card = str(row.get("card_last4") or "").strip()[-4:] or None
-            # fallback: extract last 4 digits from card_label if card_last4 is missing
-            if not card and card_label:
-                digits = re.sub(r"[^\d]", "", card_label)
-                card = digits[-4:] if len(digits) >= 4 else None
-
-            # put invoice_no first in description — key field for text matching
-            desc_parts = [p for p in [invoice, tx_id[:20] if tx_id else "", acct] if p]
-            description = " | ".join(desc_parts) if desc_parts else "TikTok Ads"
-
-            channel = Path(src).name[:100] if src else None
-            # รหัสอ้างอิง = payment_reference (บรรทัดล่างของวิธีชำระเงิน เช่น NJSA6KMPM2)
-            # fallback: transaction_id
-            tr_code = (payment_ref[:50] if payment_ref else None) or (tx_id[:50] if tx_id else None)
-            amt = round(amount, 2)
-            row_hash = make_row_hash(date_part or "", time_part, amt, description, channel, tr_code)
-
-            transactions.append(
-                ParsedTransaction(
-                    transaction_date=date_part,
-                    transaction_time=time_part,
-                    description=description[:500],
-                    amount=amt,
-                    card_last4=card,
-                    category=guess_category(description, amt),
-                    deposit_amount=amt if amt > 0 else None,
-                    withdraw_amount=None,
-                    channel=channel,
-                    tr_code=tr_code,
-                    row_hash=row_hash,
-                    confidence=88.0,
-                    warnings=[],
-                )
-            )
-
-    if error_count:
-        warn.append(f"OCR ล้มเหลว {error_count} จาก {len(image_items)} ไฟล์")
-    if not transactions:
-        if image_items and error_count == len(image_items):
-            raise ValueError(
-                f"เชื่อมต่อ Ollama ไม่ได้ที่ {ollama_url} หรืออ่านคำตอบไม่ได้ — "
-                f"ตรวจสอบว่า `ollama serve` รันอยู่บนเครื่อง host และ pull โมเดล "
-                f"{model} แล้ว (ollama pull {model})"
-            )
-        raise ValueError(
-            f"ไม่พบรายการชำระเงินใน {len(image_items)} ภาพที่อัปโหลด"
-            + (f" (ล้มเหลว {error_count} ไฟล์)" if error_count else "")
-        )
+            transactions.extend(rows)
+            detected_text.append(text)
+            if not rows:
+                warnings.append(f"{filename}: ยังแยกรายการไม่ได้ กรุณากรอกในหน้าตรวจสอบ")
+        except TimeoutError:
+            warnings.append(f"{filename}: ใช้เวลาอ่านเกินกำหนด กรุณากรอกในหน้าตรวจสอบ")
+        except ValueError as exc:
+            _logging.getLogger(__name__).warning("[OCR] %s failed: %s", filename, exc)
+            warnings.append(f"{filename}: {exc}")
 
     transactions = _deduplicate_transactions(transactions)
     start, end = _statement_dates(transactions)
+    issuer = _ads_platform("\n".join(detected_text))
     return ParsedStatement(
-        issuer="TikTok Ads",
+        issuer=issuer,
         statement_type="ads_screenshot",
-        extraction_method="ollama_vision",
+        extraction_method="tesseract_local",
         masked_reference=None,
         statement_date_from=start,
         statement_date_to=end,
         summary_totals={
-            "total_charges": round(sum(t.amount for t in transactions if t.amount), 2)
+            "total_charges": round(sum(item.amount or 0 for item in transactions), 2)
         },
         transactions=transactions,
-        warnings=warn,
+        warnings=warnings,
     )
