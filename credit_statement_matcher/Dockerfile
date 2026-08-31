@@ -2,6 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    OMP_NUM_THREADS=2 \
+    OPENBLAS_NUM_THREADS=2 \
     UPLOAD_DIR=/tmp/statement_uploads \
     ROOT_PATH=/statement \
     PORT=8010
@@ -11,6 +13,7 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         fonts-noto-core \
+        libgl1 \
         poppler-utils \
         tesseract-ocr \
         tesseract-ocr-eng \
@@ -22,6 +25,10 @@ RUN groupadd --gid 10001 appuser \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Download the small PP-OCRv4 mobile models while building. Runtime uploads
+# stay fully offline and never pause waiting for a model download.
+RUN python -c "from rapidocr import RapidOCR; RapidOCR()"
 
 COPY --chown=appuser:appuser app ./app
 

@@ -7,9 +7,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -743,19 +745,25 @@ def _run_tesseract_tsv(
     error_label: str,
     timeout: int = 60,
     languages: str = "tha+eng",
+    character_whitelist: str | None = None,
 ) -> list[OcrLine]:
+    command = [
+        "tesseract",
+        str(image_path),
+        "stdout",
+        "-l",
+        languages,
+        "--psm",
+        str(psm),
+    ]
+    if character_whitelist:
+        command.extend(
+            ["-c", f"tessedit_char_whitelist={character_whitelist}"]
+        )
+    command.append("tsv")
     try:
         completed = subprocess.run(
-            [
-                "tesseract",
-                str(image_path),
-                "stdout",
-                "-l",
-                languages,
-                "--psm",
-                str(psm),
-                "tsv",
-            ],
+            command,
             check=True,
             capture_output=True,
             text=True,
@@ -1777,6 +1785,8 @@ def parse_statement(filename: str, data: bytes) -> list[ParsedTransaction]:
 
 EVIDENCE_IMAGE_MAX_DIMENSION = int(os.getenv("STATEMENT_IMAGE_MAX_DIMENSION", "1800"))
 EVIDENCE_OCR_TIMEOUT_SECONDS = int(os.getenv("STATEMENT_IMAGE_OCR_TIMEOUT_SECONDS", "60"))
+_RAPID_OCR_ENGINE: Any | None = None
+_RAPID_OCR_LOCK = threading.Lock()
 
 
 def prepare_evidence_image(data: bytes) -> bytes:
@@ -1970,11 +1980,178 @@ def _meta_reference(
     return min(candidates)[2] if candidates else None
 
 
+def _meta_table_row_bands(source: Any, lines: list[OcrLine]) -> list[tuple[int, int]]:
+    """Find every visible Meta table row independently from OCR amounts.
+
+    Meta draws full-width separators above the header and between data rows.
+    Detecting those lines first prevents a complete row from disappearing when
+    Tesseract misses that row's amount.
+    """
+    from PIL import ImageOps
+
+    grayscale = ImageOps.grayscale(source)
+    width, height = grayscale.size
+    pixels = grayscale.load()
+    separator_rows: list[int] = []
+    for y in range(max(0, int(height * 0.18)), height):
+        dark_pixels = sum(1 for x in range(width) if pixels[x, y] < 248)
+        if dark_pixels >= width * 0.70:
+            separator_rows.append(y)
+
+    separators: list[int] = []
+    group: list[int] = []
+    for y in separator_rows:
+        if group and y > group[-1] + 1:
+            separators.append(group[0])
+            group = []
+        group.append(y)
+    if group:
+        separators.append(group[0])
+
+    heading_positions: list[float] = []
+    for line in lines:
+        compact = _meta_compact_text(line.text)
+        if not any(
+            marker in compact
+            for marker in (
+                "date",
+                "วันที่",
+                "จำนวน",
+                "วิธีการชำระเงิน",
+                "สถานะการชำระเงิน",
+                "idธุรกรรม",
+            )
+        ):
+            continue
+        for word in line.words:
+            center = word.top + word.height / 2
+            if height * 0.24 <= center <= height * 0.70:
+                heading_positions.append(center)
+    if not heading_positions:
+        return []
+
+    heading_bottom = max(heading_positions)
+    data_top = next(
+        (value for value in separators if value >= heading_bottom + 3),
+        None,
+    )
+    if data_top is None:
+        return []
+
+    boundaries = [data_top]
+    boundaries.extend(value for value in separators if value > data_top + 20)
+    if not boundaries or height - boundaries[-1] > 20:
+        boundaries.append(height)
+    else:
+        boundaries[-1] = min(boundaries[-1], height)
+
+    bands: list[tuple[int, int]] = []
+    for top, bottom in zip(boundaries, boundaries[1:]):
+        row_height = bottom - top
+        if 35 <= row_height <= max(120, int(height * 0.18)):
+            bands.append((top, bottom))
+    return bands
+
+
+def _meta_normalize_reference(value: str) -> str | None:
+    clean = re.sub(r"[^A-Za-z0-9?]", "", value).upper()
+    if not (8 <= len(clean) <= 14):
+        return None
+    if not re.search(r"[A-Z]", clean) or not re.search(r"\d", clean):
+        return None
+    if "CARD" in clean or clean.startswith(("AMERICAN", "EXPRESS", "MASTER")):
+        return None
+    return clean
+
+
+def _meta_select_references(
+    candidates_by_row: list[list[str]],
+) -> dict[int, str]:
+    """Choose row references using page-wide length/suffix consistency."""
+    normalized_rows: list[list[str]] = []
+    all_candidates: list[str] = []
+    for values in candidates_by_row:
+        normalized = [
+            clean
+            for value in values
+            if (clean := _meta_normalize_reference(value))
+        ]
+        normalized_rows.append(normalized)
+        all_candidates.extend(normalized)
+    if not all_candidates:
+        return {}
+
+    lengths = Counter(len(value.replace("?", "")) for value in all_candidates)
+    # Meta references in the supplied screens are 10 characters. Prefer that
+    # length on a tie, but still adapt if another page format is encountered.
+    target_length = max(lengths, key=lambda value: (lengths[value], value == 10))
+    exact_length = [
+        value.replace("?", "")
+        for value in all_candidates
+        if len(value.replace("?", "")) == target_length
+    ]
+    suffix = None
+    if exact_length:
+        suffix = Counter(value[-3:] for value in exact_length).most_common(1)[0][0]
+
+    selected: dict[int, str] = {}
+    for row_index, raw_values in enumerate(normalized_rows):
+        expanded: list[str] = []
+        for value in raw_values:
+            clean = value.replace("?", "")
+            if len(clean) == target_length:
+                expanded.append(clean)
+            elif len(clean) > target_length:
+                windows = [
+                    clean[index : index + target_length]
+                    for index in range(len(clean) - target_length + 1)
+                ]
+                suffix_windows = [
+                    window for window in windows if suffix and window.endswith(suffix)
+                ]
+                expanded.extend(suffix_windows or windows)
+        if not expanded:
+            fallback = min(
+                (value.replace("?", "") for value in raw_values),
+                key=lambda value: (abs(len(value) - target_length), -len(value)),
+                default=None,
+            )
+            if fallback:
+                selected[row_index] = fallback
+            continue
+
+        counts = Counter(expanded)
+        positional: list[Counter[str]] = [Counter() for _ in range(target_length)]
+        for value in expanded:
+            for index, character in enumerate(value):
+                positional[index][character] += 1
+
+        def score(value: str) -> tuple[float, int, str]:
+            agreement = sum(positional[index][character] for index, character in enumerate(value))
+            similarity = max(
+                SequenceMatcher(None, value, raw.replace("?", "")).ratio()
+                for raw in raw_values
+            )
+            total = (
+                counts[value] * 6
+                + agreement
+                + (8 if suffix and value.endswith(suffix) else 0)
+                + similarity * 3
+            )
+            return total, counts[value], value
+
+        selected[row_index] = max(set(expanded), key=score)
+    return selected
+
+
 def _parse_meta_payment_ocr(
     lines: list[OcrLine],
     filename: str,
     image_width: int,
     image_height: int,
+    *,
+    row_bands: list[tuple[int, int]] | None = None,
+    row_references: dict[int, str] | None = None,
 ) -> list[ParsedTransaction]:
     """Parse Meta payment-history screenshots by their stable table columns."""
     words = _meta_line_words(lines)
@@ -1996,18 +2173,38 @@ def _parse_meta_payment_ocr(
                 anchors[-1] = word
         else:
             anchors.append(word)
-    if not anchors:
-        return []
 
-    gaps = [anchors[index + 1].top - anchors[index].top for index in range(len(anchors) - 1)]
-    row_height = sorted(gaps)[len(gaps) // 2] if gaps else max(50.0, image_height * 0.10)
+    bands = list(row_bands or [])
+    if not bands:
+        if not anchors:
+            return []
+        gaps = [
+            anchors[index + 1].top - anchors[index].top
+            for index in range(len(anchors) - 1)
+        ]
+        row_height = (
+            sorted(gaps)[len(gaps) // 2]
+            if gaps
+            else max(50.0, image_height * 0.10)
+        )
+        for index, anchor in enumerate(anchors):
+            top = (
+                (anchors[index - 1].top + anchor.top) / 2
+                if index
+                else anchor.top - row_height / 2
+            )
+            bottom = (
+                (anchor.top + anchors[index + 1].top) / 2
+                if index + 1 < len(anchors)
+                else anchor.top + row_height / 2
+            )
+            bands.append((round(top), round(bottom)))
+
     fallback_month, fallback_year = _meta_dominant_period(lines)
     filename_card = _meta_filename_card(filename)
     transactions: list[ParsedTransaction] = []
 
-    for index, anchor in enumerate(anchors):
-        top = (anchors[index - 1].top + anchor.top) / 2 if index else anchor.top - row_height / 2
-        bottom = (anchor.top + anchors[index + 1].top) / 2 if index + 1 < len(anchors) else anchor.top + row_height / 2
+    for index, (top, bottom) in enumerate(bands):
         row_words = [
             word for word in words
             if top <= word.top + word.height / 2 < bottom
@@ -2026,9 +2223,16 @@ def _parse_meta_payment_ocr(
             fallback_month=fallback_month,
             fallback_year=fallback_year,
         )
-        amount, _ = _meta_amount(anchor.text)
-        if amount is None:
-            continue
+        row_amount_words = []
+        for word in row_words:
+            center_x = word.left + word.width / 2
+            if not (image_width * 0.25 <= center_x <= image_width * 0.43):
+                continue
+            amount_value, _ = _meta_amount(word.text)
+            if amount_value is not None and re.search(r"[.,]\d{2}\D*$", word.text):
+                row_amount_words.append(word)
+        anchor = max(row_amount_words, key=lambda item: item.confidence, default=None)
+        amount, _ = _meta_amount(anchor.text) if anchor else (None, False)
 
         payment_text = " ".join(
             word.text for word in sorted(row_words, key=lambda item: (item.top, item.left))
@@ -2040,7 +2244,11 @@ def _parse_meta_payment_ocr(
             re.IGNORECASE,
         )
         card_last4 = filename_card or (card_match.group(1) if card_match else None)
-        reference = _meta_reference(row_lines, image_width * 0.42, image_width * 0.66)
+        reference = (row_references or {}).get(index) or _meta_reference(
+            row_lines,
+            image_width * 0.42,
+            image_width * 0.66,
+        )
 
         left_text = " ".join(
             word.text for word in sorted(row_words, key=lambda item: (item.top, item.left))
@@ -2059,6 +2267,8 @@ def _parse_meta_payment_ocr(
         warnings: list[str] = []
         if not transaction_date:
             warnings.append("อ่านวันที่ไม่ชัด กรุณาตรวจจากรูป")
+        if amount is None:
+            warnings.append("อ่านยอดเงินไม่ชัด ระบบยังแสดงแถวนี้ไว้ให้ตรวจจากรูป")
         if not reference:
             warnings.append("อ่านเลขอ้างอิงไม่ชัด กรุณาตรวจจากรูป")
         elif "?" in reference:
@@ -2071,27 +2281,33 @@ def _parse_meta_payment_ocr(
             description_parts.append(f"รายการ {transaction_id}")
         if invoice:
             description_parts.append(f"ใบกำกับ {invoice}")
-        confidence_values = [anchor.confidence]
+        confidence_values = [anchor.confidence] if anchor else []
         confidence_values.extend(word.confidence for word in row_words)
         confidence = sum(confidence_values) / max(1, len(confidence_values))
         if confidence < 80:
             warnings.insert(0, "ข้อความตัวเล็กบางส่วนอาจอ่านคลาดเคลื่อน กรุณาเทียบกับรูป")
-        row_hash = make_row_hash(
-            transaction_date or "",
-            None,
-            amount,
-            " | ".join(description_parts),
-            filename,
-            reference,
+        row_hash = (
+            make_row_hash(
+                transaction_date or "",
+                None,
+                amount,
+                " | ".join(description_parts),
+                filename,
+                reference,
+            )
+            if amount is not None
+            else None
         )
         transactions.append(
             ParsedTransaction(
                 transaction_date=transaction_date,
                 description=" | ".join(description_parts),
-                amount=round(abs(amount), 2),
+                amount=round(abs(amount), 2) if amount is not None else None,
                 card_last4=card_last4,
                 category="ค่าโฆษณาออนไลน์",
-                deposit_amount=round(abs(amount), 2),
+                deposit_amount=(
+                    round(abs(amount), 2) if amount is not None else None
+                ),
                 channel=Path(filename).name[:100],
                 tr_code=reference,
                 row_hash=row_hash,
@@ -2250,6 +2466,229 @@ def _parse_ads_ocr_lines(lines: list[OcrLine], filename: str) -> list[ParsedTran
     return _deduplicate_transactions(transactions)
 
 
+def _meta_rapid_reference_candidates(
+    source: Any,
+    row_bands: list[tuple[int, int]],
+) -> list[list[str]]:
+    """Read all reference cells in one small RapidOCR batch.
+
+    The mobile ONNX model distinguishes Meta's OCR-like font (Q/O, 8/S,
+    3/I) much better than Tesseract. One combined strip keeps CPU and memory
+    bounded while retaining the exact visual order of the table rows.
+    """
+    from PIL import Image
+    from rapidocr import RapidOCR
+
+    if not row_bands:
+        return []
+    crops = []
+    for top, bottom in row_bands:
+        row_height = bottom - top
+        crops.append(
+            source.crop(
+                (
+                    round(source.width * 0.46),
+                    round(top + row_height * 0.38),
+                    round(source.width * 0.62),
+                    round(top + row_height * 0.92),
+                )
+            ).convert("RGB")
+        )
+    gap = 12
+    strip = Image.new(
+        "RGB",
+        (
+            max(crop.width for crop in crops),
+            sum(crop.height for crop in crops) + gap * (len(crops) - 1),
+        ),
+        "white",
+    )
+    row_ranges: list[tuple[int, int]] = []
+    y = 0
+    for crop in crops:
+        strip.paste(crop, (0, y))
+        row_ranges.append((y, y + crop.height))
+        y += crop.height + gap
+
+    global _RAPID_OCR_ENGINE
+    with _RAPID_OCR_LOCK:
+        if _RAPID_OCR_ENGINE is None:
+            _RAPID_OCR_ENGINE = RapidOCR()
+        result = _RAPID_OCR_ENGINE(
+            strip,
+            use_det=True,
+            use_cls=False,
+            use_rec=True,
+        )
+
+    candidates: list[list[str]] = [[] for _ in row_bands]
+    if not result:
+        return candidates
+    raw_texts = result.txts
+    raw_boxes = result.boxes
+    texts = list(raw_texts) if raw_texts is not None else []
+    boxes = list(raw_boxes) if raw_boxes is not None else []
+    filtered: list[tuple[str, Any | None]] = []
+    for index, text in enumerate(texts):
+        clean = _meta_normalize_reference(str(text))
+        if clean:
+            filtered.append((clean, boxes[index] if index < len(boxes) else None))
+
+    # The combined strip preserves row order. This is the most stable route
+    # when the detector also sees tiny card-logo fragments without valid codes.
+    if len(filtered) == len(row_bands):
+        for index, (value, _) in enumerate(filtered):
+            candidates[index].append(value)
+        return candidates
+
+    for value, box in filtered:
+        if box is None:
+            continue
+        try:
+            center_y = sum(float(point[1]) for point in box) / len(box)
+        except (TypeError, ValueError, IndexError, ZeroDivisionError):
+            continue
+        row_index = min(
+            range(len(row_ranges)),
+            key=lambda index: abs(
+                center_y - (row_ranges[index][0] + row_ranges[index][1]) / 2
+            ),
+        )
+        candidates[row_index].append(value)
+    return candidates
+
+
+def _meta_targeted_reference_candidates(
+    source: Any,
+    *,
+    row_index: int,
+    top: int,
+    bottom: int,
+    temp_dir: Path,
+    environment: dict[str, str],
+) -> list[str]:
+    """Read only the small reference cell using several lossless variants."""
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+    width = source.width
+    row_height = bottom - top
+    crops = (
+        (0.45, 0.86, 6.0, False),
+        (0.45, 0.86, 5.0, True),
+        (0.51, 0.90, 6.0, False),
+        (0.51, 0.90, 5.0, True),
+    )
+    candidates: list[str] = []
+    for variant_index, (top_ratio, bottom_ratio, scale, binary) in enumerate(crops):
+        crop_top = max(top, round(top + row_height * top_ratio))
+        crop_bottom = min(bottom, round(top + row_height * bottom_ratio))
+        crop = source.crop(
+            (
+                round(width * 0.44),
+                crop_top,
+                round(width * 0.62),
+                crop_bottom,
+            )
+        )
+        grayscale = ImageOps.autocontrast(ImageOps.grayscale(crop), cutoff=1)
+        grayscale = ImageEnhance.Contrast(grayscale).enhance(1.45)
+        resized = grayscale.resize(
+            (round(grayscale.width * scale), round(grayscale.height * scale)),
+            Image.Resampling.LANCZOS,
+        ).filter(ImageFilter.SHARPEN)
+        if binary:
+            resized = resized.point(lambda value: 255 if value > 185 else 0)
+        path = temp_dir / f"meta-reference-{row_index}-{variant_index}.png"
+        resized.save(path, format="PNG", optimize=True)
+        try:
+            lines = _run_tesseract_tsv(
+                path,
+                1,
+                psm=7,
+                languages="eng",
+                character_whitelist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                environment=environment,
+                error_label="อ่านเลขอ้างอิง ",
+                timeout=max(4, min(8, EVIDENCE_OCR_TIMEOUT_SECONDS // 6)),
+            )
+        except ValueError:
+            continue
+        for line in lines:
+            joined = "".join(word.text for word in line.words) or line.text
+            if joined.strip():
+                candidates.append(joined)
+    return candidates
+
+
+def _meta_targeted_amount_lines(
+    source: Any,
+    *,
+    row_index: int,
+    top: int,
+    bottom: int,
+    temp_dir: Path,
+    environment: dict[str, str],
+) -> list[OcrLine]:
+    """Retry an amount cell only when the sparse page OCR missed it."""
+    from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+
+    crop_left = round(source.width * 0.27)
+    crop_right = round(source.width * 0.41)
+    row_height = bottom - top
+    crop_top = round(top + row_height * 0.18)
+    crop_bottom = round(top + row_height * 0.82)
+    crop = source.crop((crop_left, crop_top, crop_right, crop_bottom))
+    crop = ImageOps.autocontrast(ImageOps.grayscale(crop), cutoff=1)
+    crop = ImageEnhance.Contrast(crop).enhance(1.35)
+    scale = 5.0
+    crop = crop.resize(
+        (round(crop.width * scale), round(crop.height * scale)),
+        Image.Resampling.LANCZOS,
+    ).filter(ImageFilter.SHARPEN)
+    path = temp_dir / f"meta-amount-{row_index}.png"
+    crop.save(path, format="PNG", optimize=True)
+    try:
+        lines = _run_tesseract_tsv(
+            path,
+            1,
+            psm=7,
+            languages="eng",
+            character_whitelist="0123456789,.\u0e3f$",
+            environment=environment,
+            error_label="อ่านยอดเงิน ",
+            timeout=max(4, min(8, EVIDENCE_OCR_TIMEOUT_SECONDS // 6)),
+        )
+    except ValueError:
+        return []
+    return _map_scaled_ocr_lines(
+        lines,
+        crop_left=crop_left,
+        crop_top=crop_top,
+        scale=scale,
+    )
+
+
+def _meta_band_has_amount(
+    lines: list[OcrLine],
+    *,
+    top: int,
+    bottom: int,
+    image_width: int,
+) -> bool:
+    for word in _meta_line_words(lines):
+        center_x = word.left + word.width / 2
+        center_y = word.top + word.height / 2
+        amount, _ = _meta_amount(word.text)
+        if (
+            top <= center_y < bottom
+            and image_width * 0.25 <= center_x <= image_width * 0.43
+            and amount is not None
+            and re.search(r"[.,]\d{2}\D*$", word.text)
+        ):
+            return True
+    return False
+
+
 def _ocr_ads_image(filename: str, data: bytes) -> tuple[list[ParsedTransaction], str]:
     from PIL import Image, ImageEnhance, ImageFilter
 
@@ -2287,6 +2726,7 @@ def _ocr_ads_image(filename: str, data: bytes) -> tuple[list[ParsedTransaction],
         )
         if looks_like_meta:
             with Image.open(source_path) as source:
+                row_bands = _meta_table_row_bands(source, sparse_source_lines)
                 crop_left = int(source.width * 0.42)
                 crop_top = int(source.height * 0.30)
                 crop_right = int(source.width * 0.66)
@@ -2316,11 +2756,78 @@ def _ocr_ads_image(filename: str, data: bytes) -> tuple[list[ParsedTransaction],
                 scale=scale,
             )
             meta_lines = [*sparse_source_lines, *mapped_payment_lines]
+            reference_candidates: list[list[str]] = []
+            targeted_amount_lines: list[OcrLine] = []
+            with Image.open(source_path) as source:
+                try:
+                    rapid_candidates = _meta_rapid_reference_candidates(
+                        source,
+                        row_bands,
+                    )
+                except Exception as exc:
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "[OCR] RapidOCR reference pass failed; using Tesseract: %s",
+                        exc,
+                    )
+                    rapid_candidates = [[] for _ in row_bands]
+                for row_index, (top, bottom) in enumerate(row_bands):
+                    row_lines = [
+                        line
+                        for line in meta_lines
+                        if any(
+                            top <= word.top + word.height / 2 < bottom
+                            for word in line.words
+                        )
+                    ]
+                    candidates = (
+                        list(rapid_candidates[row_index])
+                        if row_index < len(rapid_candidates)
+                        else []
+                    )
+                    if not candidates:
+                        candidates = _meta_targeted_reference_candidates(
+                            source,
+                            row_index=row_index,
+                            top=top,
+                            bottom=bottom,
+                            temp_dir=Path(temp_dir),
+                            environment=environment,
+                        )
+                        coarse = _meta_reference(
+                            row_lines,
+                            image_width * 0.42,
+                            image_width * 0.66,
+                        )
+                        if coarse:
+                            candidates.append(coarse)
+                    reference_candidates.append(candidates)
+                    if not _meta_band_has_amount(
+                        meta_lines,
+                        top=top,
+                        bottom=bottom,
+                        image_width=image_width,
+                    ):
+                        targeted_amount_lines.extend(
+                            _meta_targeted_amount_lines(
+                                source,
+                                row_index=row_index,
+                                top=top,
+                                bottom=bottom,
+                                temp_dir=Path(temp_dir),
+                                environment=environment,
+                            )
+                        )
+            meta_lines.extend(targeted_amount_lines)
+            row_references = _meta_select_references(reference_candidates)
             transactions = _parse_meta_payment_ocr(
                 meta_lines,
                 filename,
                 image_width,
                 image_height,
+                row_bands=row_bands,
+                row_references=row_references,
             )
             return transactions, "\n".join(line.text for line in meta_lines)
 
@@ -2350,7 +2857,7 @@ def _ocr_ads_image(filename: str, data: bytes) -> tuple[list[ParsedTransaction],
 async def parse_images_with_local_ocr(
     image_items: list[tuple[str, bytes]],
 ) -> ParsedStatement:
-    """Read evidence sequentially with local Thai/English Tesseract OCR."""
+    """Read evidence sequentially with local Tesseract and RapidOCR."""
     import asyncio as _asyncio
     import logging as _logging
 
@@ -2366,9 +2873,13 @@ async def parse_images_with_local_ocr(
             transactions.extend(rows)
             detected_text.append(text)
             if not rows:
-                warnings.append(f"{filename}: ยังแยกรายการไม่ได้ กรุณากรอกในหน้าตรวจสอบ")
+                warnings.append(
+                    f"{filename}: ยังแยกรายการไม่ได้ กรุณาตรวจความชัดของรูปแล้วอัปโหลดใหม่"
+                )
         except TimeoutError:
-            warnings.append(f"{filename}: ใช้เวลาอ่านเกินกำหนด กรุณากรอกในหน้าตรวจสอบ")
+            warnings.append(
+                f"{filename}: ใช้เวลาอ่านเกินกำหนด กรุณาลองอัปโหลดรูปนี้ใหม่"
+            )
         except ValueError as exc:
             _logging.getLogger(__name__).warning("[OCR] %s failed: %s", filename, exc)
             warnings.append(f"{filename}: {exc}")
@@ -2379,7 +2890,7 @@ async def parse_images_with_local_ocr(
     return ParsedStatement(
         issuer=issuer,
         statement_type="ads_screenshot",
-        extraction_method="tesseract_local",
+        extraction_method="local_hybrid_ocr",
         masked_reference=None,
         statement_date_from=start,
         statement_date_to=end,

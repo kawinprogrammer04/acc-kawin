@@ -19,6 +19,8 @@ from app.parsers import (
     _parse_scb_pdf,
     _parse_tesseract_tsv,
     _meta_amount,
+    _meta_select_references,
+    _meta_table_row_bands,
     _ocr_image_variants,
     _parse_ocr_currency_values,
     parse_statement_with_metadata,
@@ -193,6 +195,62 @@ class PdfAdapterTests(unittest.TestCase):
         self.assertIn("FBADS-039-105820450", rows[0].description)
         self.assertEqual(_meta_amount("65,000.00")[0], 5000.0)
         self.assertEqual(_meta_amount("$64.50")[0], 64.5)
+
+    def test_meta_table_rows_do_not_depend_on_detected_amounts(self):
+        source = Image.new("RGB", (1000, 470), "white")
+        draw = ImageDraw.Draw(source)
+        for y in (200, 260, 330, 400):
+            draw.line((0, y, 999, y), fill=(220, 220, 220), width=1)
+        header = OcrLine(
+            text="Date จำนวน วิธีการชำระเงิน",
+            confidence=95,
+            page=1,
+            words=[
+                PositionedWord("Date", 150, 220, 50, 12, 95),
+                PositionedWord("จำนวน", 300, 220, 70, 12, 95),
+            ],
+        )
+
+        bands = _meta_table_row_bands(source, [header])
+
+        self.assertEqual(bands, [(260, 330), (330, 400), (400, 470)])
+
+    def test_meta_parser_keeps_a_visible_row_when_amount_is_unreadable(self):
+        lines = [
+            ocr_line("บัญชีโฆษณา Facebook FBADS", left=10, top=20),
+            ocr_line("21 เม.ย. 2026", left=150, top=280),
+            ocr_line("8304.00", left=300, top=280, confidence=92),
+            ocr_line("20 เม.ย. 2026", left=150, top=350),
+        ]
+
+        rows = _parse_meta_payment_ocr(
+            lines,
+            "1_1889.jpg",
+            1000,
+            470,
+            row_bands=[(260, 330), (330, 400)],
+            row_references={0: "QSRCTMRPM2", 1: "LKHWNMRPM2"},
+        )
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0].amount, 304.0)
+        self.assertIsNone(rows[1].amount)
+        self.assertTrue(
+            any(
+                "ระบบยังแสดงแถวนี้ไว้ให้ตรวจจากรูป" in warning
+                for warning in rows[1].warnings
+            )
+        )
+
+    def test_meta_reference_consensus_preserves_exact_rapidocr_values(self):
+        selected = _meta_select_references(
+            [["43BNELZPM2"], ["QSRCTMRPM2"], ["JXJ7RLMPM2"]]
+        )
+
+        self.assertEqual(
+            selected,
+            {0: "43BNELZPM2", 1: "QSRCTMRPM2", 2: "JXJ7RLMPM2"},
+        )
 
     def test_scb_position_parser_signs_debit_and_credit(self):
         statement = _parse_scb_pdf(

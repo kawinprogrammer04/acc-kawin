@@ -7,3 +7,5 @@ pdfplumber==0.11.4
 Pillow==10.4.0
 psycopg[binary]==3.2.3
 httpx==0.27.2
+rapidocr==3.8.1
+onnxruntime==1.29.0
