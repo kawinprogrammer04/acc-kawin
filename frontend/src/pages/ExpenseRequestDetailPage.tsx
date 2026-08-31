@@ -314,7 +314,8 @@ export function ExpenseRequestDetailPage() {
     setSaving(true); setError("");
     try {
       const created = await expenseRequestsApi.createNextInstallment(requestId, { installment_payment_amount: amount });
-      navigate(`/expense-requests/${created.id}/edit?step=1`);
+      if (request?.requester_user_id === user?.id) navigate(`/expense-requests/${created.id}/edit?step=1`);
+      else navigate(`/expense-requests/${created.id}`, { state: { from: "accounting" } });
     } catch (e) { setError(getApiErrorMessage(e, "สร้างงวดถัดไปไม่สำเร็จ")); }
     finally { setSaving(false); }
   };
@@ -485,11 +486,12 @@ export function ExpenseRequestDetailPage() {
           </Link>
         ))}
       </div>
-      {isOwner && request.status === "completed" && request.installment_chain_status === "in_progress"
+      {(isOwner || canAccountingView) && request.status === "completed" && request.installment_chain_status === "in_progress"
         && request.installment_no === Math.max(...request.installment_siblings.map((s) => s.installment_no || 0)) && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
           <p className="text-sm font-semibold text-amber-800">สร้างงวดถัดไป</p>
           <p className="mt-1 text-xs text-amber-700">คงเหลือที่ยังไม่ได้เบิก {formatCurrency(request.installment_chain_remaining || 0)}</p>
+          {!isOwner && <p className="mt-1 text-xs text-amber-700">ระบบจะสร้างแบบร่างในชื่อผู้ขอเดิม เพื่อให้ผู้ขอตรวจเอกสารและส่งอนุมัติ</p>}
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <input type="number" min="0.01" max={request.installment_chain_remaining} step="0.01"
               value={nextInstallmentAmount} onChange={(e) => setNextInstallmentAmount(e.target.value)}

@@ -1,8 +1,10 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from app.routers.approvals import list_expense_requests
+from fastapi import HTTPException
+
+from app.routers.approvals import create_next_installment, list_expense_requests
 
 
 class _EmptyScalarResult:
@@ -14,6 +16,42 @@ class _EmptyScalarResult:
 
 
 class ExpenseRequestVisibilityTest(unittest.IsolatedAsyncioTestCase):
+    async def test_accounting_viewer_can_start_the_next_installment(self) -> None:
+        source = SimpleNamespace(requester_user_id=42, installment_chain_root_id=None)
+        with (
+            patch("app.routers.approvals._get_company_row", new=AsyncMock(return_value=source)),
+            patch("app.routers.approvals.has_company_permission", new=AsyncMock(return_value=True)),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await create_next_installment(
+                    request_id="request-1",
+                    payload=SimpleNamespace(installment_payment_amount=100),
+                    db=SimpleNamespace(),
+                    current_user=SimpleNamespace(id=99),
+                    company=SimpleNamespace(id=7),
+                )
+
+        # Reaching the installment-chain validation proves accounting access
+        # passed; a non-accounting, non-owner user is rejected with 403 first.
+        self.assertEqual(raised.exception.status_code, 400)
+
+    async def test_unrelated_user_cannot_start_the_next_installment(self) -> None:
+        source = SimpleNamespace(requester_user_id=42, installment_chain_root_id="root-1")
+        with (
+            patch("app.routers.approvals._get_company_row", new=AsyncMock(return_value=source)),
+            patch("app.routers.approvals.has_company_permission", new=AsyncMock(return_value=False)),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                await create_next_installment(
+                    request_id="request-1",
+                    payload=SimpleNamespace(installment_payment_amount=100),
+                    db=SimpleNamespace(),
+                    current_user=SimpleNamespace(id=99),
+                    company=SimpleNamespace(id=7),
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+
     async def test_scope_all_still_filters_personal_request_list_to_current_user(self) -> None:
         db = SimpleNamespace(execute=AsyncMock(return_value=_EmptyScalarResult()))
 

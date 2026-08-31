@@ -1422,8 +1422,15 @@ async def create_next_installment(
     company: Company = Depends(get_current_company),
 ):
     source = await _get_company_row(db, ExpenseRequest, request_id, company.id, "ไม่พบคำขอเบิกเงินนี้")
-    if source.requester_user_id != current_user.id:
-        raise HTTPException(403, "คุณไม่ใช่เจ้าของคำขอนี้")
+    can_manage_from_accounting = await has_company_permission(
+        db,
+        current_user,
+        company.id,
+        "expense_accounting.view",
+        legacy_min_role="accountant",
+    )
+    if source.requester_user_id != current_user.id and not can_manage_from_accounting:
+        raise HTTPException(403, "เฉพาะเจ้าของคำขอหรือผู้มีสิทธิ์บัญชีตรวจจ่ายเท่านั้นที่สร้างงวดถัดไปได้")
     if source.installment_chain_root_id is None:
         raise HTTPException(400, "ต้องบันทึกงวดแรกพร้อมระบุยอดแบ่งจ่ายก่อนจึงจะสร้างงวดถัดไปได้")
 
