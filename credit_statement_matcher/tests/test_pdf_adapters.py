@@ -32,7 +32,7 @@ from app.staging import (
     read_preview_image,
     read_preview_source,
 )
-from app.main import _submitted_preview_rows, upload_job_progress
+from app.main import _readonly_preview_form, _submitted_preview_rows, upload_job_progress
 
 
 class FakeCrop:
@@ -501,6 +501,41 @@ class UploadJobTests(unittest.TestCase):
 
 
 class PreviewValidationTests(unittest.TestCase):
+    def test_ads_confirmation_uses_original_ocr_values(self):
+        statement = {
+            "statement_type": "ads_screenshot",
+            "transactions": [
+                {
+                    "transaction_date": "2026-04-21",
+                    "description": "Facebook/Meta Ads",
+                    "amount": 304.0,
+                    "card_last4": "1889",
+                    "tr_code": "QSRCTMRPM2",
+                    "channel": "evidence.png",
+                    "confidence": 88,
+                }
+            ],
+        }
+
+        form = _readonly_preview_form(statement, [(True, True)])
+        parsed, _, errors = _submitted_preview_rows(statement, form)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(parsed), 1)
+        self.assertEqual(parsed[0].description, "Facebook/Meta Ads")
+        self.assertEqual(parsed[0].amount, 304.0)
+        self.assertEqual(parsed[0].card_last4, "1889")
+        self.assertEqual(parsed[0].tr_code, "QSRCTMRPM2")
+
+    def test_ads_confirmation_rejects_added_or_missing_rows(self):
+        statement = {
+            "statement_type": "ads_screenshot",
+            "transactions": [{"description": "Facebook/Meta Ads", "amount": 10}],
+        }
+
+        with self.assertRaisesRegex(ValueError, "จำนวนรายการที่ยืนยันไม่ตรง"):
+            _readonly_preview_form(statement, [])
+
     def test_low_confidence_selected_row_explains_review_requirement(self):
         statement = {
             "transactions": [

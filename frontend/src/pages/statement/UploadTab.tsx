@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AlertCircle, ArrowRight, CheckCircle2, FileImage, FileSearch, FileSpreadsheet,
-  FileText, ImagePlus, Loader2, Plus, Save, Trash2, UploadCloud,
+  FileText, ImagePlus, Loader2, Save, Trash2, UploadCloud,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -13,7 +13,7 @@ import { getApiErrorMessage } from "@/api/client";
 import {
   referenceItemsApi, statementsApi, type PreviewPayload, type ReferenceSource, type Statement, type UploadJobStatus,
 } from "@/api/statement";
-import { formatDate } from "@/lib/format";
+import { formatCurrency, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { FriendlyEmpty, StatementJourney } from "./StatementUx";
 
@@ -55,6 +55,7 @@ export function UploadTab() {
   const [preview, setPreview] = useState<PreviewPayload | null>(null);
   const [reviewRows, setReviewRows] = useState<EvidenceReviewRow[]>([]);
   const [previewImages, setPreviewImages] = useState<{ name: string; url: string }[]>([]);
+  const [previewImageError, setPreviewImageError] = useState<string | null>(null);
   const [selectedPreviewImage, setSelectedPreviewImage] = useState(0);
   const [reviewConfirmed, setReviewConfirmed] = useState(false);
   const [savingReview, setSavingReview] = useState(false);
@@ -127,32 +128,36 @@ export function UploadTab() {
 
   const openEvidenceReview = useCallback(async (previewToken: string, previewData: PreviewPayload) => {
     const defaultChannel = previewData.preview_images[0]?.name ?? "manual";
-    const rows: EvidenceReviewRow[] = previewData.rows.length > 0
-      ? previewData.rows.map((row) => ({
-          include: row.include,
-          transaction_date: row.transaction_date ?? "",
-          description: row.description ?? "",
-          amount: row.amount != null ? String(row.amount) : "",
-          card_last4: row.card_last4 ?? "",
-          tr_code: row.tr_code ?? "",
-          channel: String(row.channel ?? defaultChannel),
-          warnings: row.warnings ?? [],
-        }))
-      : [{
-          include: true, transaction_date: "", description: "ค่าโฆษณา",
-          amount: "", card_last4: "", tr_code: "", channel: defaultChannel,
-          warnings: ["ระบบยังแยกรายการไม่ได้ กรุณากรอกข้อมูลจากรูป"],
-        }];
-    const loadedImages = await Promise.all(previewData.preview_images.map(async (image) => {
+    const rows: EvidenceReviewRow[] = previewData.rows.map((row) => ({
+      include: row.include,
+      transaction_date: row.transaction_date ?? "",
+      description: row.description ?? "",
+      amount: row.amount != null ? String(row.amount) : "",
+      card_last4: row.card_last4 ?? "",
+      tr_code: row.tr_code ?? "",
+      channel: String(row.channel ?? defaultChannel),
+      warnings: row.warnings ?? [],
+    }));
+    const loadedImageResults = await Promise.all(previewData.preview_images.map(async (image) => {
       try {
         const blob = await statementsApi.getPreviewImage(previewToken, image.index);
-        return { name: image.name, url: URL.createObjectURL(blob) };
+        return { image: { name: image.name, url: URL.createObjectURL(blob) }, failedName: null };
       } catch {
-        return null;
+        return { image: null, failedName: image.name };
       }
     }));
-    const images = loadedImages.filter((image): image is { name: string; url: string } => image !== null);
+    const images = loadedImageResults
+      .map((result) => result.image)
+      .filter((image): image is { name: string; url: string } => image !== null);
+    const failedNames = loadedImageResults
+      .map((result) => result.failedName)
+      .filter((name): name is string => name !== null);
     replacePreviewImages(images);
+    setPreviewImageError(
+      failedNames.length > 0
+        ? `เปิดรูปไม่ได้ ${failedNames.length} ไฟล์ กรุณายกเลิกแล้วอัปโหลดใหม่`
+        : null,
+    );
     setPreview(previewData);
     setReviewRows(rows);
     setSelectedPreviewImage(0);
@@ -265,22 +270,10 @@ export function UploadTab() {
     }
   };
 
-  const updateReviewRow = (index: number, patch: Partial<EvidenceReviewRow>) => {
-    setReviewRows((current) => current.map((row, rowIndex) => rowIndex === index ? { ...row, ...patch } : row));
-    setReviewConfirmed(false);
-  };
-
-  const addReviewRow = () => {
-    setReviewRows((current) => [...current, {
-      include: true,
-      transaction_date: "",
-      description: "ค่าโฆษณา",
-      amount: "",
-      card_last4: "",
-      tr_code: "",
-      channel: previewImages[selectedPreviewImage]?.name ?? previewImages[0]?.name ?? "manual",
-      warnings: ["รายการที่ผู้ใช้เพิ่มเอง"],
-    }]);
+  const setReviewRowIncluded = (index: number, include: boolean) => {
+    setReviewRows((current) => current.map(
+      (row, rowIndex) => rowIndex === index ? { ...row, include } : row,
+    ));
     setReviewConfirmed(false);
   };
 
@@ -289,6 +282,7 @@ export function UploadTab() {
     setPreview(null);
     setReviewRows([]);
     setReviewError(null);
+    setPreviewImageError(null);
     setReviewConfirmed(false);
     replacePreviewImages([]);
     if (token) await statementsApi.cancelPreview(token).catch(() => undefined);
@@ -312,11 +306,12 @@ export function UploadTab() {
       setPreview(null);
       setReviewRows([]);
       setReviewConfirmed(false);
+      setPreviewImageError(null);
       replacePreviewImages([]);
       showToast(`บันทึกหลักฐานแล้ว ${inserted} รายการ`);
       await load();
     } catch (err) {
-      setReviewError(getApiErrorMessage(err, "บันทึกหลักฐานไม่สำเร็จ กรุณาตรวจช่องที่ยังไม่ครบ"));
+      setReviewError(getApiErrorMessage(err, "บันทึกหลักฐานไม่สำเร็จ กรุณาลองใหม่"));
     } finally {
       setSavingReview(false);
     }
@@ -345,6 +340,7 @@ export function UploadTab() {
   const previewWarnings = preview && Array.isArray(preview.statement.warnings)
     ? preview.statement.warnings as string[]
     : [];
+  const hasIncludedReviewRows = reviewRows.some((row) => row.include);
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
@@ -520,7 +516,7 @@ export function UploadTab() {
         <DialogContent className="flex max-h-[92vh] max-w-7xl flex-col overflow-hidden">
           <DialogHeader className="border-b pb-4 pr-12">
             <DialogTitle>ตรวจข้อมูลจากรูปก่อนบันทึก</DialogTitle>
-            <DialogDescription>เทียบข้อมูลด้านขวากับรูปต้นฉบับ หากอ่านไม่ครบสามารถแก้ไขหรือเพิ่มรายการได้ทันที</DialogDescription>
+            <DialogDescription>ข้อมูลด้านขวาเป็นผลที่ระบบอ่านได้และแก้ไขไม่ได้ หากข้อมูลไม่ถูกต้องให้ยกเลิกแล้วใช้รูปที่ชัดขึ้น</DialogDescription>
           </DialogHeader>
 
           <div className="grid min-h-0 flex-1 overflow-hidden lg:grid-cols-[minmax(0,.9fr)_minmax(520px,1.1fr)]">
@@ -535,7 +531,12 @@ export function UploadTab() {
               {previewImages.length > 0 ? (
                 <>
                   <div className="grid min-h-[340px] place-items-center overflow-hidden rounded-xl border bg-white p-2">
-                    <img src={previewImages[selectedPreviewImage]?.url} alt={previewImages[selectedPreviewImage]?.name ?? "รูปหลักฐาน"} className="max-h-[55vh] w-full object-contain" />
+                    <img
+                      src={previewImages[selectedPreviewImage]?.url}
+                      alt={previewImages[selectedPreviewImage]?.name ?? "รูปหลักฐาน"}
+                      className="max-h-[55vh] w-full object-contain"
+                      onError={() => setPreviewImageError("เปิดรูปหลักฐานไม่ได้ กรุณายกเลิกแล้วอัปโหลดใหม่")}
+                    />
                   </div>
                   {previewImages.length > 1 && (
                     <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
@@ -546,19 +547,19 @@ export function UploadTab() {
                       ))}
                     </div>
                   )}
+                  {previewImageError && (
+                    <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-700">{previewImageError}</p>
+                  )}
                 </>
               ) : (
-                <FriendlyEmpty title="เปิดรูปตัวอย่างไม่ได้" description="ยังตรวจและกรอกข้อมูลด้านขวาได้ตามปกติ" icon={<FileImage className="h-5 w-5" />} />
+                <FriendlyEmpty title="เปิดรูปหลักฐานไม่ได้" description={previewImageError || "กรุณายกเลิกแล้วอัปโหลดรูปใหม่"} icon={<FileImage className="h-5 w-5" />} />
               )}
             </section>
 
             <section className="min-h-0 overflow-auto p-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-semibold">รายการที่อ่านได้</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">เลือกเฉพาะรายการที่ต้องการบันทึก · แก้ข้อมูลได้ทุกช่อง</p>
-                </div>
-                <button type="button" onClick={addReviewRow} className="inline-flex h-9 items-center gap-1.5 rounded-md border bg-background px-3 text-xs font-semibold hover:bg-muted"><Plus className="h-3.5 w-3.5" />เพิ่มรายการ</button>
+              <div className="mb-3">
+                <p className="text-sm font-semibold">รายการที่ระบบอ่านได้</p>
+                <p className="mt-0.5 text-xs leading-5 text-muted-foreground">แสดงตามข้อมูลจากรูปเท่านั้น ไม่สามารถแก้ไขข้อความหรือตัวเลขได้</p>
               </div>
 
               {previewWarnings.length > 0 && (
@@ -567,52 +568,56 @@ export function UploadTab() {
                 </div>
               )}
 
-              <div className="space-y-3">
-                {reviewRows.map((row, index) => (
-                  <div key={index} className={cn("rounded-xl border p-3 transition", row.include ? "bg-white" : "bg-muted/30 opacity-60")}>
-                    <div className="mb-3 flex items-start justify-between gap-3">
-                      <label className="flex items-center gap-2 text-sm font-semibold"><input type="checkbox" checked={row.include} onChange={(event) => updateReviewRow(index, { include: event.target.checked })} />รายการที่ {index + 1}</label>
-                      {row.warnings.length > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">กรุณาตรวจ</span>}
-                    </div>
-                    {row.warnings.length > 0 && <p className="mb-3 text-[11px] leading-5 text-amber-700">{row.warnings.join(" · ")}</p>}
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <label className="text-xs font-medium text-muted-foreground">วันที่ (ถ้ามี)
-                        <input type="date" value={row.transaction_date} onChange={(event) => updateReviewRow(index, { transaction_date: event.target.value })} disabled={!row.include} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" />
-                      </label>
-                      <label className="text-xs font-medium text-muted-foreground">ยอดเงิน <span className="text-rose-500">*</span>
-                        <input inputMode="decimal" value={row.amount} onChange={(event) => updateReviewRow(index, { amount: event.target.value })} disabled={!row.include} placeholder="0.00" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-right text-sm font-semibold text-foreground" />
-                      </label>
-                      <label className="text-xs font-medium text-muted-foreground sm:col-span-2">รายละเอียด <span className="text-rose-500">*</span>
-                        <input value={row.description} onChange={(event) => updateReviewRow(index, { description: event.target.value })} disabled={!row.include} placeholder="เช่น TikTok Ads · เลข Invoice" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" />
-                      </label>
-                      <label className="text-xs font-medium text-muted-foreground">เลขอ้างอิง
-                        <input value={row.tr_code} onChange={(event) => updateReviewRow(index, { tr_code: event.target.value })} disabled={!row.include} placeholder="Reference / Transaction ID" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" />
-                      </label>
-                      <label className="text-xs font-medium text-muted-foreground">เลขท้ายบัตร
-                        <input value={row.card_last4} onChange={(event) => updateReviewRow(index, { card_last4: event.target.value.replace(/\D/g, "").slice(-4) })} disabled={!row.include} inputMode="numeric" maxLength={4} placeholder="4 หลัก" className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground" />
-                      </label>
-                      <label className="text-xs font-medium text-muted-foreground sm:col-span-2">มาจากรูป
-                        <select value={row.channel} onChange={(event) => updateReviewRow(index, { channel: event.target.value })} disabled={!row.include} className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
-                          {previewImages.map((image) => <option key={image.name} value={image.name}>{image.name}</option>)}
-                          {previewImages.length === 0 && <option value={row.channel}>{row.channel}</option>}
-                        </select>
-                      </label>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              {reviewRows.length === 0 ? (
+                <FriendlyEmpty
+                  title="ระบบยังอ่านรายการไม่ได้"
+                  description="ไม่มีข้อมูลให้บันทึก กรุณายกเลิกแล้วอัปโหลดรูปที่ชัดขึ้น"
+                  icon={<FileSearch className="h-5 w-5" />}
+                />
+              ) : (
+                <div className="space-y-3">
+                  {reviewRows.map((row, index) => {
+                    const amount = row.amount.trim() && Number.isFinite(Number(row.amount))
+                      ? formatCurrency(Number(row.amount))
+                      : "อ่านไม่พบ";
+                    return (
+                      <article key={index} className={cn("rounded-xl border p-3 transition", row.include ? "bg-white" : "bg-muted/30 opacity-60")}>
+                        <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-semibold">รายการที่ {index + 1}</span>
+                            {row.warnings.length > 0 && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700">กรุณาตรวจ</span>}
+                          </div>
+                          <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
+                            <input type="checkbox" checked={row.include} onChange={(event) => setReviewRowIncluded(index, event.target.checked)} />
+                            บันทึกรายการนี้
+                          </label>
+                        </div>
+                        {row.warnings.length > 0 && <p className="mb-3 text-[11px] leading-5 text-amber-700">{row.warnings.join(" · ")}</p>}
+                        <dl className="grid gap-3 sm:grid-cols-2">
+                          <EvidenceValue label="วันที่" value={row.transaction_date ? formatDate(row.transaction_date) : "อ่านไม่พบ"} />
+                          <EvidenceValue label="ยอดเงิน" value={amount} emphasize />
+                          <EvidenceValue label="รายละเอียด" value={row.description || "อ่านไม่พบ"} wide />
+                          <EvidenceValue label="เลขอ้างอิง" value={row.tr_code || "อ่านไม่พบ"} />
+                          <EvidenceValue label="เลขท้ายบัตร" value={row.card_last4 ? `•••• ${row.card_last4}` : "อ่านไม่พบ"} />
+                          <EvidenceValue label="มาจากรูป" value={row.channel || "ไม่ทราบชื่อไฟล์"} wide />
+                        </dl>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </section>
           </div>
 
           {reviewError && <div className="mx-6 mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{reviewError}</div>}
           <DialogFooter className="flex-col border-t sm:flex-row sm:items-center sm:justify-between">
             <label className="flex items-start gap-2 text-xs leading-5 text-muted-foreground">
-              <input type="checkbox" checked={reviewConfirmed} onChange={(event) => setReviewConfirmed(event.target.checked)} className="mt-0.5" />
-              ฉันตรวจยอดและข้อมูลกับรูปต้นฉบับแล้ว
+              <input type="checkbox" checked={reviewConfirmed} onChange={(event) => setReviewConfirmed(event.target.checked)} disabled={!hasIncludedReviewRows} className="mt-0.5" />
+              ฉันตรวจแล้วและยืนยันให้บันทึกตามข้อมูลที่ระบบอ่านได้ข้างต้น
             </label>
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => void closeEvidenceReview()} disabled={savingReview} className="h-10 rounded-md border bg-background px-4 text-sm font-semibold hover:bg-muted disabled:opacity-50">ยกเลิก</button>
-              <button type="button" onClick={saveEvidenceReview} disabled={!reviewConfirmed || savingReview} className="inline-flex h-10 items-center gap-2 rounded-md bg-violet-600 px-4 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
+              <button type="button" onClick={saveEvidenceReview} disabled={!reviewConfirmed || !hasIncludedReviewRows || savingReview} className="inline-flex h-10 items-center gap-2 rounded-md bg-violet-600 px-4 text-sm font-semibold text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50">
                 {savingReview ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}ยืนยันและบันทึก
               </button>
             </div>
@@ -626,6 +631,25 @@ export function UploadTab() {
           <p className="text-xs font-semibold leading-5 text-slate-700">{toast}</p>
         </div>
       )}
+    </div>
+  );
+}
+
+function EvidenceValue({
+  label,
+  value,
+  emphasize = false,
+  wide = false,
+}: {
+  label: string;
+  value: string;
+  emphasize?: boolean;
+  wide?: boolean;
+}) {
+  return (
+    <div className={cn("rounded-lg bg-slate-50 px-3 py-2.5", wide && "sm:col-span-2")}>
+      <dt className="text-[11px] font-medium text-muted-foreground">{label}</dt>
+      <dd className={cn("mt-1 break-words text-sm text-foreground", emphasize && "font-semibold tabular-nums")}>{value}</dd>
     </div>
   );
 }
