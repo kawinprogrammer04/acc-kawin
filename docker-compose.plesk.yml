@@ -103,6 +103,7 @@ services:
       HR_KAWIN_BASE_URL:          ${HR_KAWIN_BASE_URL:-}
       HR_KAWIN_ME_PATH:           ${HR_KAWIN_ME_PATH:-/api/employees/me}
       HR_KAWIN_TIMEOUT_SECONDS:   ${HR_KAWIN_TIMEOUT_SECONDS:-10}
+      ACC_PUBLIC_BASE_URL:        ${ACC_PUBLIC_BASE_URL:-https://acc.kawinbrothers.com}
       # Read-only HR → ACC sync. Host paths default to tracked empty directories
       # so local/dev compose remains usable; production records the source
       # paths in .env once and keeps both mounts read-only forever.

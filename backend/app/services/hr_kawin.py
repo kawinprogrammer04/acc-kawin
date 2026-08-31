@@ -3,8 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.models.user import User
 
 
 class HrTokenError(Exception):
@@ -63,3 +66,12 @@ async def fetch_employee_me(hr_token: str) -> HrEmployee:
         position=employee.get("position"),
         department=employee.get("department"),
     )
+
+
+async def find_active_accounting_user(db: AsyncSession, employee_id: str) -> User:
+    """Resolve the ACC account using the same identity contract as HR SSO."""
+    result = await db.execute(select(User).where(User.username == employee_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HrTokenError(403, "ไม่มีสิทธิ์เข้าใช้งานระบบบัญชี กรุณาติดต่อผู้ดูแลระบบ")
+    return user

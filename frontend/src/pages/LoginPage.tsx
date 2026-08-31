@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { safeInternalPath } from "@/lib/safeInternalPath";
 
 export function LoginPage() {
   const { user, login, loginWithHrToken } = useAuth();
@@ -16,6 +17,9 @@ export function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [searchParams] = useSearchParams();
   const [hrSsoToken] = useState(() => searchParams.get("token"));
+  const [ssoNextPath] = useState(
+    () => safeInternalPath(searchParams.get("next"), window.location.origin) || "/expense-requests",
+  );
   const [ssoLoading, setSsoLoading] = useState(() => Boolean(hrSsoToken));
   const [ssoAuthenticated, setSsoAuthenticated] = useState(false);
   const [ssoError, setSsoError] = useState("");
@@ -45,7 +49,7 @@ export function LoginPage() {
   }, []);
 
   if (user && (!hrSsoToken || ssoAuthenticated)) {
-    return <Navigate to={ssoAuthenticated ? "/expense-requests" : "/"} replace />;
+    return <Navigate to={ssoAuthenticated ? ssoNextPath : "/"} replace />;
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
