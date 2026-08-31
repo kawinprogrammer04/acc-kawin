@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { AlertCircle, ArrowLeft, CreditCard, Download, FileSearch, FileText, Loader2, RefreshCcw, Search } from "lucide-react";
+import { AlertCircle, ArrowLeft, CreditCard, Download, Eraser, FileText, Loader2, RefreshCcw } from "lucide-react";
+import { DataListFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { DataListPagination } from "@/components/data-list/DataListPagination";
+import {
+  dataListFilterControlClass,
+  dataListTableHeaderCellClass,
+  dataListTableScrollClass,
+} from "@/components/data-list/styles";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -8,7 +15,7 @@ import { getApiErrorMessage } from "@/api/client";
 import { summaryApi, transactionsApi, type Transaction, type TransactionsData } from "@/api/statement";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { FilterPanel, FriendlyEmpty, ListPagination, StatementJourney } from "./StatementUx";
+import { FriendlyEmpty, StatementJourney } from "./StatementUx";
 
 const STATUS_LABEL: Record<string, string> = { matched: "ตรวจเรียบร้อย", unmatched: "ต้องตรวจ", ignored: "ไม่นับ" };
 const STATUS_CLASS: Record<string, string> = {
@@ -43,6 +50,7 @@ export function TransactionsTab() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState({ statement_id: initialStatementId, status: "", card: searchParams.get("card") ?? "", q: "" });
+  const [query, setQuery] = useState("");
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
@@ -62,6 +70,13 @@ export function TransactionsTab() {
   }, [filters.statement_id, filters.status, filters.card, filters.q]);
 
   useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const nextQuery = query.trim();
+      setFilters((current) => current.q === nextQuery ? current : { ...current, q: nextQuery });
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   const changeStatement = (value: string) => {
     setFilters((current) => ({ ...current, statement_id: value }));
@@ -75,6 +90,16 @@ export function TransactionsTab() {
     const next = new URLSearchParams(searchParams);
     next.set("tab", "transactions");
     next.set("view", value);
+    setSearchParams(next, { replace: true });
+  };
+
+  const resetFilters = () => {
+    setQuery("");
+    setFilters({ statement_id: "", status: "", card: "", q: "" });
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", "transactions");
+    next.delete("statement_id");
+    next.delete("card");
     setSearchParams(next, { replace: true });
   };
 
@@ -95,7 +120,7 @@ export function TransactionsTab() {
   const activeLabel = activeView === "charges" ? "ยอดใช้จ่าย" : "ยอดชำระหรือเงินคืน";
   const chargesTotal = charges.reduce((sum, transaction) => sum + transactionAmount(transaction.amount), 0);
   const paymentsTotal = payments.reduce((sum, transaction) => sum + transactionAmount(transaction.amount), 0);
-  const hasFilters = Boolean(filters.status || filters.card || filters.q);
+  const hasFilters = Boolean(filters.statement_id || filters.status || filters.card || query);
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
@@ -125,28 +150,45 @@ export function TransactionsTab() {
         </div>
       )}
 
-      <FilterPanel resultText={`พบ ${activeRows.length} รายการใน “${activeLabel}” ตามเงื่อนไข`}>
-        <label className="min-w-[200px] flex-1 text-[11px] font-medium text-muted-foreground">ไฟล์ Statement
-          <select value={filters.statement_id} onChange={(event) => changeStatement(event.target.value)} className="mt-1.5 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
-            <option value="">ทุกไฟล์</option>
-            {data?.statements.map((statement) => <option key={statement.id} value={statement.id}>{statement.original_filename}</option>)}
-          </select>
+      <form onSubmit={(event) => event.preventDefault()} className="space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
+        <label className="block min-w-0 text-sm font-bold">ค้นหารายการ
+          <input
+            className={dataListFilterControlClass}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="รายละเอียด เลขอ้างอิง หรือชื่อไฟล์"
+          />
         </label>
-        <label className="min-w-[135px] text-[11px] font-medium text-muted-foreground">สถานะ
-          <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))} className="mt-1.5 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
-            <option value="">ทุกสถานะ</option><option value="unmatched">ต้องตรวจ</option><option value="matched">ตรวจเรียบร้อย</option><option value="ignored">ไม่นับ</option>
-          </select>
-        </label>
-        <label className="min-w-[140px] text-[11px] font-medium text-muted-foreground">บัตร
-          <select value={filters.card} onChange={(event) => setFilters((current) => ({ ...current, card: event.target.value }))} className="mt-1.5 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
-            <option value="">ทุกบัตร</option>{data?.cards.map((card) => <option key={card.id} value={card.last4}>{card.name} ••••{card.last4}</option>)}
-          </select>
-        </label>
-        <label className="min-w-[220px] flex-1 text-[11px] font-medium text-muted-foreground">ค้นหา
-          <span className="mt-1.5 flex h-9 items-center gap-2 rounded-md border bg-background px-3"><Search className="h-3.5 w-3.5" /><input placeholder="รายละเอียดหรือเลขอ้างอิง" value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none" /></span>
-        </label>
-        {hasFilters && <button type="button" onClick={() => setFilters((current) => ({ ...current, status: "", card: "", q: "" }))} className="h-9 rounded-md px-3 text-xs font-medium text-sky-700 hover:bg-sky-50">ล้างตัวกรอง</button>}
-      </FilterPanel>
+
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <DataListFilterSelect
+            label="ไฟล์ Statement"
+            value={filters.statement_id}
+            allLabel="ทุกไฟล์"
+            options={(data?.statements ?? []).map((statement) => ({ value: String(statement.id), label: statement.original_filename }))}
+            onChange={changeStatement}
+          />
+          <DataListFilterSelect
+            label="สถานะ"
+            value={filters.status}
+            allLabel="ทุกสถานะ"
+            options={Object.entries(STATUS_LABEL).map(([value, label]) => ({ value, label }))}
+            onChange={(status) => setFilters((current) => ({ ...current, status }))}
+          />
+          <DataListFilterSelect
+            label="บัตร"
+            value={filters.card}
+            allLabel="ทุกบัตร"
+            options={(data?.cards ?? []).map((card) => ({ value: card.last4, label: `${card.name} ••••${card.last4}` }))}
+            onChange={(card) => setFilters((current) => ({ ...current, card }))}
+          />
+        </div>
+
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
+          <span className="text-xs font-bold text-muted-foreground">ตัวกรองทำงานอัตโนมัติ · พบ {activeRows.length.toLocaleString("th-TH")} รายการใน “{activeLabel}”</span>
+          <button type="button" onClick={resetFilters} disabled={!hasFilters} className="inline-flex h-11 items-center gap-2 rounded-md border border-input bg-background px-8 text-sm font-bold text-muted-foreground transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-rose-950/30"><Eraser className="h-4 w-4" />ล้างตัวกรอง</button>
+        </div>
+      </form>
 
       <Tabs value={activeView} onValueChange={(value) => changeView(value as TransactionView)}>
         <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
@@ -173,26 +215,20 @@ export function TransactionsTab() {
         </div>
 
         <TabsContent value={activeView} className="mt-4">
-          {loading ? (
-            <Card><CardContent className="flex h-48 items-center justify-center p-0"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></CardContent></Card>
-          ) : activeRows.length === 0 ? (
-            <Card><CardContent className="p-0"><FriendlyEmpty title={`ไม่พบ${activeLabel}`} description="ลองเปลี่ยนไฟล์ บัตร สถานะ หรือคำค้นหา" icon={<FileSearch className="h-5 w-5" />} /></CardContent></Card>
-          ) : (
-            <TransactionTable
-              key={activeView}
-              title={activeLabel}
-              hint={activeView === "charges" ? "รายการที่ตัดจากบัตร และควรมีหลักฐานค่าโฆษณามาเทียบ" : "เงินที่ชำระเข้าบัตร เงินคืน หรือ Cashback ซึ่งไม่ต้องเทียบกับหลักฐานค่าโฆษณา"}
-              rows={activeRows}
-              emptyText={`ไม่พบ${activeLabel}ตามเงื่อนไขนี้`}
-            />
-          )}
+          <TransactionTable
+            title={activeLabel}
+            hint={activeView === "charges" ? "รายการที่ตัดจากบัตร และควรมีหลักฐานค่าโฆษณามาเทียบ" : "เงินที่ชำระเข้าบัตร เงินคืน หรือ Cashback ซึ่งไม่ต้องเทียบกับหลักฐานค่าโฆษณา"}
+            rows={activeRows}
+            emptyText={`ไม่พบ${activeLabel}ตามเงื่อนไขนี้`}
+            loading={loading}
+          />
         </TabsContent>
       </Tabs>
     </div>
   );
 }
 
-function TransactionTable({ title, hint, rows, emptyText }: { title: string; hint: string; rows: Transaction[]; emptyText: string }) {
+function TransactionTable({ title, hint, rows, emptyText, loading }: { title: string; hint: string; rows: Transaction[]; emptyText: string; loading: boolean }) {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   useEffect(() => { setPage(1); }, [rows]);
@@ -200,20 +236,22 @@ function TransactionTable({ title, hint, rows, emptyText }: { title: string; hin
   const pageRows = pageSize === 0 ? rows : rows.slice((page - 1) * pageSize, page * pageSize);
 
   return (
-    <Card>
-      <CardContent className="p-0">
+    <div className="space-y-4">
+      <Card className="overflow-hidden">
+        <CardContent className="p-0">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-          <div><p className="text-sm font-semibold">{title} <span className="text-xs font-normal text-muted-foreground">({rows.length} รายการ)</span></p><p className="mt-0.5 text-xs text-muted-foreground">{hint}</p></div>
-          <span className={cn("font-semibold", total < 0 ? "text-rose-600" : "text-slate-800")}>{formatCurrency(total)}</span>
+          <div><p className="text-sm font-semibold">{title} <span className="text-xs font-normal text-muted-foreground">({rows.length.toLocaleString("th-TH")} รายการ)</span></p><p className="mt-0.5 text-xs text-muted-foreground">{hint}</p></div>
         </div>
-        {rows.length === 0 ? (
-          <FriendlyEmpty title={emptyText} />
-        ) : (
-          <>
-            <div className="hidden overflow-x-auto md:block">
-              <table className="w-full text-sm">
-                <thead className="border-b bg-muted/30"><tr>{["วันที่", "บัตร", "รายละเอียด", "จำนวนเงิน", "ไฟล์ต้นทาง", "สถานะ"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">{heading}</th>)}</tr></thead>
-                <tbody className="divide-y">
+        <div className={dataListTableScrollClass}>
+          <table className="w-full min-w-[960px] text-sm">
+            <thead className="text-left text-xs font-black uppercase text-muted-foreground"><tr>{["วันที่", "บัตร", "รายละเอียด", "จำนวนเงิน", "ไฟล์ต้นทาง", "สถานะ"].map((heading, index) => <th key={heading} className={cn(dataListTableHeaderCellClass, "px-4 py-3", index === 3 ? "text-right" : "text-left")}>{heading}</th>)}</tr></thead>
+            <tbody className="divide-y">
+              {loading ? (
+                <tr><td colSpan={6}><div className="flex h-44 items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" />กำลังโหลดรายการ</div></td></tr>
+              ) : rows.length === 0 ? (
+                <tr><td colSpan={6}><FriendlyEmpty title={emptyText} description="ลองเปลี่ยนไฟล์ บัตร สถานะ หรือคำค้นหา" /></td></tr>
+              ) : (
+                <>
                   {pageRows.map((transaction) => (
                     <tr key={transaction.id} className="hover:bg-muted/20">
                       <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{formatDate(transaction.transaction_date)}</td>
@@ -224,21 +262,21 @@ function TransactionTable({ title, hint, rows, emptyText }: { title: string; hin
                       <td className="px-4 py-3"><span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", STATUS_CLASS[transaction.match_status] ?? "bg-muted")}>{STATUS_LABEL[transaction.match_status] ?? transaction.match_status}</span></td>
                     </tr>
                   ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="divide-y md:hidden">
-              {pageRows.map((transaction) => (
-                <div key={transaction.id} className="space-y-2 p-4">
-                  <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{transaction.description}</p><p className="mt-1 text-xs text-muted-foreground">{formatDate(transaction.transaction_date)} · {transaction.card_last4 ? `••••${transaction.card_last4}` : "ไม่พบเลขบัตร"}</p></div><span className={cn("whitespace-nowrap text-sm font-bold", transactionAmount(transaction.amount) < 0 ? "text-rose-600" : "text-slate-800")}>{formatCurrency(transactionAmount(transaction.amount))}</span></div>
-                  <div className="flex items-center justify-between gap-2"><span className="min-w-0 truncate text-[11px] text-muted-foreground">{transaction.original_filename}</span><span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium", STATUS_CLASS[transaction.match_status] ?? "bg-muted")}>{STATUS_LABEL[transaction.match_status] ?? transaction.match_status}</span></div>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-        <ListPagination page={page} pageSize={pageSize} total={rows.length} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} />
-      </CardContent>
-    </Card>
+                </>
+              )}
+            </tbody>
+            {!loading && rows.length > 0 && <tfoot className="border-t-2 bg-muted/50">
+              <tr>
+                <td colSpan={3} className="px-4 py-4 text-right text-sm font-black">ยอดรวม {title}</td>
+                <td className={cn("whitespace-nowrap px-4 py-4 text-right text-base font-black", total < 0 ? "text-rose-600" : "text-primary")}>{formatCurrency(total)}</td>
+                <td colSpan={2} />
+              </tr>
+            </tfoot>}
+          </table>
+        </div>
+        </CardContent>
+      </Card>
+      {!loading && <DataListPagination page={page} pageSize={pageSize} total={rows.length} onPageChange={setPage} onPageSizeChange={(value) => { setPageSize(value); setPage(1); }} />}
+    </div>
   );
 }
