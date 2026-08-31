@@ -35,6 +35,8 @@ export interface CrmCashflowStatementFilters {
   cfcat_id?: number;
   verification_status?: CrmCashflowVerificationStatus;
   invoice_status?: CrmCashflowInvoiceStatus;
+  page?: number;
+  page_size?: number;
 }
 
 export interface CrmCashflowStatement {

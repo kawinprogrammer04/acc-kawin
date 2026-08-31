@@ -2,4 +2,7 @@ export const dataListFilterControlClass = "mt-2 box-border h-12 w-full rounded-x
 
 export const dataListTableScrollClass = "max-h-[70vh] overflow-auto";
 
-export const dataListTableHeaderCellClass = "sticky top-0 z-20 bg-muted shadow-[0_1px_0_0_hsl(var(--border))]";
+// Keep sticky headers above table rows, but below filter popovers. Filter
+// controls render their menu at z-[100] and the filter panel establishes a
+// higher local layer so long option lists can never be covered by the table.
+export const dataListTableHeaderCellClass = "sticky top-0 z-10 bg-muted shadow-[0_1px_0_0_hsl(var(--border))]";

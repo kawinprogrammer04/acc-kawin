@@ -1077,6 +1077,8 @@ async def list_statements(
     cfcat_id: Optional[int] = None,
     verification_status: Optional[VerificationStatus] = None,
     invoice_status: Optional[InvoiceStatus] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=0, le=100),
     db: AsyncSession = Depends(get_db),
     company: Company = Depends(get_current_company),
 ):
@@ -1087,18 +1089,15 @@ async def list_statements(
         verification_status=verification_status,
         invoice_status=invoice_status,
     )
-    # Keep the table filter intact, but calculate the dashboard verification
-    # counts from the complete matching period so both statuses remain
-    # visible when the table is filtered to one status.
     summary_rows = rows
-    if verification_status is not None:
-        summary_rows = await _list_statements(
-            db, company.id, start_date, end_date, cfcat_id,
-            invoice_status=invoice_status,
-        )
-    items = [_serialize_statement(row) for row in rows]
-    sum_revenue = sum(item["cfstate_amount"] for item in items if item["cfstate_amount"] > 0)
-    sum_expenses = sum(item["cfstate_amount"] for item in items if item["cfstate_amount"] <= 0)
+    all_items = [_serialize_statement(row) for row in rows]
+    if page_size == 0:
+        items = all_items
+    else:
+        start = (page - 1) * page_size
+        items = all_items[start:start + page_size]
+    sum_revenue = sum(item["cfstate_amount"] for item in all_items if item["cfstate_amount"] > 0)
+    sum_expenses = sum(item["cfstate_amount"] for item in all_items if item["cfstate_amount"] <= 0)
     dashboard_revenue = sum(
         float(item["cfstate_amount"])
         for item in summary_rows
@@ -1133,7 +1132,7 @@ async def list_statements(
         "items": items,
         "sum_revenue": sum_revenue,
         "sum_expenses": sum_expenses,
-        "total": len(items),
+        "total": len(all_items),
         "dashboard": {
             "sum_revenue": dashboard_revenue,
             "sum_expenses": dashboard_expenses,
