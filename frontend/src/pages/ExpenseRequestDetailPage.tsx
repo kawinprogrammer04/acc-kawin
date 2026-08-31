@@ -377,7 +377,7 @@ export function ExpenseRequestDetailPage() {
   const canEdit = isOwner && ["draft", "returned_for_correction"].includes(request.status);
   const canDelete = isOwner && ["draft", "cancelled"].includes(request.status);
   const hasAccountingRole = Boolean(user?.is_platform_admin || ["accountant", "admin", "super_admin"].includes(currentCompany?.role || ""));
-  const canAccountingView = hasAccountingRole && can("expense_accounting", "view");
+  const canAccountingView = Boolean((user?.permissions_configured || hasAccountingRole) && can("expense_accounting", "view"));
   const canAccountingUpdate = hasAccountingRole && can("expense_accounting", "update");
   const canAccountingPay = hasAccountingRole && can("expense_accounting", "create");
   const canAccountingCancel = hasAccountingRole && can("expense_accounting", "delete");
@@ -551,7 +551,7 @@ export function ExpenseRequestDetailPage() {
                 <button onClick={() => expenseAccountingApi.openPaymentProof(request.id, payment.id)} className="inline-flex items-center gap-1 text-indigo-600 hover:underline dark:text-indigo-300"><Eye className="h-3.5 w-3.5" />ดูหลักฐานโอน</button>
                 <button onClick={() => expenseAccountingApi.downloadPaymentProof(request.id, payment.id, payment.proof_file_name || `payment-proof-${payment.id}`)} className="text-slate-500 hover:text-indigo-600" title="ดาวน์โหลดเก็บไว้"><Download className="h-3.5 w-3.5" /></button>
               </span>}
-              {!payment.voided_at && canAccountingUpdate && <details className="mt-2">
+              {!payment.voided_at && canAccountingView && <details className="mt-2">
                 <summary className="inline-flex cursor-pointer items-center gap-1 text-xs font-bold text-amber-700 hover:underline dark:text-amber-300"><Pencil className="h-3.5 w-3.5" />{payment.proof_file_name ? "แนบสลิปผิด? แก้ไขไฟล์" : "แนบหลักฐานการโอน"}</summary>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={event => setReplacementProofs(current => ({ ...current, [payment.id]: event.target.files?.[0] || null }))} className="min-w-0 flex-1 text-xs file:mr-2 file:min-h-9 file:rounded-lg file:border-0 file:bg-amber-50 file:px-2 file:text-xs file:font-bold file:text-amber-800 hover:file:bg-amber-100" />

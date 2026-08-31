@@ -1,6 +1,7 @@
 import io
 import asyncio
 import tempfile
+import inspect
 import unittest
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -19,10 +20,15 @@ from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import (
     _accounting_query, _accounting_transfer_amount, _append_legacy_approval_steps,
     _apply_accounting_pagination, accounting_stats, _parse_csv_ints, _parse_csv_values,
+    accounting_view, replace_payment_proof,
 )
 
 
 class AccountingFilterTests(unittest.TestCase):
+    def test_payment_proof_upload_accepts_accounting_view_permission(self):
+        dependency = inspect.signature(replace_payment_proof).parameters["current_user"].default
+        self.assertIs(dependency.dependency, accounting_view)
+
     def test_completed_request_keeps_approved_net_as_transfer_amount(self):
         row = SimpleNamespace(
             id="request-1", status="completed",

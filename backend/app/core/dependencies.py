@@ -195,6 +195,43 @@ async def _catalog_permission_state(
     return allowed is not None, True
 
 
+async def has_company_permission(
+    db: AsyncSession,
+    user: User,
+    company_id: int,
+    permission_key: str,
+    *,
+    legacy_min_role: str | None = None,
+    company_role: str | None = None,
+) -> bool:
+    """Check a company permission without forcing the endpoint to require it.
+
+    Detail/file endpoints also serve requesters and approvers, so they cannot
+    use ``require_permission`` directly.  This helper keeps their optional
+    accounting access consistent with the permission catalog and its legacy
+    role fallback.
+    """
+    if user.is_platform_admin:
+        return True
+    allowed, configured = await _catalog_permission_state(
+        db, user, company_id, permission_key
+    )
+    if allowed:
+        return True
+    if configured or not legacy_min_role:
+        return False
+    if company_role is None:
+        from app.models.company import UserCompany
+
+        company_role = (await db.execute(select(UserCompany.role).where(
+            UserCompany.user_id == user.id,
+            UserCompany.company_id == company_id,
+            UserCompany.is_active.is_(True),
+        ))).scalar_one_or_none()
+    levels = await get_role_levels(db)
+    return levels.get(company_role, 0) >= levels.get(legacy_min_role, 0)
+
+
 def require_permission(permission_key: str, *, legacy_min_role: str | None = None):
     """Enforce a fine-grained permission with a migration-safe role fallback."""
     async def _check(
@@ -203,17 +240,15 @@ def require_permission(permission_key: str, *, legacy_min_role: str | None = Non
         db: AsyncSession = Depends(get_db),
     ) -> User:
         company, role = await _resolve_company_access(x_company_id, current_user, db)
-        if current_user.is_platform_admin:
+        if await has_company_permission(
+            db,
+            current_user,
+            company.id,
+            permission_key,
+            legacy_min_role=legacy_min_role,
+            company_role=role,
+        ):
             return current_user
-        allowed, configured = await _catalog_permission_state(
-            db, current_user, company.id, permission_key
-        )
-        if allowed:
-            return current_user
-        if not configured and legacy_min_role:
-            levels = await get_role_levels(db)
-            if levels.get(role, 0) >= levels.get(legacy_min_role, 0):
-                return current_user
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"ไม่มีสิทธิ์ {permission_key}",

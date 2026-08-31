@@ -12,7 +12,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_company, get_current_user, require_permission
+from app.core.dependencies import (
+    get_current_company,
+    get_current_user,
+    has_company_permission,
+    require_permission,
+)
 from app.models.approval import ApprovalRequestStep, ExpenseRequest, ExpenseType, Position
 from app.models.company import Company, UserCompany
 from app.models.expense_finance import (
@@ -56,6 +61,14 @@ async def _request(db: AsyncSession, request_id: str, company_id: int, lock: boo
 
 async def _can_view(db: AsyncSession, req: ExpenseRequest, user: User, *, accounting: bool = False) -> None:
     if user.is_platform_admin or accounting or req.requester_user_id == user.id:
+        return
+    if await has_company_permission(
+        db,
+        user,
+        req.company_id,
+        "expense_accounting.view",
+        legacy_min_role="accountant",
+    ):
         return
     membership = (await db.execute(select(UserCompany.role).where(
         UserCompany.user_id == user.id, UserCompany.company_id == req.company_id,
@@ -639,7 +652,7 @@ async def payment_proof(
 @router.patch("/expense-payments/{payment_id}/proof", response_model=PaymentOut)
 async def replace_payment_proof(
     payment_id: str, payload: PaymentProofReplaceIn,
-    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_update),
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
     company: Company = Depends(get_current_company),
 ):
     payment = (await db.execute(select(ExpensePayment).where(
