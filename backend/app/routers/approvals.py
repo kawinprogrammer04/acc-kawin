@@ -67,6 +67,7 @@ from app.schemas.approval import (
     ExpenseTypeCreate,
     ExpenseTypeOut,
     ExpenseTypeUpdate,
+    InboxCountOut,
     InboxItemOut,
     PolicyVersionCreate,
     PolicyVersionOut,
@@ -1816,6 +1817,39 @@ async def permanently_delete_expense_request(
 # Approver — inbox & decisions
 # ═══════════════════════════════════════════════════════════════════════════
 
+async def _inbox_conditions(
+    scope: str,
+    db: AsyncSession,
+    current_user: User,
+    company: Company,
+):
+    conditions = [
+        ApprovalRequestStep.status == "pending",
+        ExpenseRequest.company_id == company.id,
+    ]
+    # scope=all is only honored for super_admin/platform_admin — everyone else's
+    # inbox stays scoped to steps actually resolved to them.
+    if scope == "mine" or not await _can_view_all_company_requests(db, current_user, company.id):
+        conditions.append(ApprovalRequestStep.resolved_approver_user_id == current_user.id)
+    return conditions
+
+
+@router.get("/approvals/inbox/count", response_model=InboxCountOut)
+async def get_inbox_count(
+    scope: str = Query("mine", pattern="^(mine|all)$"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    conditions = await _inbox_conditions(scope, db, current_user, company)
+    count = (await db.execute(
+        select(func.count(ApprovalRequestStep.id))
+        .join(ExpenseRequest, ExpenseRequest.id == ApprovalRequestStep.expense_request_id)
+        .where(*conditions)
+    )).scalar_one()
+    return InboxCountOut(count=count)
+
+
 @router.get("/approvals/inbox", response_model=list[InboxItemOut])
 async def get_inbox(
     scope: str = Query("mine", pattern="^(mine|all)$"),
@@ -1823,14 +1857,7 @@ async def get_inbox(
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
-    conditions = [
-        ApprovalRequestStep.status == "pending",
-        ExpenseRequest.company_id == company.id,
-    ]
-    # scope=all is only honored for super_admin/platform_admin — everyone else's
-    # "รอฉันอนุมัติ" stays scoped to steps actually resolved to them.
-    if scope == "mine" or not await _can_view_all_company_requests(db, current_user, company.id):
-        conditions.append(ApprovalRequestStep.resolved_approver_user_id == current_user.id)
+    conditions = await _inbox_conditions(scope, db, current_user, company)
     rows = (
         await db.execute(
             select(ApprovalRequestStep, ExpenseRequest)

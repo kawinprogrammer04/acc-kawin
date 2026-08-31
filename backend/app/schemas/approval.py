@@ -434,6 +434,10 @@ class InboxItemOut(BaseModel):
     submitted_at: Optional[datetime]
 
 
+class InboxCountOut(BaseModel):
+    count: int = Field(ge=0)
+
+
 class DecisionIn(BaseModel):
     action: str = Field(pattern="^(approve|reject|return)$")
     comment: Optional[str] = None

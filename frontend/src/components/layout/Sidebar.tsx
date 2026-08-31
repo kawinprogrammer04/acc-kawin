@@ -11,10 +11,11 @@ import {
 } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 import { cn } from "@/lib/utils";
+import { APPROVAL_INBOX_CHANGED_EVENT, approvalInboxApi } from "@/api/approvals";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
 import { Separator } from "@/components/ui/separator";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { AppMenu } from "@/types";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -126,7 +127,9 @@ const inactiveCls = "text-muted-foreground hover:bg-accent hover:text-foreground
 const baseCls = "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors w-full";
 
 // ── Components ────────────────────────────────────────────────────────────────
-function LeafLink({ item, compact = false }: { item: NavLeaf; compact?: boolean }) {
+function LeafLink({
+  item, compact = false, badgeCount = 0,
+}: { item: NavLeaf; compact?: boolean; badgeCount?: number }) {
   const Icon = item.icon;
   const location = useLocation();
   const excluded = item.excludePrefixes?.some(
@@ -137,15 +140,21 @@ function LeafLink({ item, compact = false }: { item: NavLeaf; compact?: boolean 
       to={item.href}
       end={item.href === "/" || excluded}
       className={({ isActive }) => cn(baseCls, isActive && !excluded ? activeCls : inactiveCls)}
+      aria-label={badgeCount > 0 ? `${item.label} มี ${badgeCount} รายการรออนุมัติ` : item.label}
     >
       {Icon && <Icon className="h-4 w-4 shrink-0" />}
       {!Icon && compact && <ChevronRight className="h-3 w-3 shrink-0" />}
-      {item.label}
+      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+      {badgeCount > 0 && (
+        <span aria-hidden="true" className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-destructive px-1.5 text-[10px] font-black leading-none text-destructive-foreground shadow-sm">
+          {badgeCount > 99 ? "99+" : badgeCount}
+        </span>
+      )}
     </NavLink>
   );
 }
 
-function GroupLink({ item }: { item: NavGroup }) {
+function GroupLink({ item, badgeCounts }: { item: NavGroup; badgeCounts: Record<string, number> }) {
   const location = useLocation();
   const anyActive = item.children.some(c => location.pathname === c.href || location.pathname.startsWith(c.href + "/"));
   const [open, setOpen] = useState(anyActive);
@@ -164,14 +173,7 @@ function GroupLink({ item }: { item: NavGroup }) {
       {open && (
         <div className="ml-7 mt-0.5 flex flex-col gap-0.5">
           {item.children.map(child => (
-            <NavLink
-              key={child.href}
-              to={child.href}
-              className={({ isActive }) => cn(baseCls, isActive ? activeCls : inactiveCls)}
-            >
-              <ChevronRight className="h-3 w-3 shrink-0" />
-              {child.label}
-            </NavLink>
+            <LeafLink key={child.href} item={child} compact badgeCount={badgeCounts[child.key]} />
           ))}
         </div>
       )}
@@ -179,14 +181,17 @@ function GroupLink({ item }: { item: NavGroup }) {
   );
 }
 
-function NavSection({ items }: { items: NavItem[] }) {
+function NavSection({
+  items, badgeCounts = {},
+}: { items: NavItem[]; badgeCounts?: Record<string, number> }) {
   return (
     <div className="flex flex-col gap-0.5">
       {items.map(item => {
         if ("children" in item) {
-          return <GroupLink key={item.label} item={item as NavGroup} />;
+          return <GroupLink key={item.label} item={item as NavGroup} badgeCounts={badgeCounts} />;
         }
-        return <LeafLink key={(item as NavLeaf).href} item={item as NavLeaf} />;
+        const leaf = item as NavLeaf;
+        return <LeafLink key={leaf.href} item={leaf} badgeCount={badgeCounts[leaf.key]} />;
       })}
     </div>
   );
@@ -275,11 +280,13 @@ function DynamicMenuGroup({
   label,
   icon,
   items,
+  badgeCounts,
   defaultOpen = false,
 }: {
   label: string;
   icon: React.ComponentType<any>;
   items: NavLeaf[];
+  badgeCounts: Record<string, number>;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -297,14 +304,16 @@ function DynamicMenuGroup({
       </button>
       {open && (
         <div className="mt-1">
-          <NavSection items={items} />
+          <NavSection items={items} badgeCounts={badgeCounts} />
         </div>
       )}
     </div>
   );
 }
 
-function DynamicNav({ menus }: { menus: AppMenu[] }) {
+function DynamicNav({
+  menus, badgeCounts,
+}: { menus: AppMenu[]; badgeCounts: Record<string, number> }) {
   const location = useLocation();
   const sortedMenus = [...menus].sort((a, b) =>
     a.sort_order - b.sort_order ||
@@ -340,7 +349,7 @@ function DynamicNav({ menus }: { menus: AppMenu[] }) {
 
   return (
     <>
-      {cashflow.length > 0 && <NavSection items={cashflow} />}
+      {cashflow.length > 0 && <NavSection items={cashflow} badgeCounts={badgeCounts} />}
       {otherGroups.map(([key, group]) => (
         <div key={key}>
           {cashflow.length > 0 && <Separator />}
@@ -348,6 +357,7 @@ function DynamicNav({ menus }: { menus: AppMenu[] }) {
             label={group.label}
             icon={groupIcon[key] ?? ListTree}
             items={group.items}
+            badgeCounts={badgeCounts}
             defaultOpen={location.pathname === "/statement" || group.items.some(item => location.pathname === item.href)}
           />
         </div>
@@ -372,6 +382,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const [showStatement, setShowStatement] = useState(location.pathname === "/statement");
   const [showAdmin, setShowAdmin] = useState(false);
   const [showCompanySwitcher, setShowCompanySwitcher] = useState(false);
+  const [approvalPendingCount, setApprovalPendingCount] = useState(0);
   const isCompanyAdmin = currentCompany?.role === "admin";
   const dynamicMenus = user?.permissions_configured && Array.isArray(user.allowed_menus)
     ? user.allowed_menus
@@ -386,6 +397,31 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
     if (item.href === "/companies") return user?.is_platform_admin || isCompanyAdmin;
     return user?.is_platform_admin || isCompanyAdmin;
   });
+  const canViewApprovalInbox = can("approvals_inbox");
+  const seesEveryonesInbox = Boolean(user?.is_platform_admin || currentCompany?.role === "super_admin");
+  const badgeCounts = { approvals_inbox: approvalPendingCount };
+
+  const refreshApprovalPendingCount = useCallback(() => {
+    if (!canViewApprovalInbox || !currentCompany) {
+      setApprovalPendingCount(0);
+      return Promise.resolve();
+    }
+    return approvalInboxApi.count({ scope: seesEveryonesInbox ? "all" : "mine" })
+      .then(setApprovalPendingCount)
+      .catch(() => undefined);
+  }, [canViewApprovalInbox, currentCompany?.id, seesEveryonesInbox]);
+
+  useEffect(() => {
+    refreshApprovalPendingCount();
+    const timer = window.setInterval(refreshApprovalPendingCount, 60_000);
+    window.addEventListener("focus", refreshApprovalPendingCount);
+    window.addEventListener(APPROVAL_INBOX_CHANGED_EVENT, refreshApprovalPendingCount);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("focus", refreshApprovalPendingCount);
+      window.removeEventListener(APPROVAL_INBOX_CHANGED_EVENT, refreshApprovalPendingCount);
+    };
+  }, [refreshApprovalPendingCount, location.pathname]);
 
   return (
     <>
@@ -458,11 +494,11 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto p-3 space-y-4">
         {useDynamicMenu ? (
-          <DynamicNav menus={dynamicMenus} />
+          <DynamicNav menus={dynamicMenus} badgeCounts={badgeCounts} />
         ) : (
           <>
             {/* Cash Flow Section */}
-            <NavSection items={visibleCashflowNav} />
+            <NavSection items={visibleCashflowNav} badgeCounts={badgeCounts} />
 
             <Separator />
 
@@ -500,7 +536,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
                 </button>
                 {showAccounting && (
                   <div className="mt-1">
-                    <NavSection items={visibleAccountingNav} />
+                    <NavSection items={visibleAccountingNav} badgeCounts={badgeCounts} />
                   </div>
                 )}
               </div>
@@ -521,7 +557,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
                   </button>
                   {showAdmin && (
                     <div className="mt-1">
-                      <NavSection items={visibleAdminNav} />
+                      <NavSection items={visibleAdminNav} badgeCounts={badgeCounts} />
                     </div>
                   )}
                 </div>
