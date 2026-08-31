@@ -11,6 +11,7 @@ import { DataListPagination } from "@/components/data-list/DataListPagination";
 import { PresetDateRangeFilter } from "@/components/data-list/PresetDateRangeFilter";
 import {
   dataListFilterControlClass,
+  dataListFilterPanelClass,
   dataListTableHeaderCellClass,
   dataListTableScrollClass,
 } from "@/components/data-list/styles";
@@ -217,7 +218,7 @@ export function ExpenseAccountingPage() {
       <DataListKpiCard label="ยอดโอนรวม" value={Number(stats.transfer_amount_total || 0)} currency tone="bg-emerald-100 text-emerald-700 dark:bg-emerald-950" icon={Wallet} />
     </div>
 
-    <form onSubmit={event => event.preventDefault()} className="space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
+    <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl`}>
       <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
         <input className={dataListFilterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ หรือชื่อผู้รับ" />
       </label>

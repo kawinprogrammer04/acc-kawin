@@ -42,6 +42,9 @@ into `frontend/src/components/data-list/` and use it from both pages.
 5. List, KPI cards, aggregate totals, and export must receive the same normalized
    filter object. A filter must never update only the table.
 6. Loading, empty, and error states must remain visible and understandable.
+7. Filter dropdowns must render above sticky table headers. Apply the shared
+   `dataListFilterPanelClass` to the whole filter panel and use the shared
+   popover/table-header layers; do not add page-specific z-index fixes.
 
 ## Date Range Picker with Presets
 
