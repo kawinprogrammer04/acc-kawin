@@ -19,11 +19,16 @@ from app.services.approval_service import _request_kind_filter, resolve_approver
 from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import (
     _accounting_query, _append_legacy_approval_steps, _apply_accounting_pagination, accounting_stats,
-    _parse_csv_ints, _parse_csv_values, accounting_view, replace_payment_proof,
+    _parse_csv_ints, _parse_csv_values, accounting_view, create_payment,
+    replace_payment_proof,
 )
 
 
 class AccountingFilterTests(unittest.TestCase):
+    def test_payment_recording_accepts_accounting_view_permission(self):
+        dependency = inspect.signature(create_payment).parameters["current_user"].default
+        self.assertIs(dependency.dependency, accounting_view)
+
     def test_payment_proof_upload_accepts_accounting_view_permission(self):
         dependency = inspect.signature(replace_payment_proof).parameters["current_user"].default
         self.assertIs(dependency.dependency, accounting_view)

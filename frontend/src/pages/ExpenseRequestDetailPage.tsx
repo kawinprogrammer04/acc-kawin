@@ -379,7 +379,6 @@ export function ExpenseRequestDetailPage() {
   const hasAccountingRole = Boolean(user?.is_platform_admin || ["accountant", "admin", "super_admin"].includes(currentCompany?.role || ""));
   const canAccountingView = Boolean((user?.permissions_configured || hasAccountingRole) && can("expense_accounting", "view"));
   const canAccountingUpdate = hasAccountingRole && can("expense_accounting", "update");
-  const canAccountingPay = hasAccountingRole && can("expense_accounting", "create");
   const canAccountingCancel = hasAccountingRole && can("expense_accounting", "delete");
   const canAccountingApprove = hasAccountingRole && can("expense_accounting", "approve");
   const activePayments = payments.filter((p) => !p.voided_at);
@@ -508,7 +507,7 @@ export function ExpenseRequestDetailPage() {
       <div className="space-y-5">
         {request.status === "accounting_review" && canAccountingUpdate && <Card className="border-cyan-200 bg-cyan-50 dark:border-cyan-800 dark:bg-cyan-950/30"><CardContent className="space-y-4 p-6"><SectionTitle description="รายการนี้เป็นข้อมูลจากรอบเดิม ระบบจะใช้สถานะและอัตราหัก ณ ที่จ่ายที่ผู้ขอระบุไว้ ไม่ต้องให้บัญชีเลือกฐานหรืออัตราซ้ำ">ส่งต่อพร้อมจ่าย</SectionTitle><button onClick={reviewLegacy} disabled={saving} className="min-h-12 w-full rounded-xl bg-cyan-700 px-4 text-sm font-black text-white hover:bg-cyan-800 disabled:opacity-60">ใช้ข้อมูลผู้ขอและส่งต่อพร้อมจ่าย</button><div className="border-t border-cyan-200 pt-4"><label className="text-xs font-black text-cyan-800">เหตุผลที่ส่งคืน (ผู้ขอจะเห็นข้อความนี้ในการแจ้งเตือน) *<textarea rows={2} value={accountingReturnReason} onChange={event => setAccountingReturnReason(event.target.value)} placeholder="เช่น ขาดข้อมูลผู้เสียภาษี, ยอดไม่ตรงกับใบเสร็จ, เลขบัญชีผู้รับเงินไม่ถูกต้อง" className="mt-2 w-full rounded-xl border bg-background px-3 py-2 text-sm font-normal text-foreground" /></label><button onClick={returnByAccounting} disabled={saving} className="mt-3 min-h-12 w-full rounded-xl bg-blue-50 px-4 text-sm font-black text-blue-700 hover:bg-blue-100 disabled:opacity-60">ส่งคืนให้ผู้ขอแก้ไข</button></div></CardContent></Card>}
 
-        {(request.status === "ready_to_pay" || request.status === "partially_paid") && canAccountingPay && <Card className="border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30"><CardContent className="space-y-5 p-6"><div className="flex flex-wrap items-start justify-between gap-4"><SectionTitle description="กรอกรายละเอียดการโอนเพื่อปิดรายการนี้เป็นจ่ายแล้ว">บันทึกการจ่าย</SectionTitle><div className="rounded-md bg-background/70 px-5 py-3 text-right">
+        {(request.status === "ready_to_pay" || request.status === "partially_paid") && canAccountingView && <Card className="border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950/30"><CardContent className="space-y-5 p-6"><div className="flex flex-wrap items-start justify-between gap-4"><SectionTitle description="กรอกรายละเอียดการโอนเพื่อปิดรายการนี้เป็นจ่ายแล้ว">บันทึกการจ่าย</SectionTitle><div className="rounded-md bg-background/70 px-5 py-3 text-right">
           <p className="text-xs font-bold uppercase tracking-wide text-indigo-700">ยอดโอนสุทธิ</p>
           {request.installment_enabled && !request.installment_chain_root_id
             ? <>
