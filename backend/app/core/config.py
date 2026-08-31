@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     HR_KAWIN_BASE_URL: str | None = None
     HR_KAWIN_ME_PATH: str = "/api/employees/me"
     HR_KAWIN_TIMEOUT_SECONDS: float = 10.0
+    ACC_PUBLIC_BASE_URL: str = ""
 
     # Internal PHP/Dompdf service used for tax-invoice preview and PDF export.
     DOMPDF_RENDERER_URL: str = "http://tax_invoice_renderer:8090"
@@ -67,6 +68,14 @@ class Settings(BaseSettings):
             )
         if self.APP_ENV == "production" and self.DEBUG:
             raise ValueError("ห้ามเปิด DEBUG=true ใน production")
+        if not self.ACC_PUBLIC_BASE_URL:
+            self.ACC_PUBLIC_BASE_URL = (
+                "https://acc.kawinbrothers.com"
+                if self.APP_ENV == "production"
+                else "https://localhost:8443"
+            )
+        else:
+            self.ACC_PUBLIC_BASE_URL = self.ACC_PUBLIC_BASE_URL.rstrip("/")
         if not self.MIGRATION_DATABASE_URL:
             self.MIGRATION_DATABASE_URL = self.DATABASE_URL
         return self
