@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { AlertCircle, ArrowLeft, Download, FileSearch, FileText, Loader2, Search } from "lucide-react";
+import { AlertCircle, ArrowLeft, CreditCard, Download, FileSearch, FileText, Loader2, RefreshCcw, Search } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { getApiErrorMessage } from "@/api/client";
 import { summaryApi, transactionsApi, type Transaction, type TransactionsData } from "@/api/statement";
@@ -15,6 +16,7 @@ const STATUS_CLASS: Record<string, string> = {
   unmatched: "bg-amber-50 text-amber-700",
   ignored: "bg-slate-100 text-slate-600",
 };
+type TransactionView = "charges" | "payments";
 
 function splitBySign(transactions: Transaction[]) {
   const charges: Transaction[] = [];
@@ -26,10 +28,11 @@ function splitBySign(transactions: Transaction[]) {
 export function TransactionsTab() {
   const [searchParams, setSearchParams] = useSearchParams();
   const initialStatementId = searchParams.get("statement_id") ?? "";
+  const activeView: TransactionView = searchParams.get("view") === "payments" ? "payments" : "charges";
   const [data, setData] = useState<TransactionsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState({ statement_id: initialStatementId, status: "", card: searchParams.get("card") ?? "", q: "", sign: "" as "" | "positive" | "negative" });
+  const [filters, setFilters] = useState({ statement_id: initialStatementId, status: "", card: searchParams.get("card") ?? "", q: "" });
   const [exporting, setExporting] = useState(false);
 
   const load = useCallback(async () => {
@@ -58,6 +61,13 @@ export function TransactionsTab() {
     setSearchParams(next, { replace: true });
   };
 
+  const changeView = (value: TransactionView) => {
+    const next = new URLSearchParams(searchParams);
+    next.set("tab", "transactions");
+    next.set("view", value);
+    setSearchParams(next, { replace: true });
+  };
+
   const doExport = async (fn: () => Promise<void>) => {
     setExporting(true);
     try {
@@ -71,8 +81,11 @@ export function TransactionsTab() {
 
   const { charges, payments } = useMemo(() => splitBySign(data?.transactions ?? []), [data]);
   const selectedFilename = data?.statements.find((statement) => String(statement.id) === filters.statement_id)?.original_filename;
-  const totalRows = filters.sign === "positive" ? charges.length : filters.sign === "negative" ? payments.length : charges.length + payments.length;
-  const hasFilters = Boolean(filters.status || filters.card || filters.q || filters.sign);
+  const activeRows = activeView === "charges" ? charges : payments;
+  const activeLabel = activeView === "charges" ? "ยอดใช้จ่าย" : "ยอดชำระหรือเงินคืน";
+  const chargesTotal = charges.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const paymentsTotal = payments.reduce((sum, transaction) => sum + transaction.amount, 0);
+  const hasFilters = Boolean(filters.status || filters.card || filters.q);
 
   return (
     <div className="space-y-5 p-4 sm:p-6">
@@ -102,16 +115,29 @@ export function TransactionsTab() {
         </div>
       )}
 
-      <FilterPanel resultText={`พบ ${totalRows} รายการตามเงื่อนไข`}>
+      <Tabs value={activeView} onValueChange={(value) => changeView(value as TransactionView)}>
+        <TabsList className="grid h-auto w-full grid-cols-2 gap-2 rounded-xl border bg-card p-2 shadow-sm">
+          <TabsTrigger value="charges" className="min-h-[76px] flex-col items-stretch gap-1 rounded-lg border border-transparent px-4 py-3 text-left data-[state=active]:border-sky-200 data-[state=active]:bg-sky-50 data-[state=active]:text-sky-900 data-[state=active]:shadow-none">
+            <span className="flex w-full items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-2 font-semibold"><CreditCard className="h-4 w-4" /> ยอดใช้จ่าย</span>
+              <span className="rounded-full bg-background px-2 py-0.5 text-xs font-semibold ring-1 ring-border">{charges.length.toLocaleString("th-TH")} รายการ</span>
+            </span>
+            <span className="w-full text-xs text-muted-foreground">ยอดรวม {formatCurrency(chargesTotal)}</span>
+          </TabsTrigger>
+          <TabsTrigger value="payments" className="min-h-[76px] flex-col items-stretch gap-1 rounded-lg border border-transparent px-4 py-3 text-left data-[state=active]:border-emerald-200 data-[state=active]:bg-emerald-50 data-[state=active]:text-emerald-900 data-[state=active]:shadow-none">
+            <span className="flex w-full items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-2 font-semibold"><RefreshCcw className="h-4 w-4" /> ยอดชำระหรือเงินคืน</span>
+              <span className="rounded-full bg-background px-2 py-0.5 text-xs font-semibold ring-1 ring-border">{payments.length.toLocaleString("th-TH")} รายการ</span>
+            </span>
+            <span className="w-full text-xs text-muted-foreground">ยอดรวม {formatCurrency(Math.abs(paymentsTotal))}</span>
+          </TabsTrigger>
+        </TabsList>
+
+        <FilterPanel resultText={`พบ ${activeRows.length} รายการใน “${activeLabel}” ตามเงื่อนไข`}>
         <label className="min-w-[200px] flex-1 text-[11px] font-medium text-muted-foreground">ไฟล์ Statement
           <select value={filters.statement_id} onChange={(event) => changeStatement(event.target.value)} className="mt-1.5 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
             <option value="">ทุกไฟล์</option>
             {data?.statements.map((statement) => <option key={statement.id} value={statement.id}>{statement.original_filename}</option>)}
-          </select>
-        </label>
-        <label className="min-w-[135px] text-[11px] font-medium text-muted-foreground">ประเภทของยอด
-          <select value={filters.sign} onChange={(event) => setFilters((current) => ({ ...current, sign: event.target.value as typeof current.sign }))} className="mt-1.5 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
-            <option value="">ทุกประเภท</option><option value="positive">ยอดใช้จ่าย</option><option value="negative">ยอดชำระ/เงินคืน</option>
           </select>
         </label>
         <label className="min-w-[135px] text-[11px] font-medium text-muted-foreground">สถานะ
@@ -127,19 +153,25 @@ export function TransactionsTab() {
         <label className="min-w-[220px] flex-1 text-[11px] font-medium text-muted-foreground">ค้นหา
           <span className="mt-1.5 flex h-9 items-center gap-2 rounded-md border bg-background px-3"><Search className="h-3.5 w-3.5" /><input placeholder="รายละเอียดหรือเลขอ้างอิง" value={filters.q} onChange={(event) => setFilters((current) => ({ ...current, q: event.target.value }))} className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none" /></span>
         </label>
-        {hasFilters && <button type="button" onClick={() => setFilters((current) => ({ ...current, status: "", card: "", q: "", sign: "" }))} className="h-9 rounded-md px-3 text-xs font-medium text-sky-700 hover:bg-sky-50">ล้างตัวกรอง</button>}
-      </FilterPanel>
+        {hasFilters && <button type="button" onClick={() => setFilters((current) => ({ ...current, status: "", card: "", q: "" }))} className="h-9 rounded-md px-3 text-xs font-medium text-sky-700 hover:bg-sky-50">ล้างตัวกรอง</button>}
+        </FilterPanel>
 
-      {loading ? (
-        <Card><CardContent className="flex h-48 items-center justify-center p-0"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></CardContent></Card>
-      ) : totalRows === 0 ? (
-        <Card><CardContent className="p-0"><FriendlyEmpty title="ไม่พบรายการ" description="ลองเปลี่ยนไฟล์ บัตร สถานะ หรือคำค้นหา" icon={<FileSearch className="h-5 w-5" />} /></CardContent></Card>
-      ) : (
-        <div className="space-y-4">
-          {filters.sign !== "negative" && <TransactionTable title="ยอดใช้จ่าย" hint="รายการที่ตัดจากบัตร และควรมีหลักฐานค่าโฆษณามาเทียบ" rows={charges} emptyText="ไม่มียอดใช้จ่ายตามเงื่อนไขนี้" />}
-          {filters.sign !== "positive" && <TransactionTable title="ยอดชำระหรือเงินคืน" hint="เงินที่ชำระเข้าบัตร เงินคืน หรือ Cashback ซึ่งไม่ต้องเทียบกับหลักฐานค่าโฆษณา" rows={payments} emptyText="ไม่มียอดชำระหรือเงินคืนตามเงื่อนไขนี้" />}
-        </div>
-      )}
+        <TabsContent value={activeView} className="mt-4">
+          {loading ? (
+            <Card><CardContent className="flex h-48 items-center justify-center p-0"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></CardContent></Card>
+          ) : activeRows.length === 0 ? (
+            <Card><CardContent className="p-0"><FriendlyEmpty title={`ไม่พบ${activeLabel}`} description="ลองเปลี่ยนไฟล์ บัตร สถานะ หรือคำค้นหา" icon={<FileSearch className="h-5 w-5" />} /></CardContent></Card>
+          ) : (
+            <TransactionTable
+              key={activeView}
+              title={activeLabel}
+              hint={activeView === "charges" ? "รายการที่ตัดจากบัตร และควรมีหลักฐานค่าโฆษณามาเทียบ" : "เงินที่ชำระเข้าบัตร เงินคืน หรือ Cashback ซึ่งไม่ต้องเทียบกับหลักฐานค่าโฆษณา"}
+              rows={activeRows}
+              emptyText={`ไม่พบ${activeLabel}ตามเงื่อนไขนี้`}
+            />
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
