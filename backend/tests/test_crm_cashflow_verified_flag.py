@@ -7,7 +7,7 @@ amounts.
 import unittest
 from datetime import date
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 
@@ -16,6 +16,7 @@ from app.routers.crm_cashflow import (
     StatementFlagsUpdate,
     _invoice_status_label,
     _list_statements,
+    list_statements,
     update_statement_flags,
 )
 
@@ -158,6 +159,59 @@ class InvoiceStatusLabelTests(unittest.TestCase):
 
 
 class InvoiceTrackingFilterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_statement_dashboard_uses_the_same_verification_filter_as_the_list(self):
+        filtered_rows = [{
+            "cfstate_amount": Decimal("125.00"),
+            "cfstate_verified": 1,
+            "user_name": "Accountant",
+            "username": "accountant",
+        }]
+
+        with patch(
+            "app.routers.crm_cashflow._list_statements",
+            new=AsyncMock(return_value=filtered_rows),
+        ) as mocked_list:
+            result = await list_statements(
+                verification_status="verified",
+                page=1,
+                page_size=25,
+                db=AsyncMock(),
+                company=_Company(5),
+            )
+
+        self.assertEqual(mocked_list.await_count, 1)
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["dashboard"]["verified_count"], 1)
+        self.assertEqual(result["dashboard"]["pending_count"], 0)
+        self.assertEqual(result["dashboard"]["sum_revenue"], 125.0)
+
+    async def test_statement_pagination_keeps_filtered_totals_for_all_rows(self):
+        filtered_rows = [{
+            "cfstate_id": index,
+            "cfstate_amount": Decimal("1.00"),
+            "cfstate_verified": 1,
+            "user_name": "Accountant",
+            "username": "accountant",
+        } for index in range(1, 31)]
+
+        with patch(
+            "app.routers.crm_cashflow._list_statements",
+            new=AsyncMock(return_value=filtered_rows),
+        ):
+            result = await list_statements(
+                page=2,
+                page_size=10,
+                db=AsyncMock(),
+                company=_Company(5),
+            )
+
+        self.assertEqual(result["total"], 30)
+        self.assertEqual(len(result["items"]), 10)
+        self.assertEqual(result["items"][0]["cfstate_id"], 11)
+        self.assertEqual(result["items"][-1]["cfstate_id"], 20)
+        self.assertEqual(result["sum_revenue"], 30.0)
+        self.assertEqual(result["dashboard"]["verified_count"], 30)
+
     async def test_statement_query_filters_verification_and_document_type(self):
         db = AsyncMock()
         db.execute.return_value = _MappingsResult()

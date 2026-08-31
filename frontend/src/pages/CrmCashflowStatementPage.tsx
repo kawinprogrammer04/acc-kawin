@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowDownCircle, ArrowUpCircle, Check, CheckCircle2, Clock3, Download,
-  FileSpreadsheet, FileText, Import, Pencil, Plus, RefreshCw, Save,
-  Settings2, Trash2,
+  Eraser, FileSpreadsheet, Import, Paperclip, Pencil, Plus, Save,
+  Settings2, Trash2, Upload, X,
 } from "lucide-react";
 
 import {
@@ -17,6 +17,7 @@ import {
   type CrmCashflowInvoiceStatus,
   type CrmCashflowSource,
   type CrmCashflowStatement,
+  type CrmCashflowStatementFilters,
   type CrmCashflowVerificationStatus,
   type CrmStatementInput,
   type DuplicateAction,
@@ -24,6 +25,14 @@ import {
   type ImportTemplateColumn,
 } from "@/api/crmCashflow";
 import { Can } from "@/components/auth/RequirePermission";
+import { DataListFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
+import { DataListPagination } from "@/components/data-list/DataListPagination";
+import { PresetDateRangeFilter } from "@/components/data-list/PresetDateRangeFilter";
+import {
+  dataListTableHeaderCellClass,
+  dataListTableScrollClass,
+} from "@/components/data-list/styles";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { InvoiceStatusBadge } from "@/components/ui/invoice-status-badge";
 import { Button } from "@/components/ui/button";
@@ -35,11 +44,11 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Combobox } from "@/components/ui/combobox";
 import { DatePicker } from "@/components/ui/date-picker";
-import { formatDate } from "@/lib/format";
+import { formatDate, today } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const MENU_KEY = "crm_cashflow_statement";
-const today = () => new Date().toISOString().slice(0, 10);
+const DEFAULT_PAGE_SIZE = 25;
 const money = (value: number) => new Intl.NumberFormat("th-TH", {
   minimumFractionDigits: 2, maximumFractionDigits: 2,
 }).format(value);
@@ -123,6 +132,10 @@ export function CrmCashflowStatementPage() {
   const [categoryFilter, setCategoryFilter] = useState("");
   const [verificationFilter, setVerificationFilter] = useState<"" | CrmCashflowVerificationStatus>("");
   const [invoiceFilter, setInvoiceFilter] = useState<"" | CrmCashflowInvoiceStatus>("");
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [updatedAt, setUpdatedAt] = useState(new Date());
   const [loading, setLoading] = useState(false);
   const [downloadingFiles, setDownloadingFiles] = useState(false);
   const [notice, setNotice] = useState("");
@@ -179,17 +192,26 @@ export function CrmCashflowStatementPage() {
   const [templateDraft, setTemplateDraft] = useState<TemplateDraft | null>(null);
   const [savingTemplate, setSavingTemplate] = useState(false);
 
-  // Details dialog (read-only view of attachments uploaded from
-  // /crm-cashflow/invoices — attaching/removing files stays on that page).
+  // Attachment manager for the selected statement.
   const [detailStatement, setDetailStatement] = useState<CrmCashflowStatement | null>(null);
   const [detailAttachments, setDetailAttachments] = useState<(CrmCashflowAttachment & { previewUrl?: string })[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailUploading, setDetailUploading] = useState(false);
+  const [detailDeletingId, setDetailDeletingId] = useState<string | null>(null);
 
   const activeCategories = categories.filter((item) => item.cfcat_status === 1);
   const activeDepartments = departments.filter((item) => item.cfstate_dep_status === 1);
   const formSources = sources.filter(
     (item) => item.cflist_status === 1 && item.cfcat_id === entryForm.cfcat_id && item.cflist_hide == null,
   );
+
+  const statementFilters = useMemo<CrmCashflowStatementFilters>(() => ({
+    start_date: dateStart || undefined,
+    end_date: dateEnd || undefined,
+    cfcat_id: categoryFilter ? Number(categoryFilter) : undefined,
+    verification_status: verificationFilter || undefined,
+    invoice_status: invoiceFilter || undefined,
+  }), [dateStart, dateEnd, categoryFilter, verificationFilter, invoiceFilter]);
 
   const loadMasters = useCallback(async (includeInactive = true) => {
     const [categoryData, sourceData, departmentData] = await Promise.all([
@@ -214,22 +236,22 @@ export function CrmCashflowStatementPage() {
     setLoading(true);
     try {
       const result = await crmCashflowApi.statements({
-        start_date: dateStart || undefined,
-        end_date: dateEnd || undefined,
-        cfcat_id: categoryFilter ? Number(categoryFilter) : undefined,
-        verification_status: verificationFilter || undefined,
-        invoice_status: invoiceFilter || undefined,
+        ...statementFilters,
+        page,
+        page_size: pageSize,
       });
       setRows(result.items);
+      setTotal(result.total);
       setSumRevenue(result.sum_revenue);
       setSumExpenses(result.sum_expenses);
       setDashboard(result.dashboard ?? emptyDashboard);
+      setUpdatedAt(new Date());
     } catch (requestError) {
       showError(errorMessage(requestError));
     } finally {
       setLoading(false);
     }
-  }, [dateStart, dateEnd, categoryFilter, verificationFilter, invoiceFilter]);
+  }, [statementFilters, page, pageSize]);
 
   useEffect(() => {
     loadMasters().catch((requestError) => showError(errorMessage(requestError)));
@@ -349,6 +371,61 @@ export function CrmCashflowStatementPage() {
     detailAttachments.forEach((attachment) => { if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl); });
     setDetailStatement(null);
     setDetailAttachments([]);
+  };
+
+  const uploadDetailAttachment = async (file: File | null) => {
+    if (!detailStatement || !file) return;
+    if (detailAttachments.length >= 2) {
+      showError("แต่ละรายการแนบได้สูงสุด 2 ไฟล์ กรุณาลบไฟล์เดิมก่อน");
+      return;
+    }
+    setDetailUploading(true);
+    try {
+      const uploaded = await crmCashflowApi.uploadAttachment(detailStatement.cfstate_id, file);
+      let previewUrl: string | undefined;
+      try {
+        const blob = await crmCashflowApi.openAttachment(detailStatement.cfstate_id, uploaded.id);
+        previewUrl = URL.createObjectURL(blob);
+      } catch {
+        // The file is still uploaded successfully even if its inline preview fails.
+      }
+      setDetailAttachments((current) => [...current, { ...uploaded, previewUrl }]);
+      setRows((current) => current.map((row) => row.cfstate_id === detailStatement.cfstate_id
+        ? { ...row, attachment_count: row.attachment_count + 1 }
+        : row));
+      setDetailStatement((current) => current
+        ? { ...current, attachment_count: current.attachment_count + 1 }
+        : current);
+      showNotice("อัปโหลดไฟล์แนบสำเร็จ");
+    } catch (requestError) {
+      showError(errorMessage(requestError));
+    } finally {
+      setDetailUploading(false);
+    }
+  };
+
+  const deleteDetailAttachment = async (attachmentId: string) => {
+    if (!detailStatement || !window.confirm("ยืนยันการลบไฟล์แนบนี้?")) return;
+    setDetailDeletingId(attachmentId);
+    try {
+      await crmCashflowApi.deleteAttachment(detailStatement.cfstate_id, attachmentId);
+      setDetailAttachments((current) => {
+        const removed = current.find((attachment) => attachment.id === attachmentId);
+        if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+        return current.filter((attachment) => attachment.id !== attachmentId);
+      });
+      setRows((current) => current.map((row) => row.cfstate_id === detailStatement.cfstate_id
+        ? { ...row, attachment_count: Math.max(0, row.attachment_count - 1) }
+        : row));
+      setDetailStatement((current) => current
+        ? { ...current, attachment_count: Math.max(0, current.attachment_count - 1) }
+        : current);
+      showNotice("ลบไฟล์แนบแล้ว");
+    } catch (requestError) {
+      showError(errorMessage(requestError));
+    } finally {
+      setDetailDeletingId(null);
+    }
   };
 
   const addMaster = async () => {
@@ -596,55 +673,31 @@ export function CrmCashflowStatementPage() {
     () => new Map(categories.map((item) => [item.cfcat_id, item.cfcat_name])), [categories],
   );
 
-  const dashboardCards = [
-    {
-      label: "ยอดรายรับ",
-      value: money(dashboard.sum_revenue),
-      icon: <ArrowUpCircle className="h-5 w-5" />,
-      iconClass: "bg-emerald-50 text-emerald-600",
-      valueClass: "text-emerald-700",
-    },
-    {
-      label: "ยอดรายจ่าย",
-      value: money(dashboard.sum_expenses),
-      icon: <ArrowDownCircle className="h-5 w-5" />,
-      iconClass: "bg-red-50 text-red-600",
-      valueClass: "text-red-700",
-    },
-    {
-      label: "ตรวจสอบแล้ว",
-      value: dashboard.verified_count.toLocaleString("th-TH"),
-      details: [
-        `รายรับ ${money(dashboard.verified_revenue)}`,
-        `รายจ่าย ${money(dashboard.verified_expenses)}`,
-      ],
-      icon: <CheckCircle2 className="h-5 w-5" />,
-      iconClass: "bg-blue-50 text-blue-600",
-      valueClass: "text-blue-700",
-    },
-    {
-      label: "ยังไม่ตรวจสอบ",
-      value: dashboard.pending_count.toLocaleString("th-TH"),
-      details: [
-        `รายรับ ${money(dashboard.pending_revenue)}`,
-        `รายจ่าย ${money(dashboard.pending_expenses)}`,
-      ],
-      icon: <Clock3 className="h-5 w-5" />,
-      iconClass: "bg-amber-50 text-amber-600",
-      valueClass: "text-amber-700",
-    },
-  ];
+  useEffect(() => {
+    const totalPages = pageSize === 0 ? 1 : Math.max(1, Math.ceil(total / pageSize));
+    if (page > totalPages) setPage(totalPages);
+  }, [page, pageSize, total]);
+
+  const changeDateRange = (from: string, to: string) => {
+    setPage(1);
+    setDateStart(from);
+    setDateEnd(to);
+  };
+
+  const resetFilters = () => {
+    const currentDay = today();
+    setPage(1);
+    setDateStart(currentDay);
+    setDateEnd(currentDay);
+    setCategoryFilter("");
+    setVerificationFilter("");
+    setInvoiceFilter("");
+  };
 
   const downloadStatementFiles = async () => {
     setDownloadingFiles(true);
     try {
-      await crmCashflowApi.exportStatementFiles({
-        start_date: dateStart,
-        end_date: dateEnd,
-        cfcat_id: categoryFilter ? Number(categoryFilter) : undefined,
-        verification_status: verificationFilter || undefined,
-        invoice_status: invoiceFilter || undefined,
-      });
+      await crmCashflowApi.exportStatementFiles(statementFilters);
       showNotice("ดาวน์โหลด ZIP ไฟล์แนบเรียบร้อยแล้ว");
     } catch (requestError: any) {
       if (requestError?.response?.status === 404) {
@@ -661,12 +714,7 @@ export function CrmCashflowStatementPage() {
     <div className="flex h-full flex-col">
       <PageHeader title="รายรับ-รายจ่าย (CRM)" description="รูปแบบการทำงานเดียวกับ crm-kawin พร้อมใช้ผู้ใช้งานและบริษัทของ acc-kawin">
         <Can menuKey={MENU_KEY} action="export">
-          <Button variant="outline" onClick={() => crmCashflowApi.exportStatements({
-            start_date: dateStart, end_date: dateEnd,
-            cfcat_id: categoryFilter ? Number(categoryFilter) : undefined,
-            verification_status: verificationFilter || undefined,
-            invoice_status: invoiceFilter || undefined,
-          })}><FileSpreadsheet className="h-4 w-4" />Excel</Button>
+          <Button variant="outline" onClick={() => crmCashflowApi.exportStatements(statementFilters)}><FileSpreadsheet className="h-4 w-4" />Excel</Button>
           <Button variant="outline" onClick={downloadStatementFiles} disabled={downloadingFiles}>
             <Download className="h-4 w-4" />{downloadingFiles ? "กำลังสร้าง ZIP..." : "Export ไฟล์แนบ"}
           </Button>
@@ -701,40 +749,36 @@ export function CrmCashflowStatementPage() {
         </div>
       )}
 
-      <div className="flex-1 space-y-4 overflow-auto p-6">
-        <Card><CardContent className="flex flex-wrap items-end gap-3 pt-6">
-          <div className="space-y-1 text-xs">วันที่เริ่มต้น<DatePicker value={dateStart} onChange={setDateStart} /></div>
-          <div className="space-y-1 text-xs">วันที่สิ้นสุด<DatePicker value={dateEnd} onChange={setDateEnd} /></div>
-          <div className="min-w-56 space-y-1 text-xs">หัวข้อ
-            <Combobox
-              className="h-9 bg-white text-sm"
+      <div className="flex-1 space-y-6 overflow-auto p-6">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Dashboard รายรับ-รายจ่าย">
+          <DataListKpiCard label="ยอดรายรับ" value={dashboard.sum_revenue} currency tone="bg-emerald-100 text-emerald-700 dark:bg-emerald-950" icon={ArrowUpCircle} />
+          <DataListKpiCard label="ยอดรายจ่าย" value={dashboard.sum_expenses} currency tone="bg-rose-100 text-rose-700 dark:bg-rose-950" icon={ArrowDownCircle} />
+          <DataListKpiCard label="ตรวจสอบแล้ว" value={dashboard.verified_count} tone="bg-blue-100 text-blue-700 dark:bg-blue-950" icon={CheckCircle2} />
+          <DataListKpiCard label="ยังไม่ตรวจสอบ" value={dashboard.pending_count} tone="bg-amber-100 text-amber-700 dark:bg-amber-950" icon={Clock3} />
+        </div>
+
+        <form onSubmit={(event) => event.preventDefault()} className="relative z-30 space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <PresetDateRangeFilter dateFrom={dateStart} dateTo={dateEnd} onChange={changeDateRange} />
+            <DataListFilterSelect
+              label="หัวข้อ"
               value={categoryFilter}
-              onChange={setCategoryFilter}
-              placeholder="ทั้งหมด"
-              options={[{ value: "", label: "ทั้งหมด" }, ...activeCategories.map((item) => ({ value: String(item.cfcat_id), label: item.cfcat_name }))]}
+              allLabel="ทุกหัวข้อ"
+              options={activeCategories.map((item) => ({ value: String(item.cfcat_id), label: item.cfcat_name }))}
+              onChange={(value) => { setPage(1); setCategoryFilter(value); }}
             />
-          </div>
-          <div className="min-w-44 space-y-1 text-xs">การตรวจสอบ
-            <Combobox
-              className="h-9 bg-white text-sm"
+            <DataListFilterSelect
+              label="การตรวจสอบ"
               value={verificationFilter}
-              onChange={(value) => setVerificationFilter(value as "" | CrmCashflowVerificationStatus)}
-              placeholder="ทั้งหมด"
-              options={[
-                { value: "", label: "ทั้งหมด" },
-                { value: "pending", label: "รอตรวจสอบ" },
-                { value: "verified", label: "ตรวจสอบแล้ว" },
-              ]}
+              allLabel="ทุกสถานะ"
+              options={[{ value: "pending", label: "รอตรวจสอบ" }, { value: "verified", label: "ตรวจสอบแล้ว" }]}
+              onChange={(value) => { setPage(1); setVerificationFilter(value as "" | CrmCashflowVerificationStatus); }}
             />
-          </div>
-          <div className="min-w-48 space-y-1 text-xs">ใบกำกับภาษี
-            <Combobox
-              className="h-9 bg-white text-sm"
+            <DataListFilterSelect
+              label="ใบกำกับภาษี"
               value={invoiceFilter}
-              onChange={(value) => setInvoiceFilter(value as "" | CrmCashflowInvoiceStatus)}
-              placeholder="ทั้งหมด"
+              allLabel="ทุกสถานะ"
               options={[
-                { value: "", label: "ทั้งหมด" },
                 { value: "none", label: "ยังไม่ระบุ" },
                 { value: "pending", label: "รอใบกำกับ" },
                 { value: "received", label: "ได้รับแล้ว" },
@@ -742,58 +786,42 @@ export function CrmCashflowStatementPage() {
                 { value: "cash_bill", label: "บิลเงินสด" },
                 { value: "other", label: "อื่นๆ" },
               ]}
+              onChange={(value) => { setPage(1); setInvoiceFilter(value as "" | CrmCashflowInvoiceStatus); }}
             />
           </div>
-          <Button variant="outline" onClick={loadRows}><RefreshCw className="h-4 w-4" />ดูรายงาน</Button>
-          <Can menuKey={MENU_KEY} action="update">
-            <Button variant="outline" onClick={() => setMasterOpen(true)}><Settings2 className="h-4 w-4" />จัดการข้อมูลตั้งต้น</Button>
-          </Can>
-        </CardContent></Card>
-
-        <section aria-label="Dashboard รายรับ-รายจ่าย">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-base font-semibold">Dashboard สรุปภาพรวม</h2>
-            <span className="text-xs text-muted-foreground">ตามตัวกรองที่เลือก</span>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
+            <span className="text-xs font-bold text-muted-foreground">ตัวกรองทำงานอัตโนมัติเมื่อเลือกข้อมูล</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Can menuKey={MENU_KEY} action="update">
+                <Button type="button" variant="outline" onClick={() => setMasterOpen(true)}><Settings2 className="h-4 w-4" />จัดการข้อมูลตั้งต้น</Button>
+              </Can>
+              <Button type="button" variant="outline" onClick={resetFilters} className="text-muted-foreground hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/30"><Eraser className="h-4 w-4" />ล้างตัวกรอง</Button>
+            </div>
           </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {dashboardCards.map((card) => (
-              <Card key={card.label}>
-                <CardContent className="flex items-start justify-between gap-3 p-5">
-                  <div className="min-w-0">
-                    <p className="text-sm text-muted-foreground">{card.label}</p>
-                  <p className={cn("mt-2 truncate text-2xl font-bold", card.valueClass)}>{card.value}</p>
-                  {card.details && (
-                    <div className="mt-3 space-y-1 text-xs text-muted-foreground">
-                      {card.details.map((detail) => <p key={detail}>{detail}</p>)}
-                    </div>
-                  )}
-                  </div>
-                  <div className={cn("rounded-xl p-2.5", card.iconClass)}>{card.icon}</div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        </section>
+        </form>
 
-        <Card><CardContent className="max-h-[70vh] overflow-auto">
+        <Card className="overflow-hidden"><CardContent className="p-0"><div className={dataListTableScrollClass}>
           <table className="w-full min-w-[1510px] table-fixed border-separate border-spacing-0 text-sm">
             <thead><tr className="text-left text-xs">
               {[
                 ['#', 50], ['วันที่', 90], ['หัวข้อ', 110], ['Description', 220], ['note', 140], ['หมายเหตุ', 140],
                 ['ใบกำกับภาษี', 110], ['ตรวจสอบแล้ว', 90], ['คำนวณต้นทุน', 100], ['ยอดรับ', 100],
                 ['ยอดจ่าย', 100], ['แผนก', 80], ['ผู้บันทึก', 100], ['จัดการ', 90],
-              ].map(([head, width]) => (
+              ].map(([head, width], index) => (
                 <th
                   key={head}
                   style={{ width }}
-                  className="sticky top-0 z-10 border-b bg-muted px-3 py-2 shadow-[0_1px_0_0_rgba(0,0,0,0.08)]"
+                  className={`${dataListTableHeaderCellClass} px-3 py-3 ${[9, 10].includes(index) ? "text-right" : index === 7 ? "text-center" : "text-left"}`}
                 >
                   {head}
                 </th>
               ))}
             </tr></thead>
-            <tbody>{rows.map((row, index) => <tr key={row.cfstate_id} className="border-b align-top">
-              <td className="px-3 py-2">{index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td>
+            <tbody className="divide-y">
+              {loading && <tr><td colSpan={14} className="px-4 py-12 text-center text-sm text-muted-foreground">กำลังโหลด...</td></tr>}
+              {!loading && rows.length === 0 && <tr><td colSpan={14} className="px-4 py-12 text-center text-sm text-muted-foreground">ไม่พบรายการตามตัวกรอง</td></tr>}
+              {!loading && rows.map((row, index) => <tr key={row.cfstate_id} className="align-top hover:bg-muted/40">
+              <td className="px-3 py-2">{pageSize === 0 ? index + 1 : ((page - 1) * pageSize) + index + 1}</td><td className="px-3 py-2">{formatDate(row.cfstate_date)}</td>
               <td className="px-3 py-2">{row.cfcat_name}</td>
               <td className="max-w-56 whitespace-normal px-3 py-2">{row.cfstate_detail || "-"}</td>
               <td className="px-3 py-2">{row.cflist_name}</td>
@@ -806,8 +834,15 @@ export function CrmCashflowStatementPage() {
               <td className="px-3 py-2">{row.cfstate_dep_name || "-"}</td><td className="px-3 py-2">{row.user_name}</td>
               <td className="px-3 py-2">
                 <div className="flex items-center gap-1">
-                  <Button size="icon" variant="ghost" title="Description" onClick={() => openDetails(row)}>
-                    <FileText className="h-4 w-4" />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 gap-1 px-2"
+                    title="ไฟล์แนบ"
+                    onClick={() => openDetails(row)}
+                  >
+                    <Paperclip className="h-4 w-4" />
+                    <span className="text-xs">{row.attachment_count}</span>
                   </Button>
                   <Can menuKey={MENU_KEY} action="delete">
                     <Button size="icon" variant="destructive" onClick={() => removeStatement(row.cfstate_id)}><Trash2 className="h-4 w-4" /></Button>
@@ -815,11 +850,18 @@ export function CrmCashflowStatementPage() {
                 </div>
               </td>
             </tr>)}</tbody>
-            <tfoot><tr className="bg-muted/30 font-semibold"><td colSpan={9} className="px-3 py-3 text-center">รวม {rows.length} รายการ</td><td className="px-3 py-3 text-right text-emerald-700">{money(sumRevenue)}</td><td className="px-3 py-3 text-right text-red-700">{money(sumExpenses)}</td><td colSpan={3} /></tr></tfoot>
+            <tfoot><tr className="bg-muted/30 font-semibold"><td colSpan={9} className="px-3 py-3 text-center">รวมทั้งหมด {total.toLocaleString("th-TH")} รายการ</td><td className="px-3 py-3 text-right text-emerald-700">{money(sumRevenue)}</td><td className="px-3 py-3 text-right text-red-700">{money(sumExpenses)}</td><td colSpan={3} /></tr></tfoot>
           </table>
-          {loading && <p className="py-8 text-center text-sm text-muted-foreground">กำลังโหลด...</p>}
-          {!loading && rows.length === 0 && <p className="py-8 text-center text-sm text-muted-foreground">ไม่พบรายการ</p>}
-        </CardContent></Card>
+        </div></CardContent></Card>
+
+        <DataListPagination
+          total={total}
+          page={page}
+          pageSize={pageSize}
+          onPageChange={setPage}
+          onPageSizeChange={(value) => { setPage(1); setPageSize(value); }}
+          updatedAt={updatedAt}
+        />
       </div>
 
       <Dialog open={entryOpen} onOpenChange={setEntryOpen}><DialogContent className="max-h-[92vh] max-w-6xl overflow-y-auto">
@@ -1080,29 +1122,86 @@ export function CrmCashflowStatementPage() {
       </Dialog>
 
       <Dialog open={!!detailStatement} onOpenChange={(open) => !open && closeDetails()}>
-        <DialogContent className="max-w-2xl border-0 bg-transparent p-0 pt-8 text-white shadow-none [&>button]:bg-black/50 [&>button]:p-1 [&>button]:opacity-100 [&>button]:hover:bg-black/70">
-          <DialogTitle className="sr-only">ไฟล์แนบ</DialogTitle>
-          <div className="max-h-[85vh] space-y-3 overflow-y-auto rounded-xl bg-white shadow-xl">
+        <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>จัดการไฟล์แนบ</DialogTitle>
+            <DialogDescription>
+              {detailStatement
+                ? `${formatDate(detailStatement.cfstate_date)} · ${detailStatement.cfcat_name} · ${money(detailStatement.cfstate_amount)}`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 p-6">
+            <Can menuKey={MENU_KEY} action="update">
+              {detailAttachments.length < 2 ? (
+                <label className={cn(
+                  "flex items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-sm text-muted-foreground",
+                  detailUploading ? "cursor-wait opacity-60" : "cursor-pointer hover:border-primary hover:bg-primary/5",
+                )}>
+                  <input
+                    type="file"
+                    accept=".jpg,.jpeg,.png,.pdf"
+                    className="hidden"
+                    disabled={detailUploading}
+                    onChange={(event) => {
+                      void uploadDetailAttachment(event.target.files?.[0] || null);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  <Upload className="h-5 w-5" />
+                  {detailUploading
+                    ? "กำลังอัปโหลด..."
+                    : `อัปโหลดรูปภาพหรือ PDF (${detailAttachments.length}/2, สูงสุด 10 MB)`}
+                </label>
+              ) : (
+                <p className="rounded-lg bg-amber-50 px-4 py-3 text-center text-sm text-amber-700">
+                  แนบได้สูงสุด 2 ไฟล์ต่อรายการ — ลบไฟล์เดิมก่อนเพื่ออัปโหลดใหม่
+                </p>
+              )}
+            </Can>
             {detailLoading ? (
               <p className="py-6 text-center text-sm text-muted-foreground">กำลังโหลด...</p>
             ) : detailAttachments.length === 0 ? (
-              <p className="py-6 text-center text-sm text-muted-foreground">ยังไม่มีไฟล์แนบ (แนบไฟล์ได้ที่หน้าติดตามใบกำกับภาษี)</p>
+              <p className="py-6 text-center text-sm text-muted-foreground">ยังไม่มีไฟล์แนบ</p>
             ) : (
               detailAttachments.map((attachment) => (
-                <div key={attachment.id}>
+                <div key={attachment.id} className="space-y-3 rounded-lg border p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{attachment.file_name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {Math.max(1, Math.round(attachment.file_size / 1024))} KB
+                          {attachment.uploaded_by ? ` · ${attachment.uploaded_by}` : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <Can menuKey={MENU_KEY} action="delete">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title="ลบไฟล์"
+                        disabled={detailDeletingId === attachment.id}
+                        onClick={() => deleteDetailAttachment(attachment.id)}
+                      >
+                        <X className="h-4 w-4 text-red-600" />
+                      </Button>
+                    </Can>
+                  </div>
                   {!attachment.previewUrl ? (
-                    <p className="py-4 text-center text-xs text-muted-foreground">กำลังโหลดไฟล์...</p>
+                    <p className="py-4 text-center text-xs text-muted-foreground">ไม่สามารถแสดงตัวอย่างไฟล์นี้ได้</p>
                   ) : attachment.content_type.startsWith("image/") ? (
                     <img
                       src={attachment.previewUrl}
                       alt={attachment.file_name}
-                      className="mx-auto max-h-[70vh] rounded-lg border object-contain"
+                      className="mx-auto max-h-[55vh] rounded-lg border object-contain"
                     />
                   ) : attachment.content_type === "application/pdf" ? (
                     <iframe
                       src={attachment.previewUrl}
                       title={attachment.file_name}
-                      className="h-[70vh] w-full rounded-lg border"
+                      className="h-[55vh] w-full rounded-lg border"
                     />
                   ) : (
                     <p className="py-4 text-center text-xs text-muted-foreground">ไม่สามารถแสดงไฟล์ประเภทนี้ได้</p>
@@ -1111,6 +1210,9 @@ export function CrmCashflowStatementPage() {
               ))
             )}
           </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeDetails}>ปิด</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
