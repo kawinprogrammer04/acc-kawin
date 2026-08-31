@@ -377,7 +377,7 @@ export function ExpenseRequestDetailPage() {
   const canEdit = isOwner && ["draft", "returned_for_correction"].includes(request.status);
   const canDelete = isOwner && ["draft", "cancelled"].includes(request.status);
   const hasAccountingRole = Boolean(user?.is_platform_admin || ["accountant", "admin", "super_admin"].includes(currentCompany?.role || ""));
-  const canAccountingView = Boolean((user?.permissions_configured || hasAccountingRole) && can("expense_accounting", "view"));
+  const canAccountingView = can("expense_accounting", "view");
   const canAccountingUpdate = hasAccountingRole && can("expense_accounting", "update");
   const canAccountingCancel = hasAccountingRole && can("expense_accounting", "delete");
   const canAccountingApprove = hasAccountingRole && can("expense_accounting", "approve");
