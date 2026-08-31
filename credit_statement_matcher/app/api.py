@@ -54,6 +54,7 @@ from app.main import (
     transaction_filters,
     upload_job_progress,
     _preview_rows,
+    _readonly_preview_form,
     _save_as_reference_items,
     _save_confirmed_preview,
     _submitted_preview_rows,
@@ -254,36 +255,44 @@ async def confirm_preview_api(preview_token: str, body: PreviewConfirmRequest) -
     token = _valid_token(preview_token)
     try:
         payload = load_preview(UPLOAD_DIR, token)
-        form: dict[str, str] = {}
-        for index, row in enumerate(body.rows):
-            form[f"include_{index}"] = "1" if row.include else "0"
-            form[f"reviewed_{index}"] = "1" if row.reviewed else "0"
-            form[f"transaction_date_{index}"] = row.transaction_date
-            form[f"description_{index}"] = row.description
-            form[f"amount_{index}"] = row.amount
-            form[f"card_last4_{index}"] = row.card_last4
-            form[f"tr_code_{index}"] = row.tr_code
-            form[f"channel_{index}"] = row.channel
-
         statement = dict(payload["statement"])
+        statement_type = str(statement.get("statement_type") or "")
         originals = list(statement.get("transactions") or [])
-        while len(originals) < len(body.rows):
-            row = body.rows[len(originals)]
-            originals.append(
-                {
-                    "transaction_date": None,
-                    "transaction_time": None,
-                    "description": "",
-                    "amount": None,
-                    "card_last4": None,
-                    "category": "ค่าโฆษณาออนไลน์",
-                    "channel": row.channel.strip()[:100] or None,
-                    "tr_code": None,
-                    "confidence": 0,
-                    "warnings": ["ผู้ใช้เพิ่มรายการเองจากหน้าตรวจสอบ"],
-                }
+        if statement_type == "ads_screenshot":
+            form = _readonly_preview_form(
+                statement,
+                [(row.include, row.reviewed) for row in body.rows],
             )
-        statement["transactions"] = originals
+        else:
+            form: dict[str, str] = {}
+            for index, row in enumerate(body.rows):
+                form[f"include_{index}"] = "1" if row.include else "0"
+                form[f"reviewed_{index}"] = "1" if row.reviewed else "0"
+                form[f"transaction_date_{index}"] = row.transaction_date
+                form[f"description_{index}"] = row.description
+                form[f"amount_{index}"] = row.amount
+                form[f"card_last4_{index}"] = row.card_last4
+                form[f"tr_code_{index}"] = row.tr_code
+                form[f"channel_{index}"] = row.channel
+
+            while len(originals) < len(body.rows):
+                row = body.rows[len(originals)]
+                originals.append(
+                    {
+                        "transaction_date": None,
+                        "transaction_time": None,
+                        "description": "",
+                        "amount": None,
+                        "card_last4": None,
+                        "category": "ค่าโฆษณาออนไลน์",
+                        "channel": row.channel.strip()[:100] or None,
+                        "tr_code": None,
+                        "confidence": 0,
+                        "warnings": ["ผู้ใช้เพิ่มรายการเองจากหน้าตรวจสอบ"],
+                    }
+                )
+            statement["transactions"] = originals
+
         transactions, rows, errors = _submitted_preview_rows(statement, form)
         if errors:
             visible_errors = "; ".join(errors[:6])
@@ -294,7 +303,6 @@ async def confirm_preview_api(preview_token: str, body: PreviewConfirmRequest) -
                 detail=f"พบ {len(errors)} แถวที่ยังยืนยันไม่ได้ — {visible_errors}",
             )
 
-        statement_type = str((payload.get("statement") or {}).get("statement_type") or "")
         if statement_type == "ads_screenshot":
             with closing(connect()) as db:
                 inserted = _save_as_reference_items(db, payload, transactions)

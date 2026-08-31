@@ -1050,6 +1050,33 @@ def _render_preview(
     )
 
 
+def _readonly_preview_form(
+    statement: dict[str, Any],
+    selections: list[tuple[bool, bool]],
+) -> dict[str, str]:
+    """Build confirmation fields from OCR originals, never from browser text."""
+    originals = list(statement.get("transactions") or [])
+    if len(selections) != len(originals):
+        raise ValueError(
+            "จำนวนรายการที่ยืนยันไม่ตรงกับข้อมูลที่ระบบอ่านได้ กรุณาอัปโหลดใหม่"
+        )
+    form: dict[str, str] = {}
+    for index, original in enumerate(originals):
+        include, reviewed = selections[index]
+        amount = original.get("amount")
+        form[f"include_{index}"] = "1" if include else "0"
+        form[f"reviewed_{index}"] = "1" if reviewed else "0"
+        form[f"transaction_date_{index}"] = str(
+            original.get("transaction_date") or ""
+        )
+        form[f"description_{index}"] = str(original.get("description") or "")
+        form[f"amount_{index}"] = "" if amount is None else str(amount)
+        form[f"card_last4_{index}"] = str(original.get("card_last4") or "")
+        form[f"tr_code_{index}"] = str(original.get("tr_code") or "")
+        form[f"channel_{index}"] = str(original.get("channel") or "")
+    return form
+
+
 def _submitted_preview_rows(
     statement: dict[str, Any], form: Any
 ) -> tuple[list[ParsedTransaction], list[dict[str, Any]], list[str]]:
