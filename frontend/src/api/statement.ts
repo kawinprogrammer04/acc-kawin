@@ -80,6 +80,7 @@ export interface Transaction {
   ref_date?: string | null;
   ref_party_name?: string | null;
   ref_ocr_reference?: string | null;
+  ref_stored_filename?: string | null;
 }
 
 export interface ReferenceItem {
@@ -93,6 +94,7 @@ export interface ReferenceItem {
   has_attachment: number;
   match_status: MatchStatus;
   notes: string | null;
+  stored_filename: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -144,6 +146,12 @@ export interface UploadJobStatus {
   elapsed_seconds: number;
   preview_token?: string;
   redirect_url?: string;
+  kind?: "statement" | "evidence_images";
+  statement_id?: number;
+  saved?: number;
+  matched?: number;
+  duplicates?: number;
+  skipped?: number;
   error?: string;
 }
 
@@ -330,7 +338,7 @@ export const referenceItemsApi = {
     const formData = new FormData();
     formData.append("file", file);
     return statementApi
-      .post<{ inserted: number }>("/reference-items/upload", formData, {
+      .post<{ inserted: number; matched: number }>("/reference-items/upload", formData, {
         headers: { "Content-Type": "multipart/form-data" },
       })
       .then((r) => r.data);

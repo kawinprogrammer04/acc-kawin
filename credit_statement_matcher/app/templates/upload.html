@@ -27,17 +27,17 @@
     <div class="workflow-step cta">
       <div class="ws-num">3</div>
       <div class="ws-body">
-        <strong>ดูผลการชนยอด</strong>
-        <span>กดปุ่มด้านล่างหลังอัปโหลดครบ</span>
+        <strong>ระบบบันทึกและจับคู่ให้</strong>
+        <span>เปิดผลให้ตรวจทันทีเมื่ออ่านเสร็จ</span>
       </div>
     </div>
   </section>
 
   <div style="text-align:center;margin-bottom:1.5rem">
     <a class="button primary" href="{{ root_path }}/review" style="font-size:1.05rem;padding:.7rem 2rem">
-      ไปหน้าจับคู่ &amp; ดูผล →
+      เปิดแดชบอร์ดตรวจผล →
     </a>
-    <p class="muted" style="margin-top:.5rem;font-size:.85rem">อัปโหลดครบทั้งสองส่วนแล้ว กดปุ่มนี้เพื่อรัน Auto Match และดูผล</p>
+    <p class="muted" style="margin-top:.5rem;font-size:.85rem">ไม่ต้องกดยืนยันการบันทึกหรือ Auto Match เพิ่ม ระบบทำให้หลังอ่านไฟล์เสร็จ</p>
   </div>
 
   <section class="upload-grid">
@@ -50,7 +50,7 @@
           <span>เลือก CSV, XLSX หรือ PDF</span>
           <input id="statement-file" type="file" name="file" accept=".csv,.xlsx,.pdf" required>
         </label>
-        <button id="upload-submit" class="button primary" type="submit">อ่านไฟล์และแสดง Preview</button>
+        <button id="upload-submit" class="button primary" type="submit">อัปโหลดและตรวจให้อัตโนมัติ</button>
         <small>ขนาดสูงสุด 25 MB · PDF สูงสุด 50 หน้า · OCR ทำงานเบื้องหลัง จึงไม่หลุดด้วย 504 ระหว่างรอ</small>
       </div>
 
@@ -64,7 +64,7 @@
           <li class="active">รับไฟล์และตรวจชนิดเอกสาร</li>
           <li>อ่าน text layer และโครงสร้างคอลัมน์</li>
           <li>ทำ OCR ไทย + อังกฤษเมื่อจำเป็น</li>
-          <li>เตรียมตาราง Preview และตรวจยอด</li>
+          <li>บันทึกรายการและจับคู่ให้อัตโนมัติ</li>
         </ol>
         <p class="processing-note">
           กำลังสร้างงาน OCR · ใช้เวลาแล้ว <strong id="processing-seconds">0</strong> วินาที
@@ -91,13 +91,13 @@
       <div class="upload-ready" id="image-upload-ready">
         <div class="upload-icon">🖼</div>
         <h2>อัปโหลด Screenshot (Ads)</h2>
-        <p>เลือกรูปภาพ screenshot จาก Ads ระบบอ่านข้อความไทยและอังกฤษในเครื่อง แล้วให้ตรวจข้อมูลก่อนบันทึก</p>
+        <p>เลือกรูปภาพ Screenshot จาก Ads ระบบจะอ่านข้อความ บันทึกหลักฐาน และลองจับคู่กับ Statement ให้อัตโนมัติ</p>
         <label class="file-picker">
           <span>เลือกรูปภาพ (JPG, PNG, WEBP)</span>
           <input id="image-files" type="file" name="files" accept=".jpg,.jpeg,.png,.webp" multiple required>
         </label>
         <p id="image-file-count" class="muted" style="min-height:1.2em"></p>
-        <button id="image-submit" class="button primary" type="submit">อ่านรูปภาพด้วย AI</button>
+        <button id="image-submit" class="button primary" type="submit">อัปโหลดและตรวจให้อัตโนมัติ</button>
         <small>สูงสุด 10 ไฟล์ · ไฟล์ละไม่เกิน 8 MB · ไม่เรียก Ollama และไม่ส่งรูปออกนอกเครื่อง</small>
       </div>
 
@@ -120,10 +120,10 @@
         <li>เปิดโฟลเดอร์บัตรที่ต้องการ</li>
         <li>เลือกรูปภาพทั้งหมดในโฟลเดอร์ (Ctrl+A / Cmd+A)</li>
         <li>คลิก "เลือกรูปภาพ" แล้ว drop หรือ select ทุกไฟล์</li>
-        <li>กด "อ่านรูปภาพด้วย AI" รอจนเสร็จ</li>
-        <li>ตรวจ Preview แล้วกด ยืนยัน</li>
+        <li>กด "อัปโหลดและตรวจให้อัตโนมัติ"</li>
+        <li>ระบบเปิดแดชบอร์ดให้ตรวจผลเมื่อเสร็จ</li>
       </ol>
-      <p class="muted">ระบบดึง: วันที่, เวลา, ยอดเงิน, Invoice No., TxID, เลขบัตร</p>
+      <p class="muted">ระบบดึง: วันที่, เวลา, ยอดเงิน, Invoice No., TxID, เลขบัตร · ข้อความที่อ่านได้เป็นข้อมูลอ่านอย่างเดียว</p>
     </aside>
   </section>
 
@@ -184,7 +184,7 @@
         "กำลังอัปโหลดและตรวจไฟล์",
         "กำลังอ่านโครงสร้าง Statement",
         "กำลังอ่านข้อความด้วย OCR",
-        "กำลังจัดรายการลงตาราง Preview"
+        "กำลังบันทึกและจับคู่รายการ"
       ];
       processingTitle.textContent = titles[activeStep];
       processingSteps.forEach((step, index) => {
@@ -242,7 +242,7 @@
       const imageTitles = [
         "กำลังอ่านรูปภาพและส่งให้ AI",
         "กำลังอ่านข้อความทีละภาพ เพื่อลดการใช้หน่วยความจำ",
-        "กำลังจัดรายการและเตรียม Preview",
+        "กำลังบันทึกและจับคู่รายการ",
       ];
       const startedAt = Date.now();
       window.setInterval(() => {

@@ -230,6 +230,9 @@ services:
       OPENBLAS_NUM_THREADS: "2"
       BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://backend:8000}
 
+    volumes:
+      - statement_uploads:/tmp/statement_uploads
+
     depends_on:
       db:
         condition: service_healthy
@@ -367,3 +370,4 @@ volumes:
   certbot_webroot:
   nginx_logs:
   backend_uploads:
+  statement_uploads:

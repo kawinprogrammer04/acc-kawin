@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { AlertCircle, CheckCircle2, FileImage, Loader2, Plus, Search, Trash2, UploadCloud } from "lucide-react";
+import { AlertCircle, CheckCircle2, ExternalLink, FileImage, Loader2, Plus, Search, Trash2, UploadCloud } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -10,7 +10,7 @@ import { formatCurrency, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { FilterPanel, FriendlyEmpty, ListPagination } from "./StatementUx";
 
-const STATUS_LABEL: Record<string, string> = { matched: "ตรวจเรียบร้อย", unmatched: "ต้องตรวจ", ignored: "ไม่นับ" };
+const STATUS_LABEL: Record<string, string> = { matched: "จับคู่แล้ว", unmatched: "ต้องตรวจ", ignored: "ไม่นับ" };
 const STATUS_CLASS: Record<string, string> = { matched: "bg-emerald-50 text-emerald-700", unmatched: "bg-amber-50 text-amber-700", ignored: "bg-slate-100 text-slate-600" };
 
 export function ReferencesTab() {
@@ -131,7 +131,7 @@ export function ReferencesTab() {
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Metric label="รายการทั้งหมด" value={String(stats.total ?? 0)} />
-        <Metric label="ตรวจเรียบร้อย" value={String(stats.matched ?? 0)} tone="text-emerald-600" />
+        <Metric label="จับคู่แล้ว" value={String(stats.matched ?? 0)} tone="text-emerald-600" />
         <Metric label="ต้องตรวจ" value={String(stats.unmatched ?? 0)} tone="text-amber-600" />
         <Metric label="ยังไม่มีเอกสาร" value={String(stats.missing_attachments ?? 0)} tone="text-rose-600" />
       </div>
@@ -145,7 +145,7 @@ export function ReferencesTab() {
                 <div key={s.source_filename} className={cn("flex items-center gap-3 px-4 py-2.5 text-sm", sourceFilter === s.source_filename && "bg-sky-50")}>
                   <button type="button" onClick={() => changeSource(s.source_filename)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
                     <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-violet-50 text-violet-700"><FileImage className="h-4 w-4" /></span>
-                    <span className="min-w-0"><span className="block truncate font-medium">{s.source_filename}</span><span className="text-xs text-muted-foreground">{s.total} รายการ · ตรวจแล้ว {s.matched} · {s.imported_at ? formatDate(s.imported_at) : ""}</span></span>
+                    <span className="min-w-0"><span className="block truncate font-medium">{s.source_filename}</span><span className="text-xs text-muted-foreground">{s.total} รายการ · จับคู่แล้ว {s.matched} · {s.imported_at ? formatDate(s.imported_at) : ""}</span></span>
                   </button>
                   <button type="button" aria-label={`ลบ ${s.source_filename}`} onClick={() => handleDeleteSource(s.source_filename)} className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground hover:bg-rose-50 hover:text-destructive">
                     <Trash2 className="h-4 w-4" />
@@ -180,7 +180,7 @@ export function ReferencesTab() {
               <table className="w-full text-sm">
                 <thead className="border-b bg-muted/30">
                   <tr>
-                    {["วันที่", "เลขอ้างอิง", "ช่องทาง/ชื่อ", "ยอดเงิน", "ไฟล์ต้นทาง", "สถานะ"].map((h) => (
+                    {["วันที่", "เลขอ้างอิง", "ช่องทาง/ชื่อ", "ยอดเงิน", "ไฟล์ต้นทาง", "สถานะ", "รูปหลักฐาน"].map((h) => (
                       <th key={h} className="px-4 py-3 text-left text-xs font-medium text-muted-foreground">{h}</th>
                     ))}
                   </tr>
@@ -195,6 +195,13 @@ export function ReferencesTab() {
                       <td className="max-w-[160px] truncate px-4 py-3 text-muted-foreground">{item.source_filename || "-"}</td>
                       <td className="px-4 py-3">
                         <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", STATUS_CLASS[item.match_status] ?? "bg-slate-100 text-slate-700")}>{STATUS_LABEL[item.match_status] ?? item.match_status}</span>
+                      </td>
+                      <td className="px-4 py-3">
+                        {item.stored_filename ? (
+                          <a href={`/statement/evidence/${item.stored_filename}`} target="_blank" rel="noreferrer" className="inline-flex h-8 items-center gap-1.5 rounded-md border bg-background px-2.5 text-xs font-medium hover:bg-muted">
+                            <ExternalLink className="h-3.5 w-3.5" /> ดูรูปต้นฉบับ
+                          </a>
+                        ) : <span className="text-xs text-muted-foreground">ไม่มีไฟล์รูป</span>}
                       </td>
                     </tr>
                   ))}

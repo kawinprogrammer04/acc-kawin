@@ -5,6 +5,18 @@
   {% if uploaded %}
     <div class="alert success"><strong>นำเข้าสำเร็จ</strong><span>Statement พร้อมตรวจแล้ว</span></div>
   {% endif %}
+  {% if auto_saved %}
+    <div class="alert success">
+      <strong>บันทึกและตรวจให้อัตโนมัติแล้ว</strong>
+      <span>
+        {% if saved %}บันทึก {{ saved }} รายการ{% endif %}
+        {% if auto_matched %} · จับคู่ให้แล้ว {{ auto_matched }} รายการ{% endif %}
+        {% if import_duplicates %} · พบข้อมูลซ้ำ {{ import_duplicates }} รายการ{% endif %}
+        {% if skipped %} · อ่านไม่ครบ {{ skipped }} รายการ จึงยังไม่บันทึก{% endif %}
+        {% if not saved and not auto_matched %}ไม่พบคู่ใหม่ที่มั่นใจพอ รายการเดิมยังอยู่ครบ{% endif %}
+      </span>
+    </div>
+  {% endif %}
 
   {% set total_rows     = totals.total or 0 %}
   {% set unmatched_rows = totals.unmatched or 0 %}
@@ -26,14 +38,12 @@
         <h2>ยังไม่มีข้อมูล Ads</h2>
         <div class="next-actions"><a class="button primary" href="{{ root_path }}/upload">← อัปโหลดรูป Ads</a></div>
       {% elif unmatched_rows %}
-        <p class="eyebrow">ขั้นตอนที่ 3 — พร้อมจับคู่</p>
-        <h2>กด Auto Match เพื่อชนยอดอัตโนมัติ</h2>
-        <p class="muted">Statement {{ total_rows }} รายการ · Ads {{ ref_stats.total or 0 }} รายการ</p>
+        <p class="eyebrow">ระบบตรวจให้รอบแรกแล้ว</p>
+        <h2>เหลือ {{ unmatched_rows }} รายการที่ต้องตรวจ</h2>
+        <p class="muted">ระบบไม่เดาคู่ที่คลุมเครือ คุณเลือกคู่ที่ถูกต้องเองได้ภายหลัง</p>
         <div class="next-actions">
-          <form method="post" action="{{ root_path }}/matches/auto">
-            {% if selected_statement_id %}<input type="hidden" name="statement_id" value="{{ selected_statement_id }}">{% endif %}
-            <button class="button primary" type="submit">🔍 Auto Match</button>
-          </form>
+          <a class="button primary" href="{{ root_path }}/review?{{ scope_query }}&issue=unmatched">ตรวจรายการที่เหลือ</a>
+          <a class="button secondary" href="{{ root_path }}/manual-edit">เลือกจับคู่เอง</a>
         </div>
       {% elif duplicate_rows or missing_docs %}
         <p class="eyebrow">เกือบครบ</p>
@@ -56,16 +66,18 @@
       <div class="progress-head"><span>ความคืบหน้า</span><strong>{{ done_percent }}%</strong></div>
       <div class="progress-bar"><span style="width:{{ done_percent }}%"></span></div>
       <div class="simple-stats">
-        <a href="{{ root_path }}/review?issue=matched"><strong>{{ matched_rows }}</strong><span>จับคู่แล้ว</span></a>
-        <a href="{{ root_path }}/review?issue=unmatched"><strong>{{ unmatched_rows }}</strong><span>รอตรวจ</span></a>
-        <a href="{{ root_path }}/review?issue=duplicates"><strong>{{ duplicate_rows }}</strong><span>ซ้ำ</span></a>
-        <a href="{{ root_path }}/review?issue=missing-attachments"><strong>{{ missing_docs }}</strong><span>เอกสารขาด</span></a>
+        <a href="{{ root_path }}/review?{{ scope_query }}&issue=matched"><strong>{{ matched_rows }}</strong><span>ตรงกันแล้ว</span></a>
+        <a href="{{ root_path }}/review?{{ scope_query }}&issue=unmatched"><strong>{{ unmatched_rows }}</strong><span>ต้องตรวจ</span></a>
+        <a href="{{ root_path }}/review?{{ scope_query }}&issue=duplicates"><strong>{{ duplicate_rows }}</strong><span>รายการซ้ำ</span></a>
+        <a href="{{ root_path }}/review?{{ scope_query }}&issue=missing-attachments"><strong>{{ missing_docs }}</strong><span>ไม่มีหลักฐาน</span></a>
+        <a href="{{ root_path }}/references"><strong>{{ ref_waiting }}</strong><span>หลักฐานยังไม่มีคู่</span></a>
       </div>
     </div>
   </section>
 
   {# ── Filters ─────────────────────────────────────────────────────────────── #}
   <form class="review-filter" method="get" action="{{ root_path }}/review">
+    <input type="hidden" name="view_all" value="1">
     <label>Statement
       <select name="statement_id" onchange="this.form.submit()">
         <option value="">ทั้งหมด</option>
@@ -75,12 +87,12 @@
       </select>
     </label>
     <div class="filter-pills">
-      <a class="{{ 'active' if not issue else '' }}" href="{{ root_path }}/review?statement_id={{ selected_statement_id or '' }}">ทั้งหมด</a>
-      <a class="{{ 'active' if issue == 'unmatched' else '' }}" href="{{ root_path }}/review?statement_id={{ selected_statement_id or '' }}&issue=unmatched">รอตรวจ</a>
-      <a class="{{ 'active' if issue == 'matched' else '' }}" href="{{ root_path }}/review?statement_id={{ selected_statement_id or '' }}&issue=matched">จับคู่แล้ว</a>
-      <a class="{{ 'active' if issue == 'duplicates' else '' }}" href="{{ root_path }}/review?statement_id={{ selected_statement_id or '' }}&issue=duplicates">ซ้ำ</a>
+      <a class="{{ 'active' if not issue else '' }}" href="{{ root_path }}/review?{{ scope_query }}">ทั้งหมด</a>
+      <a class="{{ 'active' if issue == 'unmatched' else '' }}" href="{{ root_path }}/review?{{ scope_query }}&issue=unmatched">ต้องตรวจ</a>
+      <a class="{{ 'active' if issue == 'matched' else '' }}" href="{{ root_path }}/review?{{ scope_query }}&issue=matched">ตรงกันแล้ว</a>
+      <a class="{{ 'active' if issue == 'duplicates' else '' }}" href="{{ root_path }}/review?{{ scope_query }}&issue=duplicates">รายการซ้ำ</a>
     </div>
-    <a class="button secondary" href="{{ root_path }}/references">Ads Refs {{ ref_waiting }} รายการ</a>
+    <a class="button secondary" href="{{ root_path }}/manual-edit">เลือกจับคู่เอง</a>
   </form>
 
   {# ── Main table ──────────────────────────────────────────────────────────── #}
@@ -104,7 +116,9 @@
 
               {# Status #}
               <td class="rv-status-cell">
-                {% if tx.match_status == 'matched' %}
+                {% if tx.is_duplicate %}
+                  <span class="rv-badge rv-badge-duplicate" title="รายการซ้ำ">!</span>
+                {% elif tx.match_status == 'matched' %}
                   <span class="rv-badge rv-badge-matched">✓</span>
                 {% elif tx.match_status == 'ignored' %}
                   <span class="rv-badge rv-badge-ignored">—</span>
@@ -173,6 +187,12 @@
                       <div class="rv-detail-row">
                         <span class="rv-detail-label">Invoice / ชื่อ</span>
                         <span class="rv-detail-val">{{ tx.ref_party_name }}</span>
+                      </div>
+                      {% endif %}
+                      {% if tx.ref_stored_filename %}
+                      <div class="rv-detail-row">
+                        <span class="rv-detail-label">รูปต้นฉบับ</span>
+                        <a class="button secondary" href="{{ root_path }}/evidence/{{ tx.ref_stored_filename }}" target="_blank" rel="noopener">เปิดดูรูปหลักฐาน</a>
                       </div>
                       {% endif %}
 
@@ -249,6 +269,7 @@
                                 <div class="rv-cmp-row rv-cmp-highlight"><span>Ref</span><code>{{ c.reference }}</code></div>
                                 {% if c.party_name %}<div class="rv-cmp-row"><span>Invoice</span>{{ c.party_name }}</div>{% endif %}
                                 <div class="rv-cmp-row rv-cmp-muted"><span>ไฟล์</span>{{ c.source_filename or "—" }}</div>
+                                {% if c.stored_filename %}<div class="rv-cmp-row"><span>รูป</span><a href="{{ root_path }}/evidence/{{ c.stored_filename }}" target="_blank" rel="noopener">เปิดรูปต้นฉบับ</a></div>{% endif %}
                               </div>
                             </div>
                             {% if c.match_reason %}
@@ -260,7 +281,8 @@
                       {% endfor %}
                     </div>
                   {% else %}
-                    <span class="rv-no-cand">ไม่พบยอดที่ตรงกัน</span>
+                    <div class="rv-no-cand">ไม่พบยอดที่ตรงกัน</div>
+                    <a class="button secondary rv-cand-btn" href="{{ root_path }}/manual-edit?status=unmatched">เลือกจับคู่เอง</a>
                   {% endif %}
 
                 {% else %}
@@ -274,7 +296,36 @@
       </table>
     </div>
   {% else %}
-    <div class="empty">ยังไม่มีรายการตามตัวกรองนี้</div>
+    <div class="empty">ไม่พบรายการตามเงื่อนไขที่เลือก</div>
+  {% endif %}
+
+  {% if filtered_total %}
+    {% set range_start = ((current_page - 1) * page_limit + 1) if page_limit else 1 %}
+    {% set range_end = ([current_page * page_limit, filtered_total]|min) if page_limit else filtered_total %}
+    <nav class="saved-pagination card" aria-label="เปลี่ยนหน้ารายการ">
+      <form method="get" action="{{ root_path }}/review" class="review-page-size">
+        {% if selected_statement_id %}<input type="hidden" name="statement_id" value="{{ selected_statement_id }}">{% else %}<input type="hidden" name="view_all" value="1">{% endif %}
+        {% if issue %}<input type="hidden" name="issue" value="{{ issue }}">{% endif %}
+        <label>แสดง
+          <select name="page_size" onchange="this.form.submit()">
+            {% for size in ['10', '25', '50', '100', 'all'] %}
+              <option value="{{ size }}" {{ 'selected' if page_size == size else '' }}>{{ 'ทั้งหมด' if size == 'all' else size }}</option>
+            {% endfor %}
+          </select>
+        </label>
+      </form>
+      <span>แสดง {{ range_start }}–{{ range_end }} จาก {{ filtered_total }} รายการ · หน้า {{ current_page }} / {{ total_pages }}</span>
+      {% if current_page > 1 %}
+        <a class="button secondary" href="{{ root_path }}/review?{{ pagination_query }}&page={{ current_page - 1 }}">← ก่อนหน้า</a>
+      {% else %}
+        <button class="button secondary" type="button" disabled>← ก่อนหน้า</button>
+      {% endif %}
+      {% if current_page < total_pages %}
+        <a class="button secondary" href="{{ root_path }}/review?{{ pagination_query }}&page={{ current_page + 1 }}">ถัดไป →</a>
+      {% else %}
+        <button class="button secondary" type="button" disabled>ถัดไป →</button>
+      {% endif %}
+    </nav>
   {% endif %}
 
   {# ── Confirm match dialog (shared, populated by JS) ── #}

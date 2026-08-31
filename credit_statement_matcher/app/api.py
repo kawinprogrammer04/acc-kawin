@@ -46,6 +46,7 @@ from app.main import (
     process_image_upload_job,
     queue_upload_job,
     read_upload,
+    run_auto_match,
     sync_statement_stats,
     SUMMARY_PLATFORM_LABELS,
     summary_platform_sql,
@@ -305,17 +306,29 @@ async def confirm_preview_api(preview_token: str, body: PreviewConfirmRequest) -
 
         if statement_type == "ads_screenshot":
             with closing(connect()) as db:
-                inserted = _save_as_reference_items(db, payload, transactions)
+                import_result = _save_as_reference_items(db, payload, transactions)
+                match_result = run_auto_match(db)
+                db.commit()
             delete_preview(UPLOAD_DIR, token)
-            return {"kind": "reference_items", "inserted": inserted}
+            return {
+                "kind": "reference_items",
+                **import_result,
+                "matched": match_result["matched"],
+            }
 
         data = read_preview_source(UPLOAD_DIR, payload)
         with closing(connect()) as db:
             statement_id = _save_confirmed_preview(db, payload, data, transactions)
+            match_result = run_auto_match(db, statement_id)
+            db.commit()
         delete_preview(UPLOAD_DIR, token)
     except (PreviewNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"kind": "statement", "statement_id": statement_id}
+    return {
+        "kind": "statement",
+        "statement_id": statement_id,
+        "matched": match_result["matched"],
+    }
 
 
 @api_router.post("/statements/preview/{preview_token}/cancel")
@@ -390,7 +403,8 @@ async def review_api(
                    ri.source_filename AS ref_source_filename,
                    ri.transaction_date AS ref_date,
                    ri.party_name AS ref_party_name,
-                   ri.reference AS ref_ocr_reference
+                   ri.reference AS ref_ocr_reference,
+                   ri.stored_filename AS ref_stored_filename
             FROM transactions t
             JOIN statements s ON s.id = t.statement_id
             LEFT JOIN match_groups mg ON mg.id = t.match_group_id
@@ -402,7 +416,7 @@ async def review_api(
                 t.transaction_date DESC,
                 t.transaction_time DESC,
                 t.id DESC
-            LIMIT 250
+            LIMIT 2000
             """,
             values,
         ).fetchall()
@@ -689,44 +703,9 @@ class AutoMatchRequest(BaseModel):
 @api_router.post("/matches/auto")
 async def auto_match_api(body: AutoMatchRequest) -> dict[str, Any]:
     with closing(connect()) as db:
-        clauses = ["t.match_status = 'unmatched'", "t.is_duplicate = 0"]
-        values: list[Any] = []
-        if body.statement_id:
-            clauses.append("t.statement_id = ?")
-            values.append(body.statement_id)
-        rows = db.execute(
-            f"""
-            SELECT t.* FROM transactions t
-            WHERE {" AND ".join(clauses)}
-            ORDER BY t.transaction_date, t.transaction_time, t.id
-            """,
-            values,
-        ).fetchall()
-        matched = 0
-        for row in rows:
-            candidates = candidate_reference_items(db, row, limit=2)
-            if not candidates:
-                continue
-            candidate = candidates[0]
-            next_score = candidates[1]["match_score"] if len(candidates) > 1 else 0
-            if candidate["match_score"] < 82 or candidate["match_score"] - next_score < 12:
-                continue
-            if parse_iso_date(candidate.get("transaction_date")) != parse_iso_date(row["transaction_date"]):
-                continue
-            create_match_group(
-                db,
-                [row],
-                reference=candidate["reference"],
-                expected_cents=money_cents(candidate["amount"]),
-                has_attachment=int(candidate["has_attachment"] or 0),
-                method="auto_exact_amount_date_name",
-                notes=f"auto matched by exact amount/date/name; score={candidate['match_score']}; {candidate['match_reason']}",
-                reference_item_id=int(candidate["id"]),
-            )
-            matched += 1
-        audit(db, "auto_match", "transactions", body.statement_id or "all", f"matched {matched} rows")
+        result = run_auto_match(db, body.statement_id)
         db.commit()
-    return {"matched": matched}
+    return result
 
 
 @api_router.delete("/matches/{group_id}")
@@ -948,8 +927,9 @@ async def upload_reference_items_api(file: UploadFile = File(...)) -> dict[str, 
             inserted += 1
             existing_hashes.add(item["row_hash"])
         audit(db, "upload_references", "reference_items", original_name, f"inserted {inserted} rows")
+        match_result = run_auto_match(db)
         db.commit()
-    return {"inserted": inserted}
+    return {"inserted": inserted, "matched": match_result["matched"]}
 
 
 @api_router.delete("/reference-items/sources/{source_filename}")

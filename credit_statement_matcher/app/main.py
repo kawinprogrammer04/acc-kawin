@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
@@ -17,14 +18,15 @@ import uuid
 # silently dropped. `docker logs acc_statement` needs this to show anything.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 from contextlib import asynccontextmanager, closing
+from dataclasses import asdict
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -122,6 +124,9 @@ def init_database() -> None:
         )
         db.execute(
             "ALTER TABLE statements ADD COLUMN IF NOT EXISTS parse_warnings TEXT"
+        )
+        db.execute(
+            "ALTER TABLE reference_items ADD COLUMN IF NOT EXISTS stored_filename TEXT"
         )
         db.commit()
 
@@ -664,6 +669,79 @@ def candidate_reference_items(db: PgConnection, tx: dict[str, Any], limit: int =
     return scored[:limit]
 
 
+def run_auto_match(
+    db: PgConnection,
+    statement_id: int | None = None,
+) -> dict[str, int]:
+    """Persist only high-confidence matches and leave ambiguous rows for review."""
+    clauses = ["t.match_status = 'unmatched'", "t.is_duplicate = 0"]
+    values: list[Any] = []
+    if statement_id:
+        clauses.append("t.statement_id = ?")
+        values.append(statement_id)
+    rows = db.execute(
+        f"""
+        SELECT t.*
+        FROM transactions t
+        WHERE {" AND ".join(clauses)}
+        ORDER BY t.transaction_date, t.transaction_time, t.id
+        """,
+        values,
+    ).fetchall()
+    matched = 0
+    ambiguous = 0
+    no_candidate = 0
+    for row in rows:
+        candidates = candidate_reference_items(db, row, limit=2)
+        if not candidates:
+            no_candidate += 1
+            continue
+        candidate = candidates[0]
+        next_score = candidates[1]["match_score"] if len(candidates) > 1 else 0
+        same_date = (
+            parse_iso_date(candidate.get("transaction_date"))
+            == parse_iso_date(row["transaction_date"])
+        )
+        confident = (
+            candidate["match_score"] >= 82
+            and candidate["match_score"] - next_score >= 12
+            and same_date
+        )
+        if not confident:
+            ambiguous += 1
+            continue
+        create_match_group(
+            db,
+            [row],
+            reference=candidate["reference"],
+            expected_cents=money_cents(candidate["amount"]),
+            has_attachment=int(candidate["has_attachment"] or 0),
+            method="auto_exact_amount_date_name",
+            notes=(
+                "ระบบจับคู่อัตโนมัติ; "
+                f"ความมั่นใจ={candidate['match_score']}; {candidate['match_reason']}"
+            ),
+            reference_item_id=int(candidate["id"]),
+        )
+        matched += 1
+    audit(
+        db,
+        "auto_match",
+        "transactions",
+        statement_id or "all",
+        (
+            f"considered {len(rows)} rows; matched {matched}; "
+            f"needs_review {ambiguous}; no_candidate {no_candidate}"
+        ),
+    )
+    return {
+        "considered": len(rows),
+        "matched": matched,
+        "needs_review": ambiguous,
+        "no_candidate": no_candidate,
+    }
+
+
 def create_match_group(
     db: PgConnection,
     tx_rows: list[dict[str, Any]],
@@ -829,7 +907,7 @@ def upload_job_progress(job: dict[str, Any], *, now: float | None = None) -> dic
             message = "OCR กำลังอ่านเอกสารหลายหน้า กรุณารอสักครู่"
     elif status == "complete":
         step = 3
-        message = "อ่านไฟล์เสร็จแล้ว กำลังเปิดตาราง Preview"
+        message = "บันทึกและจับคู่ให้อัตโนมัติแล้ว กำลังเปิดหน้าตรวจสอบ"
     else:
         step = 3
         message = "ประมวลผลไม่สำเร็จ"
@@ -839,13 +917,75 @@ def upload_job_progress(job: dict[str, Any], *, now: float | None = None) -> dic
         "message": message,
         "elapsed_seconds": elapsed,
     }
-    if status == "complete" and job.get("preview_token"):
+    for key in ("kind", "statement_id", "saved", "matched", "duplicates", "skipped"):
+        if key in job:
+            result[key] = job[key]
+    if status == "complete" and job.get("redirect_url"):
+        result["redirect_url"] = str(job["redirect_url"])
+    elif status == "complete" and job.get("preview_token"):
         result["redirect_url"] = (
             f"{ROOT_PATH}/preview/{job['preview_token']}"
         )
     if status == "failed":
         result["error"] = str(job.get("error") or "ไม่สามารถอ่าน Statement ได้")
     return result
+
+
+def _automatic_upload_payload(
+    original_name: str,
+    data: bytes,
+    statement: Any,
+) -> dict[str, Any]:
+    return {
+        "original_name": Path(original_name).name,
+        "file_sha256": hashlib.sha256(data).hexdigest(),
+        "statement": asdict(statement),
+    }
+
+
+def _auto_savable_transactions(statement: Any) -> tuple[list[ParsedTransaction], int]:
+    """Keep OCR values unchanged; only omit rows the database cannot store."""
+    is_evidence = str(getattr(statement, "statement_type", "")) == "ads_screenshot"
+    valid: list[ParsedTransaction] = []
+    skipped = 0
+    for item in list(getattr(statement, "transactions", []) or []):
+        can_save = bool(
+            (item.transaction_date or is_evidence)
+            and (item.description or "").strip()
+            and item.amount is not None
+        )
+        if can_save:
+            valid.append(item)
+        else:
+            skipped += 1
+    return valid, skipped
+
+
+def _store_evidence_images(
+    image_items: list[tuple[str, bytes]],
+) -> dict[str, str]:
+    """Archive uploaded evidence locally and return original-to-stored names."""
+    evidence_dir = UPLOAD_DIR / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    stored: dict[str, str] = {}
+    for original_name, data in image_items:
+        digest = hashlib.sha256(data).hexdigest()
+        guessed_ext = Path(original_name).suffix.lower()
+        if data.startswith(b"\xff\xd8\xff"):
+            guessed_ext = ".jpg"
+        elif data.startswith(b"\x89PNG\r\n\x1a\n"):
+            guessed_ext = ".png"
+        elif data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            guessed_ext = ".webp"
+        if guessed_ext not in ALLOWED_IMAGE_EXTS:
+            guessed_ext = ".jpg"
+        stored_name = f"{digest}{guessed_ext}"
+        stored_path = evidence_dir / stored_name
+        if not stored_path.exists():
+            stored_path.write_bytes(data)
+            stored_path.chmod(0o600)
+        stored[Path(original_name).name] = stored_name
+    return stored
 
 
 async def process_upload_job(
@@ -876,16 +1016,28 @@ async def process_upload_job(
                 original_name,
                 data,
             )
-            preview_token = await asyncio.to_thread(
-                create_preview,
-                UPLOAD_DIR,
-                original_name,
-                data,
-                statement,
+            transactions, skipped = _auto_savable_transactions(statement)
+            if not transactions:
+                raise ValueError("ไม่พบรายการที่บันทึกได้ใน Statement นี้")
+            payload = _automatic_upload_payload(original_name, data, statement)
+            with closing(connect()) as db:
+                statement_id = _save_confirmed_preview(
+                    db, payload, data, transactions
+                )
+                match_result = run_auto_match(db, statement_id)
+                db.commit()
+            redirect_url = (
+                f"{ROOT_PATH}/review?statement_id={statement_id}&auto_saved=1"
+                f"&saved={len(transactions)}&matched={match_result['matched']}"
+                f"&skipped={skipped}"
             )
             job.update(
                 status="complete",
-                preview_token=preview_token,
+                redirect_url=redirect_url,
+                statement_id=statement_id,
+                saved=len(transactions),
+                matched=match_result["matched"],
+                skipped=skipped,
                 updated_at=time.time(),
             )
     except ValueError as exc:
@@ -935,17 +1087,35 @@ async def process_image_upload_job(
                 updated_at=time.time(),
             )
             statement = await parse_images_with_local_ocr(image_items)
-            preview_token = await asyncio.to_thread(
-                create_preview,
-                UPLOAD_DIR,
-                original_name,
-                bundle_data,
-                statement,
-                preview_files=image_items,
+            transactions, skipped = _auto_savable_transactions(statement)
+            if not transactions:
+                raise ValueError("อ่านข้อความจากรูปได้ไม่ครบพอสำหรับบันทึกรายการ")
+            payload = _automatic_upload_payload(original_name, bundle_data, statement)
+            stored_images = await asyncio.to_thread(
+                _store_evidence_images, image_items
+            )
+            with closing(connect()) as db:
+                import_result = _save_as_reference_items(
+                    db,
+                    payload,
+                    transactions,
+                    stored_images=stored_images,
+                )
+                match_result = run_auto_match(db)
+                db.commit()
+            redirect_url = (
+                f"{ROOT_PATH}/review?view_all=1&auto_saved=1"
+                f"&saved={import_result['inserted']}"
+                f"&duplicates={import_result['duplicates']}"
+                f"&matched={match_result['matched']}&skipped={skipped}"
             )
             job.update(
                 status="complete",
-                preview_token=preview_token,
+                redirect_url=redirect_url,
+                saved=import_result["inserted"],
+                duplicates=import_result["duplicates"],
+                matched=match_result["matched"],
+                skipped=skipped,
                 updated_at=time.time(),
             )
     except ValueError as exc:
@@ -982,6 +1152,7 @@ def queue_upload_job(original_name: str, data: bytes, digest: str) -> str:
         "token": token,
         "original_name": original_name,
         "file_sha256": digest,
+        "kind": "statement",
         "status": "queued",
         "created_at": created_at,
         "updated_at": created_at,
@@ -1169,8 +1340,10 @@ def _save_as_reference_items(
     db: PgConnection,
     payload: dict[str, Any],
     transactions: list[ParsedTransaction],
-) -> int:
-    """Save reviewed Ads evidence as reference_items (not transactions)."""
+    *,
+    stored_images: dict[str, str] | None = None,
+) -> dict[str, int]:
+    """Save Ads evidence exactly as OCR read it, without editable confirmation."""
     source_filename = Path(str(payload.get("original_name") or "ads_evidence")).name
     existing_hashes = {
         row["row_hash"]
@@ -1179,8 +1352,10 @@ def _save_as_reference_items(
         ).fetchall()
     }
     inserted = 0
+    duplicates = 0
     for item in transactions:
         if item.row_hash and item.row_hash in existing_hashes:
+            duplicates += 1
             continue
         # reference = payment_reference code (e.g. NJSA6KMPM2); fallback to invoice_no
         reference = (item.tr_code or "").strip()
@@ -1197,13 +1372,15 @@ def _save_as_reference_items(
             t.strftime("%H:%M:%S") if hasattr(t, "strftime")
             else (str(t)[:8] if t else None)
         )
-        channel_name = item.channel or source_filename
+        channel_name = Path(item.channel or source_filename).name
+        stored_filename = (stored_images or {}).get(channel_name)
         db.execute(
             """
             INSERT INTO reference_items (
                 source_filename, reference, transaction_date, transaction_time,
-                amount, party_name, notes, row_hash
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                amount, party_name, has_attachment, notes, row_hash,
+                stored_filename
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 channel_name,
@@ -1212,8 +1389,10 @@ def _save_as_reference_items(
                 time_str,
                 item.amount,
                 party_name,
+                1 if stored_filename else 0,
                 item.description,
                 item.row_hash,
+                stored_filename,
             ),
         )
         inserted += 1
@@ -1224,10 +1403,10 @@ def _save_as_reference_items(
         "upload_images_as_references",
         "reference_items",
         source_filename,
-        f"inserted {inserted} rows from Ads evidence images",
+        f"inserted {inserted} rows; duplicates {duplicates} from Ads evidence images",
     )
     db.commit()
-    return inserted
+    return {"inserted": inserted, "duplicates": duplicates}
 
 
 def _save_confirmed_preview(
@@ -1450,14 +1629,23 @@ async def confirm_statement_upload(request: Request) -> HTMLResponse:
         if statement_type == "ads_screenshot":
             # TikTok Ads screenshots → save as reference_items (not transactions)
             with closing(connect()) as db:
-                inserted = _save_as_reference_items(db, payload, transactions)
+                import_result = _save_as_reference_items(db, payload, transactions)
+                match_result = run_auto_match(db)
+                db.commit()
             delete_preview(UPLOAD_DIR, token)
-            return redirect(f"/references?imported=1&inserted={inserted}")
+            return redirect(
+                "/review?view_all=1&auto_saved=1"
+                f"&saved={import_result['inserted']}"
+                f"&duplicates={import_result['duplicates']}"
+                f"&matched={match_result['matched']}"
+            )
         data = read_preview_source(UPLOAD_DIR, payload)
         with closing(connect()) as db:
             statement_id = _save_confirmed_preview(
                 db, payload, data, transactions
             )
+            match_result = run_auto_match(db, statement_id)
+            db.commit()
         delete_preview(UPLOAD_DIR, token)
     except (PreviewNotFoundError, ValueError) as exc:
         return page(
@@ -1468,7 +1656,10 @@ async def confirm_statement_upload(request: Request) -> HTMLResponse:
             error=str(exc),
             status_code=422,
         )
-    return redirect(f"/transactions?statement_id={statement_id}&uploaded=1")
+    return redirect(
+        f"/review?statement_id={statement_id}&auto_saved=1"
+        f"&saved={len(transactions)}&matched={match_result['matched']}"
+    )
 
 
 @app.post("/upload/cancel")
@@ -1593,12 +1784,20 @@ async def review_page(
     statement_id: int | None = None,
     issue: str | None = None,
     uploaded: int | None = None,
+    auto_saved: int | None = None,
+    saved: int = 0,
+    matched: int = 0,
+    duplicates: int = 0,
+    skipped: int = 0,
+    view_all: int | None = None,
+    page_number: int = Query(1, alias="page", ge=1),
+    page_size: str = "25",
 ) -> HTMLResponse:
     with closing(connect()) as db:
         statements = db.execute(
             "SELECT * FROM statements ORDER BY uploaded_at DESC, id DESC"
         ).fetchall()
-        if statement_id is None and statements:
+        if statement_id is None and statements and not view_all:
             statement_id = int(statements[0]["id"])
 
         clauses: list[str] = []
@@ -1616,6 +1815,27 @@ async def review_page(
             clauses.append("t.match_status = 'matched'")
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        filtered_total = int(
+            db.execute(
+                f"SELECT COUNT(*) AS total FROM transactions t {where}",
+                values,
+            ).fetchone()["total"]
+            or 0
+        )
+        allowed_page_sizes = {"10": 10, "25": 25, "50": 50, "100": 100}
+        selected_page_size = page_size if page_size in {*allowed_page_sizes, "all"} else "25"
+        page_limit = allowed_page_sizes.get(selected_page_size)
+        total_pages = (
+            max(1, (filtered_total + page_limit - 1) // page_limit)
+            if page_limit
+            else 1
+        )
+        current_page = min(page_number, total_pages)
+        pagination_sql = ""
+        row_values = list(values)
+        if page_limit:
+            pagination_sql = "LIMIT ? OFFSET ?"
+            row_values.extend((page_limit, (current_page - 1) * page_limit))
         rows = db.execute(
             f"""
             SELECT t.*, s.original_filename,
@@ -1624,7 +1844,8 @@ async def review_page(
                    ri.source_filename AS ref_source_filename,
                    ri.transaction_date AS ref_date,
                    ri.party_name AS ref_party_name,
-                   ri.reference AS ref_ocr_reference
+                   ri.reference AS ref_ocr_reference,
+                   ri.stored_filename AS ref_stored_filename
             FROM transactions t
             JOIN statements s ON s.id = t.statement_id
             LEFT JOIN match_groups mg ON mg.id = t.match_group_id
@@ -1636,9 +1857,9 @@ async def review_page(
                 t.transaction_date DESC,
                 t.transaction_time DESC,
                 t.id DESC
-            LIMIT 250
+            {pagination_sql}
             """,
-            values,
+            row_values,
         ).fetchall()
         totals = db.execute(
             f"""
@@ -1670,6 +1891,16 @@ async def review_page(
             if row["match_status"] == "unmatched" and not row["is_duplicate"]:
                 candidates_by_tx[int(row["id"])] = candidate_reference_items(db, row, limit=3)
 
+    scope_params = (
+        {"statement_id": statement_id}
+        if statement_id
+        else {"view_all": 1}
+    )
+    pagination_params = dict(scope_params)
+    if issue:
+        pagination_params["issue"] = issue
+    pagination_params["page_size"] = selected_page_size
+
     return page(
         request,
         "review.html",
@@ -1678,10 +1909,23 @@ async def review_page(
         selected_statement_id=statement_id,
         issue=issue or "",
         uploaded=bool(uploaded),
+        auto_saved=bool(auto_saved),
+        saved=max(0, saved),
+        auto_matched=max(0, matched),
+        import_duplicates=max(0, duplicates),
+        skipped=max(0, skipped),
+        view_all=bool(view_all),
         rows=rows,
         totals=totals,
         ref_stats=ref_stats,
         candidates_by_tx=candidates_by_tx,
+        filtered_total=filtered_total,
+        current_page=current_page,
+        total_pages=total_pages,
+        page_size=selected_page_size,
+        page_limit=page_limit,
+        scope_query=urlencode(scope_params),
+        pagination_query=urlencode(pagination_params),
     )
 
 
@@ -2066,6 +2310,26 @@ async def update_reference_item(
     return redirect(safe_next)
 
 
+@app.get("/evidence/{stored_filename}")
+async def evidence_image(stored_filename: str) -> Response:
+    if not re.fullmatch(r"[0-9a-f]{64}\.(?:jpg|jpeg|png|webp)", stored_filename):
+        raise HTTPException(status_code=404, detail="ไม่พบรูปหลักฐาน")
+    with closing(connect()) as db:
+        exists = db.execute(
+            "SELECT 1 FROM reference_items WHERE stored_filename = ? LIMIT 1",
+            (stored_filename,),
+        ).fetchone()
+    evidence_path = UPLOAD_DIR / "evidence" / stored_filename
+    if not exists or not evidence_path.is_file():
+        raise HTTPException(status_code=404, detail="ไม่พบรูปหลักฐาน")
+    media_type = mimetypes.guess_type(stored_filename)[0] or "application/octet-stream"
+    return Response(
+        evidence_path.read_bytes(),
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
 @app.get("/references", response_class=HTMLResponse)
 async def references_page(
     request: Request,
@@ -2161,8 +2425,12 @@ async def upload_references(request: Request, file: UploadFile = File(...)):
             inserted += 1
             existing_hashes.add(item["row_hash"])
         audit(db, "upload_references", "reference_items", original_name, f"inserted {inserted} rows")
+        match_result = run_auto_match(db)
         db.commit()
-    return redirect("/references?imported=1")
+    return redirect(
+        "/review?view_all=1&auto_saved=1"
+        f"&saved={inserted}&matched={match_result['matched']}"
+    )
 
 
 @app.post("/references/source/delete")
@@ -2297,46 +2565,12 @@ async def match_with_reference(
 @app.post("/matches/auto")
 async def auto_match(statement_id: int | None = Form(None)) -> RedirectResponse:
     with closing(connect()) as db:
-        clauses = ["t.match_status = 'unmatched'", "t.is_duplicate = 0"]
-        values: list[Any] = []
-        if statement_id:
-            clauses.append("t.statement_id = ?")
-            values.append(statement_id)
-        rows = db.execute(
-            f"""
-            SELECT t.*
-            FROM transactions t
-            WHERE {" AND ".join(clauses)}
-            ORDER BY t.transaction_date, t.transaction_time, t.id
-            """,
-            values,
-        ).fetchall()
-        matched = 0
-        for row in rows:
-            candidates = candidate_reference_items(db, row, limit=2)
-            if not candidates:
-                continue
-            candidate = candidates[0]
-            next_score = candidates[1]["match_score"] if len(candidates) > 1 else 0
-            if candidate["match_score"] < 82 or candidate["match_score"] - next_score < 12:
-                continue
-            # auto-match ต้องการวันที่ตรงเสมอ (text-only match ข้ามไป)
-            if parse_iso_date(candidate.get("transaction_date")) != parse_iso_date(row["transaction_date"]):
-                continue
-            create_match_group(
-                db,
-                [row],
-                reference=candidate["reference"],
-                expected_cents=money_cents(candidate["amount"]),
-                has_attachment=int(candidate["has_attachment"] or 0),
-                method="auto_exact_amount_date_name",
-                notes=f"auto matched by exact amount/date/name; score={candidate['match_score']}; {candidate['match_reason']}",
-                reference_item_id=int(candidate["id"]),
-            )
-            matched += 1
-        audit(db, "auto_match", "transactions", statement_id or "all", f"matched {matched} rows")
+        result = run_auto_match(db, statement_id)
         db.commit()
-    return redirect("/review")
+    target = f"/review?statement_id={statement_id}" if statement_id else "/review?view_all=1"
+    return redirect(
+        f"{target}&auto_saved=1&saved=0&matched={result['matched']}"
+    )
 
 
 @app.post("/matches/{group_id}/remove")

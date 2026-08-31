@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertCircle, CheckCircle2, ChevronDown, ChevronUp, FileSearch, Loader2,
-  Search, Sparkles, Undo2,
+  Search, Undo2,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -12,7 +12,7 @@ import { formatCurrency, formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { FilterPanel, FriendlyEmpty, ListPagination, StatementJourney } from "./StatementUx";
 
-const STATUS_LABEL: Record<string, string> = { matched: "ตรวจเรียบร้อย", unmatched: "ต้องตรวจ", ignored: "ไม่นับ" };
+const STATUS_LABEL: Record<string, string> = { matched: "จับคู่แล้ว", unmatched: "ต้องตรวจ", ignored: "ไม่นับ" };
 const STATUS_CLASS: Record<string, string> = {
   matched: "bg-emerald-50 text-emerald-700",
   unmatched: "bg-amber-50 text-amber-700",
@@ -42,7 +42,6 @@ export function ReviewTab() {
   const [pageSize, setPageSize] = useState(25);
   const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
   const [busyId, setBusyId] = useState<number | null>(null);
-  const [autoMatching, setAutoMatching] = useState(false);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -56,10 +55,9 @@ export function ReviewTab() {
         ...scopedFilters,
         statement_id: statementId === "" ? undefined : statementId,
         issue: issue || undefined,
-        all_statements: summaryScope && statementId === "" ? true : undefined,
+        all_statements: statementId === "" ? true : undefined,
       });
       setData(result);
-      if (!summaryScope && statementId === "" && result.selected_statement_id) setStatementId(result.selected_statement_id);
     } catch (err) {
       setError(getApiErrorMessage(err, "โหลดข้อมูลตรวจสอบไม่สำเร็จ"));
     } finally {
@@ -126,20 +124,6 @@ export function ReviewTab() {
     }
   };
 
-  const handleAutoMatch = async () => {
-    setAutoMatching(true);
-    setError(null);
-    try {
-      const result = await matchesApi.auto(statementId === "" ? undefined : statementId);
-      showToast(`ระบบช่วยจับคู่ได้ ${result.matched} รายการ`);
-      load();
-    } catch (err) {
-      setError(getApiErrorMessage(err, "ระบบช่วยจับคู่ไม่สำเร็จ"));
-    } finally {
-      setAutoMatching(false);
-    }
-  };
-
   const filteredRows = useMemo(() => {
     const keyword = query.trim().toLocaleLowerCase("th");
     if (!keyword) return data?.rows ?? [];
@@ -163,14 +147,12 @@ export function ReviewTab() {
     <div className="space-y-5 p-4 sm:p-6">
       <StatementJourney active="review" />
       <PageHeader
-        title="ตรวจยอดที่ต้องจัดการ"
-        subtitle="เริ่มจากรายการสีเหลือง ระบบจะซ่อนรายละเอียดที่ยังไม่จำเป็นเพื่อให้ไล่ตรวจได้เร็วขึ้น"
+        title="แดชบอร์ดตรวจผลการจับคู่"
+        subtitle="ระบบจับคู่รายการที่มั่นใจให้แล้ว เริ่มตรวจจากรายการสีเหลืองหรือรายการซ้ำ และเปลี่ยนคู่เองได้ทุกเมื่อ"
         actions={
-          <button type="button" onClick={handleAutoMatch} disabled={autoMatching}
-            className="flex items-center gap-2 rounded-md bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-50">
-            {autoMatching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-            ให้ระบบช่วยจับคู่
-          </button>
+          <Link to="/statement?tab=manual-edit" className="flex items-center gap-2 rounded-md bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-700">
+            เลือกจับคู่เอง
+          </Link>
         }
       />
 
@@ -189,12 +171,13 @@ export function ReviewTab() {
       )}
 
       {totals && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
           <Metric label="รายการในไฟล์" value={String(totals.total)} helper="ทั้งหมด" />
-          <Metric label="ตรวจเรียบร้อย" value={String(totals.matched)} tone="emerald" onClick={() => changeIssue("matched")} helper="ดูรายการ" />
+          <Metric label="จับคู่แล้ว" value={String(totals.matched)} tone="emerald" onClick={() => changeIssue("matched")} helper="เปิดตรวจผล" />
           <Metric label="ควรตรวจต่อ" value={String(totals.unmatched)} tone="amber" onClick={() => changeIssue("unmatched")} helper="เริ่มจากตรงนี้" />
           <Metric label="อาจซ้ำ" value={String(totals.duplicates)} tone="rose" onClick={() => changeIssue("duplicates")} helper="ตรวจความซ้ำ" />
           <Metric label="ยอดชำระ/เงินคืน" value={formatCurrency(totals.deposits)} helper="ยอดรวม" />
+          <Metric label="หลักฐานยังไม่มีคู่" value={String(data?.ref_stats.unmatched ?? 0)} tone="amber" helper="รอ Statement ที่ตรงกัน" />
         </div>
       )}
 
@@ -211,7 +194,7 @@ export function ReviewTab() {
           <select value={issue} onChange={(event) => changeIssue(event.target.value)} className="mt-1.5 h-9 w-full rounded-md border bg-background px-3 text-sm text-foreground">
             <option value="">ทุกสถานะ</option>
             <option value="unmatched">ต้องตรวจ</option>
-            <option value="matched">ตรวจเรียบร้อย</option>
+            <option value="matched">จับคู่แล้ว</option>
             <option value="duplicates">อาจเป็นรายการซ้ำ</option>
             <option value="missing-attachments">ยังไม่มีหลักฐาน</option>
           </select>
@@ -243,7 +226,7 @@ export function ReviewTab() {
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="min-w-0 truncate text-sm font-semibold">{row.description}</p>
-                          {row.is_duplicate && <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-700">อาจซ้ำ</span>}
+                          {Boolean(row.is_duplicate) && <span className="rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-medium text-rose-700">อาจซ้ำ</span>}
                         </div>
                         <p className="mt-1 text-xs text-muted-foreground">
                           {formatDate(row.transaction_date)} · {row.card_last4 ? `บัตร ••••${row.card_last4}` : "ไม่พบเลขบัตร"} · <span className="break-all">{row.original_filename}</span>
@@ -260,9 +243,15 @@ export function ReviewTab() {
                     </div>
 
                     {expanded && row.match_status === "matched" && (
-                      <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-3 text-xs text-emerald-800 sm:flex-row sm:items-center sm:justify-between">
-                        <span><b>จับคู่กับ:</b> {row.target_reference || "ไม่ระบุเลขอ้างอิง"} {row.ref_party_name ? `· ${row.ref_party_name}` : ""}</span>
-                        <button type="button" disabled={busyId === row.id} onClick={() => handleRemoveMatch(row)} className="flex h-8 items-center justify-center gap-1 rounded-md border border-emerald-200 bg-white px-2.5 font-medium hover:bg-emerald-100 disabled:opacity-50"><Undo2 className="h-3 w-3" /> ยกเลิกการจับคู่</button>
+                      <div className="mx-4 mb-4 flex flex-col gap-3 rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-3 text-xs text-emerald-800">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                          <span><b>จับคู่กับ:</b> {row.target_reference || "ไม่ระบุเลขอ้างอิง"} {row.ref_party_name ? `· ${row.ref_party_name}` : ""} · {row.match_method?.startsWith("auto_") ? "ระบบจับคู่ให้" : "ผู้ใช้เลือกเอง"}</span>
+                          <div className="flex flex-wrap gap-2">
+                            {row.ref_stored_filename && <a href={`/statement/evidence/${row.ref_stored_filename}`} target="_blank" rel="noreferrer" className="flex h-8 items-center justify-center rounded-md border border-emerald-200 bg-white px-2.5 font-medium hover:bg-emerald-100">ดูรูปต้นฉบับ</a>}
+                            <button type="button" disabled={busyId === row.id} onClick={() => handleRemoveMatch(row)} className="flex h-8 items-center justify-center gap-1 rounded-md border border-emerald-200 bg-white px-2.5 font-medium hover:bg-emerald-100 disabled:opacity-50"><Undo2 className="h-3 w-3" /> ยกเลิกเพื่อเลือกคู่ใหม่</button>
+                          </div>
+                        </div>
+                        {row.match_notes && <p className="rounded-md bg-white/70 px-2.5 py-2 text-[11px] leading-5 text-emerald-700"><b>เหตุผล:</b> {row.match_notes}</p>}
                       </div>
                     )}
 
