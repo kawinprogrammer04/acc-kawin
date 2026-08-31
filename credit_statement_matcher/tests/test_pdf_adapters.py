@@ -14,9 +14,11 @@ from app.parsers import (
     _build_transaction,
     _parse_amex_ocr,
     _parse_ads_ocr_lines,
+    _parse_meta_payment_ocr,
     _parse_krungsri_ocr,
     _parse_scb_pdf,
     _parse_tesseract_tsv,
+    _meta_amount,
     _ocr_image_variants,
     _parse_ocr_currency_values,
     parse_statement_with_metadata,
@@ -131,6 +133,66 @@ class PdfAdapterTests(unittest.TestCase):
 
         with Image.open(io.BytesIO(prepared)) as resized:
             self.assertLessEqual(max(resized.size), 1800)
+            self.assertEqual(resized.format, "PNG")
+
+    def test_meta_payment_screenshot_uses_table_columns_and_filename_card(self):
+        def line(items, top):
+            words = [
+                PositionedWord(
+                    text=text,
+                    left=left,
+                    top=top + offset,
+                    width=width,
+                    height=12,
+                    confidence=confidence,
+                )
+                for text, left, width, offset, confidence in items
+            ]
+            return OcrLine(
+                text=" ".join(word.text for word in words),
+                confidence=sum(word.confidence for word in words) / len(words),
+                page=1,
+                words=words,
+            )
+
+        lines = [
+            ocr_line("บัญชีโฆษณา Facebook FBADS", left=10, top=20),
+            line(
+                [
+                    ("26486470730836622-", 10, 115, -8, 89),
+                    ("26561479613535727", 10, 115, 8, 88),
+                    ("21 เม.ย. 2026", 150, 110, 0, 91),
+                    ("8304.00", 300, 70, 0, 92),
+                    ("MasterCard ••••1888", 440, 145, -5, 82),
+                    ("QSRCTMRPM2", 455, 90, 10, 94),
+                    ("FBADS-039-105820450", 720, 170, 0, 93),
+                ],
+                300,
+            ),
+            line(
+                [
+                    ("26487967254220296-", 10, 115, -8, 89),
+                    ("26377400055277019", 10, 115, 8, 88),
+                    ("19 เม.ย. 2026", 150, 110, 0, 91),
+                    ("8286.00", 300, 70, 0, 92),
+                    ("MasterCard ••••1888", 440, 145, -5, 82),
+                    ("LKHWNMRPM2", 455, 90, 10, 94),
+                    ("FBADS-039-105813563", 720, 170, 0, 93),
+                ],
+                370,
+            ),
+        ]
+
+        rows = _parse_meta_payment_ocr(lines, "1_1889 รร..jpg", 1000, 600)
+
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([row.amount for row in rows], [304.0, 286.0])
+        self.assertEqual([row.transaction_date for row in rows], ["2026-04-21", "2026-04-19"])
+        self.assertEqual([row.card_last4 for row in rows], ["1889", "1889"])
+        self.assertEqual(rows[0].tr_code, "QSRCTMRPM2")
+        self.assertIn("FBADS-039-105820450", rows[0].description)
+        self.assertEqual(_meta_amount("65,000.00")[0], 5000.0)
+        self.assertEqual(_meta_amount("$64.50")[0], 64.5)
 
     def test_scb_position_parser_signs_debit_and_credit(self):
         statement = _parse_scb_pdf(
