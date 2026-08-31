@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -741,6 +742,7 @@ def _run_tesseract_tsv(
     environment: dict[str, str],
     error_label: str,
     timeout: int = 60,
+    languages: str = "tha+eng",
 ) -> list[OcrLine]:
     try:
         completed = subprocess.run(
@@ -749,7 +751,7 @@ def _run_tesseract_tsv(
                 str(image_path),
                 "stdout",
                 "-l",
-                "tha+eng",
+                languages,
                 "--psm",
                 str(psm),
                 "tsv",
@@ -765,6 +767,38 @@ def _run_tesseract_tsv(
             f"{error_label}หน้า {page_number} ไม่สำเร็จ กรุณาตรวจคุณภาพไฟล์"
         ) from exc
     return _parse_tesseract_tsv(completed.stdout, page_number)
+
+
+def _map_scaled_ocr_lines(
+    lines: list[OcrLine],
+    *,
+    crop_left: float,
+    crop_top: float,
+    scale: float,
+) -> list[OcrLine]:
+    """Map OCR coordinates from an enlarged crop back onto the source image."""
+    result: list[OcrLine] = []
+    for line in lines:
+        words = [
+            PositionedWord(
+                text=word.text,
+                left=crop_left + word.left / scale,
+                top=crop_top + word.top / scale,
+                width=word.width / scale,
+                height=word.height / scale,
+                confidence=word.confidence,
+            )
+            for word in line.words
+        ]
+        result.append(
+            OcrLine(
+                text=line.text,
+                confidence=line.confidence,
+                page=line.page,
+                words=words,
+            )
+        )
+    return result
 
 
 def _deduplicate_ocr_lines(lines: list[OcrLine]) -> list[OcrLine]:
@@ -1746,7 +1780,7 @@ EVIDENCE_OCR_TIMEOUT_SECONDS = int(os.getenv("STATEMENT_IMAGE_OCR_TIMEOUT_SECOND
 
 
 def prepare_evidence_image(data: bytes) -> bytes:
-    """Validate, orient and shrink an evidence image before it enters the queue."""
+    """Validate, orient and shrink evidence without adding JPEG artifacts."""
     from PIL import Image, ImageOps, UnidentifiedImageError
 
     try:
@@ -1757,7 +1791,10 @@ def prepare_evidence_image(data: bytes) -> bytes:
                 Image.Resampling.LANCZOS,
             )
             output = io.BytesIO()
-            image.save(output, format="JPEG", quality=88, optimize=True)
+            # Ads evidence is usually a screenshot with 8-12px text. Re-encoding
+            # it as JPEG makes character edges fuzzy and hurts Thai OCR, while a
+            # lossless PNG remains small for these mostly-white screens.
+            image.save(output, format="PNG", optimize=True)
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise ValueError("ไฟล์รูปภาพเสียหรือไม่ใช่รูปภาพที่ระบบรองรับ") from exc
     return output.getvalue()
@@ -1765,13 +1802,304 @@ def prepare_evidence_image(data: bytes) -> bytes:
 
 def _ads_platform(text: str) -> str:
     clean = text.casefold()
-    if "facebook" in clean or "meta" in clean:
+    if "facebook" in clean or "meta" in clean or "fbads" in clean:
         return "Facebook/Meta Ads"
     if "google" in clean:
         return "Google Ads"
     if "tiktok" in clean:
         return "TikTok Ads"
     return "หลักฐานค่าโฆษณา"
+
+
+META_MONTH_MARKERS = {
+    1: ("มค", "มกราคม"),
+    2: ("กพ", "กุมภาพันธ์"),
+    3: ("มีค", "มีนาคม"),
+    4: ("เมย", "เมษายน"),
+    5: ("พค", "พฤษภาคม"),
+    6: ("มิย", "มิถุนายน"),
+    7: ("กค", "กรกฎาคม"),
+    8: ("สค", "สิงหาคม"),
+    9: ("กย", "กันยายน"),
+    10: ("ตค", "ตุลาคม"),
+    11: ("พย", "พฤศจิกายน"),
+    12: ("ธค", "ธันวาคม"),
+}
+
+
+def _meta_compact_text(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9ก-๙]+", "", text).casefold()
+
+
+def _meta_month(text: str) -> int | None:
+    compact = _meta_compact_text(text)
+    for month, markers in META_MONTH_MARKERS.items():
+        if any(marker in compact for marker in markers):
+            return month
+    return None
+
+
+def _meta_year(text: str) -> int | None:
+    years = [
+        int(value)
+        for value in re.findall(r"(?<!\d)(20\d{2}|25\d{2})(?!\d)", text)
+    ]
+    if not years:
+        return None
+    year = years[-1]
+    return year - 543 if year > 2400 else year
+
+
+def _meta_dominant_period(lines: list[OcrLine]) -> tuple[int | None, int | None]:
+    months: list[int] = []
+    years: list[int] = []
+    for line in lines:
+        month = _meta_month(line.text)
+        year = _meta_year(line.text)
+        if month:
+            months.append(month)
+        if year and 2020 <= year <= date.today().year + 2:
+            years.append(year)
+    month = Counter(months).most_common(1)[0][0] if months else None
+    year = Counter(years).most_common(1)[0][0] if years else None
+    return month, year
+
+
+def _meta_row_date(
+    text: str,
+    *,
+    fallback_month: int | None,
+    fallback_year: int | None,
+) -> str | None:
+    day_match = re.search(r"(?<!\d)([0-3]?\d)(?!\d)", text)
+    if not day_match:
+        return None
+    day = int(day_match.group(1))
+    month = _meta_month(text) or fallback_month
+    year = _meta_year(text) or fallback_year
+    if not month or not year:
+        return None
+    try:
+        return date(year, month, day).isoformat()
+    except ValueError:
+        return None
+
+
+def _meta_amount(text: str) -> tuple[float | None, bool]:
+    """Return an amount and whether a leading OCR baht artifact was removed."""
+    compact = re.sub(r"\s+", "", text)
+    numeric = re.sub(r"[^\d,.]", "", compact)
+    corrected_baht = False
+    # On Meta's font, Tesseract sees the leading ฿ glyph as an extra 8 or 6:
+    # ฿64.50 -> 864.50 and ฿5,000.00 -> 65,000.00.
+    if compact[:1].isdigit() and numeric.startswith(("8", "6")) and re.fullmatch(
+        r"\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}", numeric[1:]
+    ):
+        numeric = numeric[1:]
+        corrected_baht = True
+    return parse_amount(numeric), corrected_baht
+
+
+def _meta_filename_card(filename: str) -> str | None:
+    values = re.findall(r"(?<!\d)(\d{4})(?!\d)", Path(filename).stem)
+    return next(
+        (value for value in reversed(values) if not value.startswith("20")),
+        None,
+    )
+
+
+def _meta_line_words(lines: list[OcrLine]) -> list[PositionedWord]:
+    selected: dict[tuple[int, int, str], PositionedWord] = {}
+    for line in lines:
+        for word in line.words:
+            key = (
+                round(word.left / 2),
+                round(word.top / 2),
+                _meta_compact_text(word.text),
+            )
+            current = selected.get(key)
+            if current is None or word.confidence > current.confidence:
+                selected[key] = word
+    return sorted(selected.values(), key=lambda word: (word.top, word.left))
+
+
+def _meta_reference(
+    row_lines: list[OcrLine], left: float, right: float
+) -> str | None:
+    candidates: list[tuple[int, float, str]] = []
+    for line in row_lines:
+        relevant = [
+            word for word in line.words
+            if left <= word.left + word.width / 2 <= right
+        ]
+        if not relevant:
+            continue
+        groups: list[list[PositionedWord]] = []
+        centers: list[float] = []
+        for word in sorted(
+            relevant,
+            key=lambda item: (item.top + item.height / 2, item.left),
+        ):
+            center = word.top + word.height / 2
+            if not groups or abs(center - centers[-1]) > 6:
+                groups.append([word])
+                centers.append(center)
+            else:
+                groups[-1].append(word)
+        for group in groups:
+            joined = "".join(
+                word.text for word in sorted(group, key=lambda word: word.left)
+            )
+            for raw in re.findall(r"[A-Za-z0-9?]{8,12}", joined):
+                clean = raw.upper()
+                if not re.search(r"[A-Z]", clean) or not re.search(r"\d", clean):
+                    continue
+                if (
+                    clean.startswith(("MASTERCARD", "AMERICAN", "EXPRESS"))
+                    or "CARD" in clean
+                    or "CEARD" in clean
+                ):
+                    continue
+                candidates.append(
+                    (
+                        clean.count("?"),
+                        -sum(word.confidence for word in group),
+                        clean,
+                    )
+                )
+    return min(candidates)[2] if candidates else None
+
+
+def _parse_meta_payment_ocr(
+    lines: list[OcrLine],
+    filename: str,
+    image_width: int,
+    image_height: int,
+) -> list[ParsedTransaction]:
+    """Parse Meta payment-history screenshots by their stable table columns."""
+    words = _meta_line_words(lines)
+    amount_words: list[PositionedWord] = []
+    for word in words:
+        center_x = word.left + word.width / 2
+        if not (image_width * 0.25 <= center_x <= image_width * 0.43):
+            continue
+        if word.top < image_height * 0.30:
+            continue
+        amount, _ = _meta_amount(word.text)
+        if amount is not None and re.search(r"[.,]\d{2}\D*$", word.text):
+            amount_words.append(word)
+
+    anchors: list[PositionedWord] = []
+    for word in sorted(amount_words, key=lambda item: item.top):
+        if anchors and abs(word.top - anchors[-1].top) <= 4:
+            if word.confidence > anchors[-1].confidence:
+                anchors[-1] = word
+        else:
+            anchors.append(word)
+    if not anchors:
+        return []
+
+    gaps = [anchors[index + 1].top - anchors[index].top for index in range(len(anchors) - 1)]
+    row_height = sorted(gaps)[len(gaps) // 2] if gaps else max(50.0, image_height * 0.10)
+    fallback_month, fallback_year = _meta_dominant_period(lines)
+    filename_card = _meta_filename_card(filename)
+    transactions: list[ParsedTransaction] = []
+
+    for index, anchor in enumerate(anchors):
+        top = (anchors[index - 1].top + anchor.top) / 2 if index else anchor.top - row_height / 2
+        bottom = (anchor.top + anchors[index + 1].top) / 2 if index + 1 < len(anchors) else anchor.top + row_height / 2
+        row_words = [
+            word for word in words
+            if top <= word.top + word.height / 2 < bottom
+        ]
+        row_lines = [
+            line for line in lines
+            if any(top <= word.top + word.height / 2 < bottom for word in line.words)
+        ]
+
+        date_text = " ".join(
+            word.text for word in sorted(row_words, key=lambda item: (item.top, item.left))
+            if image_width * 0.13 <= word.left + word.width / 2 <= image_width * 0.31
+        )
+        transaction_date = _meta_row_date(
+            date_text,
+            fallback_month=fallback_month,
+            fallback_year=fallback_year,
+        )
+        amount, _ = _meta_amount(anchor.text)
+        if amount is None:
+            continue
+
+        payment_text = " ".join(
+            word.text for word in sorted(row_words, key=lambda item: (item.top, item.left))
+            if image_width * 0.42 <= word.left + word.width / 2 <= image_width * 0.66
+        )
+        card_match = re.search(
+            r"(?:master\s*card|american\s*express|visa|บัตร).*?(\d{4})(?!\d)",
+            payment_text,
+            re.IGNORECASE,
+        )
+        card_last4 = filename_card or (card_match.group(1) if card_match else None)
+        reference = _meta_reference(row_lines, image_width * 0.42, image_width * 0.66)
+
+        left_text = " ".join(
+            word.text for word in sorted(row_words, key=lambda item: (item.top, item.left))
+            if word.left + word.width / 2 < image_width * 0.16
+        )
+        id_parts = re.findall(r"\d{12,}", left_text)
+        transaction_id = "-".join(id_parts[:2]) if id_parts else None
+
+        invoice_text = " ".join(
+            word.text for word in sorted(row_words, key=lambda item: (item.top, item.left))
+            if image_width * 0.70 <= word.left + word.width / 2 <= image_width * 0.94
+        )
+        invoice_match = re.search(r"FBADS[-\s]\d{3}[-\s]\d{6,}", invoice_text, re.IGNORECASE)
+        invoice = re.sub(r"\s", "-", invoice_match.group(0)).upper() if invoice_match else None
+
+        warnings: list[str] = []
+        if not transaction_date:
+            warnings.append("อ่านวันที่ไม่ชัด กรุณาตรวจจากรูป")
+        if not reference:
+            warnings.append("อ่านเลขอ้างอิงไม่ชัด กรุณาตรวจจากรูป")
+        elif "?" in reference:
+            warnings.append("เลขอ้างอิงมีตัวอักษรที่อ่านไม่ชัด กรุณาตรวจจากรูป")
+        if not card_last4:
+            warnings.append("อ่านเลขท้ายบัตรไม่ชัด กรุณาตรวจจากรูป")
+
+        description_parts = ["Facebook/Meta Ads"]
+        if transaction_id:
+            description_parts.append(f"รายการ {transaction_id}")
+        if invoice:
+            description_parts.append(f"ใบกำกับ {invoice}")
+        confidence_values = [anchor.confidence]
+        confidence_values.extend(word.confidence for word in row_words)
+        confidence = sum(confidence_values) / max(1, len(confidence_values))
+        if confidence < 80:
+            warnings.insert(0, "ข้อความตัวเล็กบางส่วนอาจอ่านคลาดเคลื่อน กรุณาเทียบกับรูป")
+        row_hash = make_row_hash(
+            transaction_date or "",
+            None,
+            amount,
+            " | ".join(description_parts),
+            filename,
+            reference,
+        )
+        transactions.append(
+            ParsedTransaction(
+                transaction_date=transaction_date,
+                description=" | ".join(description_parts),
+                amount=round(abs(amount), 2),
+                card_last4=card_last4,
+                category="ค่าโฆษณาออนไลน์",
+                deposit_amount=round(abs(amount), 2),
+                channel=Path(filename).name[:100],
+                tr_code=reference,
+                row_hash=row_hash,
+                confidence=round(max(0.0, min(100.0, confidence)), 2),
+                warnings=warnings,
+            )
+        )
+    return _deduplicate_transactions(transactions)
 
 
 def _ads_row_texts(lines: list[OcrLine]) -> list[tuple[str, float]]:
@@ -1923,20 +2251,78 @@ def _parse_ads_ocr_lines(lines: list[OcrLine], filename: str) -> list[ParsedTran
 
 
 def _ocr_ads_image(filename: str, data: bytes) -> tuple[list[ParsedTransaction], str]:
-    from PIL import Image
+    from PIL import Image, ImageEnhance, ImageFilter
 
     if not shutil.which("tesseract"):
         raise ValueError("เซิร์ฟเวอร์ยังไม่ได้ติดตั้ง Tesseract OCR")
     with tempfile.TemporaryDirectory(prefix="ads-evidence-ocr-") as temp_dir:
-        source_path = Path(temp_dir) / "source.jpg"
+        source_path = Path(temp_dir) / "source.png"
         source_path.write_bytes(data)
         environment = {**os.environ, "OMP_THREAD_LIMIT": "2"}
         with Image.open(source_path) as source:
+            image_width, image_height = source.size
             variants = _ocr_image_variants(source)
             grayscale_path = Path(temp_dir) / "grayscale.png"
             variants["grayscale"].save(grayscale_path)
             binary_path = Path(temp_dir) / "binary.png"
             variants["binary"].save(binary_path)
+
+        # Sparse layout mode preserves Meta's separated table columns much
+        # better than the generic denoised page pass.
+        sparse_source_lines = _run_tesseract_tsv(
+            source_path,
+            1,
+            psm=11,
+            environment=environment,
+            error_label="อ่านข้อความจากรูป ",
+            timeout=max(10, min(25, EVIDENCE_OCR_TIMEOUT_SECONDS // 2)),
+        )
+        sparse_text = "\n".join(line.text for line in sparse_source_lines)
+        looks_like_meta = (
+            "fbads" in sparse_text.casefold()
+            or (
+                ("mastercard" in sparse_text.casefold() or "american express" in sparse_text.casefold())
+                and ("บัญชีโฆษณา" in _normalise_ocr_line(sparse_text) or "ธุรกรรม" in sparse_text)
+            )
+        )
+        if looks_like_meta:
+            with Image.open(source_path) as source:
+                crop_left = int(source.width * 0.42)
+                crop_top = int(source.height * 0.30)
+                crop_right = int(source.width * 0.66)
+                payment_crop = source.crop((crop_left, crop_top, crop_right, source.height))
+                scale = 3.0
+                payment_crop = payment_crop.resize(
+                    (round(payment_crop.width * scale), round(payment_crop.height * scale)),
+                    Image.Resampling.LANCZOS,
+                )
+                payment_crop = ImageEnhance.Contrast(payment_crop).enhance(1.2)
+                payment_crop = payment_crop.filter(ImageFilter.SHARPEN)
+                payment_path = Path(temp_dir) / "meta-payment-column.png"
+                payment_crop.save(payment_path, format="PNG", optimize=True)
+            payment_lines = _run_tesseract_tsv(
+                payment_path,
+                1,
+                psm=6,
+                languages="eng",
+                environment=environment,
+                error_label="อ่านคอลัมน์บัตรและเลขอ้างอิง ",
+                timeout=max(10, min(25, EVIDENCE_OCR_TIMEOUT_SECONDS // 2)),
+            )
+            mapped_payment_lines = _map_scaled_ocr_lines(
+                payment_lines,
+                crop_left=crop_left,
+                crop_top=crop_top,
+                scale=scale,
+            )
+            meta_lines = [*sparse_source_lines, *mapped_payment_lines]
+            transactions = _parse_meta_payment_ocr(
+                meta_lines,
+                filename,
+                image_width,
+                image_height,
+            )
+            return transactions, "\n".join(line.text for line in meta_lines)
 
         lines = _run_tesseract_tsv(
             grayscale_path,
@@ -1948,7 +2334,7 @@ def _ocr_ads_image(filename: str, data: bytes) -> tuple[list[ParsedTransaction],
         )
         transactions = _parse_ads_ocr_lines(lines, filename)
         if not transactions:
-            sparse_lines = _run_tesseract_tsv(
+            fallback_lines = _run_tesseract_tsv(
                 binary_path,
                 1,
                 psm=11,
@@ -1956,7 +2342,7 @@ def _ocr_ads_image(filename: str, data: bytes) -> tuple[list[ParsedTransaction],
                 error_label="อ่านข้อความแบบแยกส่วน ",
                 timeout=max(10, min(25, EVIDENCE_OCR_TIMEOUT_SECONDS // 2)),
             )
-            lines = _deduplicate_ocr_lines([*lines, *sparse_lines])
+            lines = _deduplicate_ocr_lines([*lines, *sparse_source_lines, *fallback_lines])
             transactions = _parse_ads_ocr_lines(lines, filename)
         return transactions, "\n".join(line.text for line in lines)
 
