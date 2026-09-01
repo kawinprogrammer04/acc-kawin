@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, CheckCircle2, Clock3, Download, Eye, FileText, Loader2, Pencil,
   Receipt, RotateCcw, Send, Trash2, Upload, XCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { authApi, getApiErrorMessage } from "@/api/client";
 import { approvalInboxApi, expenseRequestsApi } from "@/api/approvals";
 import { expenseAccountingApi } from "@/api/approvals";
 import type {
   ApprovalStepTimeline, ExpenseHistory, ExpensePaymentRecord, ExpenseRequestDetail,
-  ExpenseSettlement, ExpenseWithholdingCertificate,
+  ExpenseRequestAttachment, ExpenseSettlement, ExpenseWithholdingCertificate,
 } from "@/api/approvals";
 import { SignaturePad } from "@/components/expense/SignaturePad";
 import { PdfSignatureWorkspace, initialPlacement } from "@/components/expense/PdfSignatureWorkspace";
@@ -121,6 +122,19 @@ function SectionTitle({ children, description }: { children: React.ReactNode; de
   return <div><h2 className="text-lg font-semibold">{children}</h2>{description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}</div>;
 }
 
+type AttachmentPreviewItem = {
+  file: ExpenseRequestAttachment;
+  url?: string;
+  contentType?: string;
+  error?: string;
+};
+
+type AttachmentPreview = {
+  title: string;
+  loading: boolean;
+  items: AttachmentPreviewItem[];
+};
+
 export function ExpenseRequestDetailPage() {
   const { requestId } = useParams();
   const navigate = useNavigate();
@@ -157,6 +171,77 @@ export function ExpenseRequestDetailPage() {
   const [accountingReturnReason, setAccountingReturnReason] = useState("");
   const [accountingCancelReason, setAccountingCancelReason] = useState("");
   const [settlementReviewNote, setSettlementReviewNote] = useState("");
+  const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview | null>(null);
+  const [downloadingAllAttachments, setDownloadingAllAttachments] = useState(false);
+  const attachmentPreviewLoadId = useRef(0);
+  const attachmentPreviewUrls = useRef(new Set<string>());
+
+  const revokeAttachmentPreviewUrls = () => {
+    attachmentPreviewUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    attachmentPreviewUrls.current.clear();
+  };
+
+  useEffect(() => () => revokeAttachmentPreviewUrls(), []);
+
+  const closeAttachmentPreview = () => {
+    attachmentPreviewLoadId.current += 1;
+    revokeAttachmentPreviewUrls();
+    setAttachmentPreview(null);
+  };
+
+  const openAttachmentPreviews = async (files: ExpenseRequestAttachment[]) => {
+    if (!requestId || files.length === 0) return;
+    const loadId = ++attachmentPreviewLoadId.current;
+    revokeAttachmentPreviewUrls();
+    setAttachmentPreview({
+      title: files.length > 1 ? "ดูเอกสารทั้งหมด" : files[0].file_name,
+      loading: true,
+      items: files.map((file) => ({ file })),
+    });
+
+    const items = await Promise.all(files.map(async (file): Promise<AttachmentPreviewItem> => {
+      try {
+        const blob = await expenseRequestsApi.attachmentBlob(requestId, file.id, file.has_signed_file);
+        const url = URL.createObjectURL(blob);
+        if (loadId !== attachmentPreviewLoadId.current) {
+          URL.revokeObjectURL(url);
+          return { file };
+        }
+        attachmentPreviewUrls.current.add(url);
+        return {
+          file,
+          url,
+          contentType: (blob.type || file.content_type || "").split(";", 1)[0].toLowerCase(),
+        };
+      } catch (previewError) {
+        return { file, error: getApiErrorMessage(previewError, "ไม่สามารถเปิดไฟล์แนบนี้ได้") };
+      }
+    }));
+
+    if (loadId !== attachmentPreviewLoadId.current) return;
+    setAttachmentPreview({
+      title: files.length > 1 ? "ดูเอกสารทั้งหมด" : files[0].file_name,
+      loading: false,
+      items,
+    });
+  };
+
+  const openAttachmentPreview = (file: ExpenseRequestAttachment) => openAttachmentPreviews([file]);
+
+  const downloadAllAttachments = async () => {
+    if (!requestId) return;
+    setDownloadingAllAttachments(true);
+    try {
+      await expenseRequestsApi.downloadAttachmentArchive(
+        requestId,
+        `${request?.request_no || "expense-request"}-documents.zip`,
+      );
+    } catch (downloadError) {
+      setError(getApiErrorMessage(downloadError, "ดาวน์โหลดเอกสารทั้งหมดไม่สำเร็จ"));
+    } finally {
+      setDownloadingAllAttachments(false);
+    }
+  };
 
   const load = useCallback(async () => {
     if (!requestId) return;
@@ -470,12 +555,18 @@ export function ExpenseRequestDetailPage() {
     </div>
 
     <Card><CardContent className="space-y-6 p-6">
-      <SectionTitle description="ตรวจสอบความครบถ้วนและชื่อไฟล์ของเอกสารคำขอ">เอกสาร</SectionTitle>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <SectionTitle description="ตรวจสอบความครบถ้วนและชื่อไฟล์ของเอกสารคำขอ">เอกสาร</SectionTitle>
+        <button type="button" onClick={() => openAttachmentPreviews([...primary, ...supporting])} disabled={primary.length + supporting.length === 0}
+          className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-4 text-sm font-semibold text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50">
+          <Eye className="h-4 w-4" /> ดูทั้งหมด
+        </button>
+      </div>
       {[{ title: "เอกสารหลักสำหรับอนุมัติ (PDF)", files: primary }, { title: "เอกสารประกอบเพิ่มเติม", files: supporting }].map((group) => <div key={group.title}>
         <div className="mb-2 flex items-center gap-2"><h3 className="font-medium">{group.title}</h3><span className="rounded-full bg-muted px-2 py-0.5 text-xs">{group.files.length} ไฟล์</span></div>
         <div className="space-y-2">{group.files.map((file) => <div key={file.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3">
           <div className="flex min-w-0 items-center gap-3"><FileText className="h-5 w-5 shrink-0 text-primary" /><div className="min-w-0"><p className="truncate font-medium">{file.file_name}</p><p className="text-xs text-muted-foreground">{file.attachment_type === "primary" ? "ระบบสร้าง" : "บันทึกแล้ว"} · {file.has_signed_file ? "มีฉบับลงนามแล้ว · " : ""}{Math.max(1, Math.round(file.file_size / 1024))} KB</p></div></div>
-          <button onClick={() => expenseRequestsApi.openAttachment(request.id, file.id)} className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"><Eye className="h-4 w-4" /> {file.has_signed_file ? "ดูฉบับลงนาม" : "ดูไฟล์"}</button>
+          <button type="button" onClick={() => openAttachmentPreview(file)} className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"><Eye className="h-4 w-4" /> {file.has_signed_file ? "ดูฉบับลงนาม" : "ดูไฟล์"}</button>
         </div>)}{group.files.length === 0 && <p className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">ยังไม่มีเอกสาร</p>}</div>
       </div>)}
     </CardContent></Card>
@@ -625,5 +716,58 @@ export function ExpenseRequestDetailPage() {
         {[...histories].filter(row => !["legacy_imported","submitted"].includes(row.event)).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 12).map(row => <li key={`history-${row.id}`} className="flex gap-3"><Clock3 className="mt-0.5 h-5 w-5 text-primary" /><div><p className="font-medium">{historyEventLabel[row.event] || row.event} · revision {row.revision}</p><p className="text-sm text-muted-foreground">{formatDateTime(row.created_at)}{row.note ? ` · ${row.note}` : ""}</p></div></li>)}
       </ol></CardContent></Card>
     </div>
+
+    <Dialog open={Boolean(attachmentPreview)} onOpenChange={(open) => { if (!open) closeAttachmentPreview(); }}>
+      <DialogContent className="flex h-[92vh] max-w-[96vw] flex-col overflow-hidden p-0 sm:max-w-7xl">
+        <DialogHeader className="border-b px-6 pb-4 pt-6">
+          <DialogTitle className="break-all pr-8">{attachmentPreview?.title || "ดูไฟล์"}</DialogTitle>
+          <DialogDescription>
+            {attachmentPreview && attachmentPreview.items.length > 1
+              ? `แสดงเอกสารคำขอพร้อมกัน ${attachmentPreview.items.length} ไฟล์`
+              : attachmentPreview?.items[0]?.file.has_signed_file ? "ฉบับลงนามแล้ว" : "ไฟล์เอกสารคำขอ"}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-auto bg-muted/20 p-4">
+          {attachmentPreview?.loading ? (
+            <div className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /> กำลังโหลดเอกสาร {attachmentPreview.items.length} ไฟล์...</div>
+          ) : (
+            <div className={`grid w-full items-start gap-4 ${attachmentPreview && attachmentPreview.items.length > 1 ? "xl:grid-cols-2" : ""}`}>
+              {attachmentPreview?.items.map((item) => <section key={item.file.id} className="min-w-0 overflow-hidden rounded-xl border bg-background shadow-sm">
+                <div className="flex min-h-16 flex-wrap items-center justify-between gap-3 border-b px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold" title={item.file.file_name}>{item.file.file_name}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">{item.file.has_signed_file ? "ฉบับลงนามแล้ว" : "ไฟล์เอกสารคำขอ"} · {Math.max(1, Math.round(item.file.file_size / 1024))} KB</p>
+                  </div>
+                  {item.url && <a href={item.url} download={item.file.file_name} className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-lg border px-3 text-xs font-medium hover:bg-muted"><Download className="h-3.5 w-3.5" /> ดาวน์โหลด</a>}
+                </div>
+                <div className="flex min-h-[60vh] items-center justify-center bg-muted/10 p-3">
+                  {item.error ? (
+                    <div className="mx-auto max-w-lg rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-center text-sm text-rose-700">{item.error}</div>
+                  ) : item.url && (item.contentType === "application/pdf" || /\.pdf$/i.test(item.file.file_name)) ? (
+                    <iframe src={`${item.url}#toolbar=0&navpanes=0&pagemode=none&view=FitH`} title={item.file.file_name} className="h-[60vh] w-full rounded-lg border bg-white" />
+                  ) : item.url && (item.contentType?.startsWith("image/") || /\.(jpe?g|png)$/i.test(item.file.file_name)) ? (
+                    <img src={item.url} alt={item.file.file_name} className="max-h-[60vh] max-w-full rounded-lg border bg-white object-contain" />
+                  ) : (
+                    <div className="max-w-lg rounded-lg border border-dashed bg-background p-8 text-center">
+                      <FileText className="mx-auto h-10 w-10 text-muted-foreground" />
+                      <p className="mt-3 font-medium">ไฟล์ประเภทนี้ไม่รองรับการแสดงตัวอย่างในเบราว์เซอร์</p>
+                      <p className="mt-1 text-sm text-muted-foreground">สามารถดาวน์โหลดไฟล์เพื่อตรวจสอบด้วยโปรแกรมที่รองรับได้</p>
+                    </div>
+                  )}
+                </div>
+              </section>)}
+            </div>
+          )}
+        </div>
+        <DialogFooter className="border-t px-6 py-4">
+          {attachmentPreview && attachmentPreview.items.length > 1 && <button type="button" onClick={downloadAllAttachments} disabled={attachmentPreview.loading || downloadingAllAttachments}
+            className="inline-flex min-h-10 items-center gap-2 rounded-lg border px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+            {downloadingAllAttachments ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            {downloadingAllAttachments ? "กำลังรวมไฟล์..." : "ดาวน์โหลดทั้งหมด (.zip)"}
+          </button>}
+          <button type="button" onClick={closeAttachmentPreview} className="inline-flex min-h-10 items-center rounded-lg bg-primary px-5 text-sm font-medium text-primary-foreground hover:bg-primary/90">ปิด</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>;
 }

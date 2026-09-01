@@ -485,6 +485,17 @@ export const expenseRequestsApi = {
     api.get(`/expense-requests/${id}/attachments/${attachmentId}`, {
       params: { signed: signed ? 1 : 0 }, responseType: "blob",
     }).then((response) => response.data as Blob),
+  downloadAttachmentArchive: async (id: string, filename: string) => {
+    const response = await api.get(`/expense-requests/${id}/attachments/archive`, { responseType: "blob" });
+    const url = URL.createObjectURL(response.data);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  },
   submit: (id: string) => api.post(`/expense-requests/${id}/submit`).then((r) => r.data),
   cancel: (id: string) => api.delete(`/expense-requests/${id}`),
   permanentlyDelete: (id: string) => api.delete(`/expense-requests/${id}/permanent`),
