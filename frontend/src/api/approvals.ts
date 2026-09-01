@@ -658,6 +658,19 @@ export interface ExpenseDashboardOption { id: number; name: string }
 export interface ExpenseDashboardMonthly {
   month: number; label: string; budget: number; used: number; remaining: number; over_budget: boolean;
 }
+export interface ExpenseDashboardRequest {
+  id: string;
+  request_no?: string | null;
+  request_date: string;
+  title: string;
+  requester_name: string;
+  department_name: string;
+  position_name?: string | null;
+  category: string;
+  amount: number;
+  status: string;
+  status_group: "requested" | "pending_approval" | "approved" | "paid" | "cancelled";
+}
 export interface ExpenseDashboardData {
   year: number;
   available_years: number[];
@@ -666,17 +679,54 @@ export interface ExpenseDashboardData {
   total_budget: number;
   total_used: number;
   total_remaining: number;
+  total_request_amount: number;
   category_usage: Array<{ category: string; total: number }>;
+  department_usage: Array<{ department: string; total: number }>;
+  top_requesters: Array<{ requester: string; total: number }>;
+  pending_approval: ExpenseDashboardRequest[];
+  expenses: { items: ExpenseDashboardRequest[]; total: number };
   options: {
+    categories: ExpenseDashboardOption[];
     departments: ExpenseDashboardOption[];
     positions: ExpenseDashboardOption[];
     requesters: ExpenseDashboardOption[];
   };
 }
 
+export interface ExpenseDashboardQuery {
+  year: number;
+  q?: string;
+  category_id?: number;
+  status_group?: string;
+  department_ids?: number[];
+  position_ids?: number[];
+  requester_ids?: number[];
+  page?: number;
+  page_size?: number;
+}
+
+function expenseDashboardSearch(params: ExpenseDashboardQuery) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value == null || value === "") return;
+    if (Array.isArray(value)) value.forEach(item => search.append(key, String(item)));
+    else search.set(key, String(value));
+  });
+  return search;
+}
+
 export const expenseDashboardApi = {
-  get: (params: { year: number; department_ids?: number[]; position_ids?: number[]; requester_ids?: number[] }) =>
-    api.get<ExpenseDashboardData>("/expense-requests/dashboard", { params }).then(r => r.data),
+  get: (params: ExpenseDashboardQuery) =>
+    api.get<ExpenseDashboardData>("/expense-requests/dashboard", { params: expenseDashboardSearch(params) }).then(r => r.data),
+  exportExcel: async (params: ExpenseDashboardQuery) => {
+    const response = await api.get("/expense-requests/dashboard/export", {
+      params: expenseDashboardSearch(params), responseType: "blob",
+    });
+    const url = URL.createObjectURL(response.data);
+    const link = document.createElement("a");
+    link.href = url; link.download = `expense-dashboard-${params.year}.xlsx`; link.click();
+    URL.revokeObjectURL(url);
+  },
 };
 
 export interface Department { id: number; code?: string | null; name: string; manager_user_id?: number | null; is_active: boolean }

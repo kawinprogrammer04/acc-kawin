@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from openpyxl import load_workbook
 from pypdf import PdfReader, PdfWriter
@@ -24,9 +25,10 @@ from app.services.expense_signature_service import (
 from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
 from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import (
-    _accounting_query, _append_legacy_approval_steps, _apply_accounting_pagination, accounting_stats,
+    EXPENSE_DASHBOARD_STATUS_GROUPS, _accounting_query, _append_legacy_approval_steps,
+    _apply_accounting_pagination, _expense_dashboard_query, accounting_stats,
     _parse_csv_ints, _parse_csv_values, accounting_view, create_payment,
-    replace_payment_proof,
+    export_expense_dashboard, replace_payment_proof,
 )
 
 
@@ -127,6 +129,53 @@ class AccountingFilterTests(unittest.TestCase):
         self.assertEqual(result.ready_to_pay_count, 1)
         self.assertEqual(result.pending_approval_count, 0)
         self.assertEqual(result.transfer_amount_total, Decimal("125.00"))
+
+
+class ExpenseDashboardFilterTests(unittest.TestCase):
+    def test_dashboard_export_uses_accounting_view_permission(self):
+        dependency = inspect.signature(export_expense_dashboard).parameters["current_user"].default
+        self.assertIs(dependency.dependency, accounting_view)
+
+    def test_dashboard_query_applies_every_supported_filter(self):
+        statement = _expense_dashboard_query(
+            SimpleNamespace(id=9), 2026, q="ACC-EXP", category_id=11,
+            status_group="pending_approval", department_ids=[3, 7],
+            position_ids=[5], requester_ids=[21, 22],
+        )
+        parameters = list(statement.compile().params.values())
+        self.assertIn(2026, parameters)
+        self.assertIn([3, 7], parameters)
+        self.assertIn([5], parameters)
+        self.assertIn([21, 22], parameters)
+        self.assertIn(11, parameters)
+        self.assertIn(EXPENSE_DASHBOARD_STATUS_GROUPS["pending_approval"], parameters)
+        self.assertGreaterEqual(parameters.count("%acc-exp%"), 1)
+
+    def test_dashboard_status_groups_cover_terminal_and_workflow_states(self):
+        self.assertIn("accounting_review", EXPENSE_DASHBOARD_STATUS_GROUPS["approved"])
+        self.assertIn("partially_paid", EXPENSE_DASHBOARD_STATUS_GROUPS["paid"])
+        self.assertIn("rejected", EXPENSE_DASHBOARD_STATUS_GROUPS["cancelled"])
+
+    def test_dashboard_export_creates_a_valid_filtered_workbook(self):
+        dashboard = {
+            "year": 2026,
+            "expenses": {"items": [{
+                "request_date": "2026-08-25", "request_no": "EXP-001", "title": "ค่าจัดส่ง",
+                "requester_name": "ผู้ทดสอบ", "department_name": "บัญชี", "position_name": "เจ้าหน้าที่",
+                "category": "ทั่วไป", "amount": 238.0, "status": "pending_approval",
+            }]},
+        }
+        with patch("app.routers.expense_finance.expense_dashboard", new=AsyncMock(return_value=dashboard)):
+            response = asyncio.run(export_expense_dashboard(
+                year=2026, q="EXP", category_id=None, status_group="pending_approval",
+                department_ids=None, position_ids=None, requester_ids=None,
+                db=SimpleNamespace(), current_user=SimpleNamespace(), company=SimpleNamespace(id=9),
+            ))
+        workbook = load_workbook(io.BytesIO(response.body))
+        sheet = workbook["รายการเบิกเงิน"]
+        self.assertEqual(sheet["B2"].value, "EXP-001")
+        self.assertEqual(sheet["H2"].value, 238)
+        self.assertIn("expense-dashboard-2026.xlsx", response.headers["content-disposition"])
 
 
 def request(**overrides):

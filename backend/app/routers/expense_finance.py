@@ -1,4 +1,5 @@
 """Accounting, settlement, finance settings, histories and notifications."""
+import io
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -7,7 +8,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse, Response
-from sqlalchemy import and_, case, exists, func, or_, select, update
+from openpyxl import Workbook
+from sqlalchemy import and_, case, exists, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -104,46 +106,80 @@ def _parse_csv_ints(value: Optional[str], field_name: str) -> list[int]:
         raise HTTPException(422, f"{field_name} ต้องเป็นรายการตัวเลขคั่นด้วยเครื่องหมายจุลภาค") from exc
 
 
+EXPENSE_DASHBOARD_STATUS_GROUPS = {
+    "requested": ["draft", "returned_for_correction"],
+    "pending_approval": ["pending_approval", "pending_adjustment_approval"],
+    "approved": ["approved", "accounting_review", "ready_to_pay", "settlement_due", "settlement_review"],
+    "paid": ["partially_paid", "paid", "completed"],
+    "cancelled": ["rejected", "cancelled"],
+}
+
+
+def _expense_dashboard_query(
+    company: Company, selected_year: int, *, q: Optional[str] = None,
+    category_id: Optional[int] = None, status_group: Optional[str] = None,
+    department_ids: Optional[list[int]] = None, position_ids: Optional[list[int]] = None,
+    requester_ids: Optional[list[int]] = None,
+):
+    """Build the one normalized request scope used by every dashboard widget."""
+    statement = select(ExpenseRequest).where(
+        ExpenseRequest.company_id == company.id,
+        func.extract("year", ExpenseRequest.request_date) == selected_year,
+    )
+    if department_ids:
+        statement = statement.where(ExpenseRequest.department_id.in_(department_ids))
+    if position_ids:
+        statement = statement.where(ExpenseRequest.requester_position_id.in_(position_ids))
+    if requester_ids:
+        statement = statement.where(ExpenseRequest.requester_user_id.in_(requester_ids))
+    if category_id is not None:
+        statement = statement.where(ExpenseRequest.expense_type_id == category_id)
+    if status_group:
+        statement = statement.where(ExpenseRequest.status.in_(EXPENSE_DASHBOARD_STATUS_GROUPS[status_group]))
+    if q and q.strip():
+        pattern = f"%{q.strip().lower()}%"
+        statement = statement.where(or_(
+            func.lower(func.coalesce(ExpenseRequest.request_no, "")).like(pattern),
+            func.lower(func.coalesce(ExpenseRequest.title, "")).like(pattern),
+            func.lower(func.coalesce(ExpenseRequest.description, "")).like(pattern),
+            func.lower(func.coalesce(ExpenseRequest.requester_name_snapshot, "")).like(pattern),
+            func.lower(func.coalesce(ExpenseRequest.department_name_snapshot, "")).like(pattern),
+        ))
+    return statement
+
+
 @router.get("/expense-requests/dashboard")
 async def expense_dashboard(
     year: Optional[int] = None,
+    q: Optional[str] = None,
+    category_id: Optional[int] = None,
+    status_group: Optional[str] = None,
     department_ids: Optional[list[int]] = Query(None),
     position_ids: Optional[list[int]] = Query(None),
     requester_ids: Optional[list[int]] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(25, ge=0, le=100),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(accounting_view),
     company: Company = Depends(get_current_company),
 ):
-    """ACC-native expense dashboard mirroring the HR expense dashboard.
-
-    This endpoint intentionally reads only ACC tables.  HR is not queried and
-    no HR data is mutated by viewing this dashboard.
-    """
+    """Complete ACC-native dashboard; viewing it never queries or mutates HR."""
     selected_year = year or datetime.now(timezone.utc).year
-    request_query = select(ExpenseRequest).where(
-        ExpenseRequest.company_id == company.id,
-        func.extract("year", ExpenseRequest.created_at) == selected_year,
-    )
-    if department_ids:
-        request_query = request_query.where(ExpenseRequest.department_id.in_(department_ids))
-    if position_ids:
-        request_query = request_query.where(ExpenseRequest.requester_position_id.in_(position_ids))
-    if requester_ids:
-        request_query = request_query.where(ExpenseRequest.requester_user_id.in_(requester_ids))
+    if status_group and status_group not in EXPENSE_DASHBOARD_STATUS_GROUPS:
+        raise HTTPException(422, "status_group ไม่ถูกต้อง")
 
+    request_query = _expense_dashboard_query(
+        company, selected_year, q=q, category_id=category_id, status_group=status_group,
+        department_ids=department_ids, position_ids=position_ids, requester_ids=requester_ids,
+    )
     rows = list((await db.execute(request_query)).scalars().all())
-    status_groups = {
-        "requested": ["draft", "returned_for_correction"],
-        "pending_approval": ["pending_approval", "pending_adjustment_approval"],
-        "approved": ["approved", "ready_to_pay", "settlement_due", "settlement_review"],
-        "paid": ["completed"],
-        "cancelled": ["cancelled"],
-    }
     status_counts = {
         key: sum(row.status in statuses for row in rows)
-        for key, statuses in status_groups.items()
+        for key, statuses in EXPENSE_DASHBOARD_STATUS_GROUPS.items()
     }
-    used_statuses = set(status_groups["approved"] + status_groups["paid"])
+    used_statuses = set(
+        EXPENSE_DASHBOARD_STATUS_GROUPS["approved"] + EXPENSE_DASHBOARD_STATUS_GROUPS["paid"]
+    )
 
     # ACC's generic budgets table supports monthly, quarterly, yearly and
     # custom ranges. Allocate each active budget to the months it covers so
@@ -186,7 +222,7 @@ async def expense_dashboard(
         if row.status not in used_statuses:
             continue
         amount = float(row.gross_amount or row.amount or 0)
-        month = row.created_at.month if row.created_at else row.request_date.month
+        month = row.request_date.month
         monthly_used[month - 1] += amount
         category_totals[row.expense_type_id] = category_totals.get(row.expense_type_id, 0.0) + amount
 
@@ -210,9 +246,9 @@ async def expense_dashboard(
         for index in range(12)
     ]
 
-    all_years = (await db.execute(select(func.extract("year", ExpenseRequest.created_at)).where(
+    all_years = (await db.execute(select(func.extract("year", ExpenseRequest.request_date)).where(
         ExpenseRequest.company_id == company.id
-    ).distinct().order_by(func.extract("year", ExpenseRequest.created_at).desc()))).scalars().all()
+    ).distinct().order_by(func.extract("year", ExpenseRequest.request_date).desc()))).scalars().all()
     available_years = sorted({int(value) for value in all_years if value is not None} | {selected_year}, reverse=True)
 
     option_query = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
@@ -239,6 +275,58 @@ async def expense_dashboard(
         ).order_by(User.full_name, User.username))).all()
     ] if requester_ids_used else []
 
+    department_name_by_id = {item["id"]: item["name"] for item in departments}
+    user_name_by_id = {item["id"]: item["name"] for item in users}
+    position_name_by_id = {item["id"]: item["name"] for item in positions}
+    all_type_ids = {row.expense_type_id for row in option_rows if row.expense_type_id is not None}
+    category_options = [
+        {"id": item[0], "name": item[1]}
+        for item in (await db.execute(select(ExpenseType.id, ExpenseType.name).where(
+            ExpenseType.id.in_(all_type_ids)
+        ).order_by(ExpenseType.name))).all()
+    ] if all_type_ids else []
+    type_name_by_id = {item["id"]: item["name"] for item in category_options}
+
+    def request_amount(row: ExpenseRequest) -> float:
+        return float(row.gross_amount or row.amount or 0)
+
+    def group_for_status(status: str) -> str:
+        return next((key for key, statuses in EXPENSE_DASHBOARD_STATUS_GROUPS.items() if status in statuses), "requested")
+
+    def request_item(row: ExpenseRequest) -> dict:
+        return {
+            "id": row.id,
+            "request_no": row.request_no,
+            "request_date": row.request_date.isoformat(),
+            "title": row.title,
+            "requester_name": row.requester_name_snapshot or user_name_by_id.get(row.requester_user_id) or "ไม่ระบุผู้เบิก",
+            "department_name": row.department_name_snapshot or department_name_by_id.get(row.department_id) or "ไม่ระบุแผนก",
+            "position_name": row.requester_position_snapshot or position_name_by_id.get(row.requester_position_id),
+            "category": type_name_by_id.get(row.expense_type_id, f"ประเภท #{row.expense_type_id}"),
+            "amount": request_amount(row),
+            "status": row.status,
+            "status_group": group_for_status(row.status),
+        }
+
+    department_totals: dict[str, float] = {}
+    requester_totals: dict[str, float] = {}
+    for row in rows:
+        if row.status not in used_statuses:
+            continue
+        amount = request_amount(row)
+        department_name = row.department_name_snapshot or department_name_by_id.get(row.department_id) or "ไม่ระบุแผนก"
+        requester_name = row.requester_name_snapshot or user_name_by_id.get(row.requester_user_id) or "ไม่ระบุผู้เบิก"
+        department_totals[department_name] = department_totals.get(department_name, 0.0) + amount
+        requester_totals[requester_name] = requester_totals.get(requester_name, 0.0) + amount
+
+    ordered_rows = sorted(rows, key=lambda row: (row.request_date, row.created_at), reverse=True)
+    total_requests = len(ordered_rows)
+    paged_rows = ordered_rows if page_size == 0 else ordered_rows[(page - 1) * page_size:page * page_size]
+    pending_rows = [
+        request_item(row) for row in ordered_rows
+        if row.status in EXPENSE_DASHBOARD_STATUS_GROUPS["pending_approval"]
+    ][:5]
+
     total_budget = sum(item["budget"] for item in monthly)
     total_used = sum(item["used"] for item in monthly)
     return {
@@ -249,14 +337,75 @@ async def expense_dashboard(
         "total_budget": total_budget,
         "total_used": total_used,
         "total_remaining": total_budget - total_used,
+        "total_request_amount": sum(request_amount(row) for row in rows),
         "category_usage": category_usage,
-        "options": {"departments": departments, "positions": positions, "requesters": users},
+        "department_usage": [
+            {"department": name, "total": total}
+            for name, total in sorted(department_totals.items(), key=lambda item: item[1], reverse=True)
+        ],
+        "top_requesters": [
+            {"requester": name, "total": total}
+            for name, total in sorted(requester_totals.items(), key=lambda item: item[1], reverse=True)[:5]
+        ],
+        "pending_approval": pending_rows,
+        "expenses": {"items": [request_item(row) for row in paged_rows], "total": total_requests},
+        "options": {
+            "categories": category_options, "departments": departments,
+            "positions": positions, "requesters": users,
+        },
         "selected": {
+            "q": q or "",
+            "category_id": category_id,
+            "status_group": status_group,
             "department_ids": department_ids or [],
             "position_ids": position_ids or [],
             "requester_ids": requester_ids or [],
         },
     }
+
+
+@router.get("/expense-requests/dashboard/export")
+async def export_expense_dashboard(
+    year: Optional[int] = None,
+    q: Optional[str] = None,
+    category_id: Optional[int] = None,
+    status_group: Optional[str] = None,
+    department_ids: Optional[list[int]] = Query(None),
+    position_ids: Optional[list[int]] = Query(None),
+    requester_ids: Optional[list[int]] = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(accounting_view),
+    company: Company = Depends(get_current_company),
+):
+    """Export every request from the exact normalized dashboard filter scope."""
+    dashboard = await expense_dashboard(
+        year=year, q=q, category_id=category_id, status_group=status_group,
+        department_ids=department_ids, position_ids=position_ids, requester_ids=requester_ids,
+        page=1, page_size=0, db=db, current_user=current_user, company=company,
+    )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "รายการเบิกเงิน"
+    sheet.append(["วันที่", "เลขที่เอกสาร", "รายการ", "ผู้เบิก", "แผนก", "ตำแหน่ง", "หมวดหมู่", "จำนวนเงิน", "สถานะ"])
+    for item in dashboard["expenses"]["items"]:
+        sheet.append([
+            item["request_date"], item["request_no"], item["title"], item["requester_name"],
+            item["department_name"], item["position_name"], item["category"], item["amount"], item["status"],
+        ])
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for column, width in {"A": 14, "B": 24, "C": 48, "D": 28, "E": 24, "F": 24, "G": 28, "H": 18, "I": 24}.items():
+        sheet.column_dimensions[column].width = width
+    for cell in sheet["H"][1:]:
+        cell.number_format = '#,##0.00'
+    output = io.BytesIO()
+    workbook.save(output)
+    filename = f'expense-dashboard-{dashboard["year"]}.xlsx'
+    return Response(
+        content=output.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _accounting_query(
