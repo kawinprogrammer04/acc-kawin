@@ -125,7 +125,7 @@ export function ExpenseRequestDetailPage() {
   const { requestId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, can } = useAuth();
+  const { user, can, refreshUser } = useAuth();
   const { currentCompany } = useCompany();
   const [request, setRequest] = useState<ExpenseRequestDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -204,12 +204,12 @@ export function ExpenseRequestDetailPage() {
 
   const [savedSignatureUrl, setSavedSignatureUrl] = useState<string>();
   useEffect(() => {
-    if (!pendingStep || !user?.has_saved_signature) { setSavedSignatureUrl(undefined); return; }
+    if (!pendingStep) { setSavedSignatureUrl(undefined); return; }
     let cancelled = false;
     authApi.mySignature().then((res) => { if (!cancelled) setSavedSignatureUrl(res.signature_data_url); })
       .catch(() => { if (!cancelled) setSavedSignatureUrl(undefined); });
     return () => { cancelled = true; };
-  }, [pendingStep, user?.has_saved_signature]);
+  }, [pendingStep?.id, user?.has_saved_signature]);
 
   const submit = async () => {
     if (!requestId) return;
@@ -250,6 +250,11 @@ export function ExpenseRequestDetailPage() {
         save_signature: action === "approve" && saveSignature,
         placements: action === "approve" ? placements : undefined,
       });
+      if (action === "approve" && saveSignature && signature) {
+        // Keep AuthContext in sync so the saved signature is immediately
+        // available on the next approval without requiring a reload/login.
+        await refreshUser().catch(() => undefined);
+      }
       setComment(""); setReturnComment(""); setRejectComment("");
       if (action === "approve") { navigate("/approvals/inbox"); return; }
       await load();
