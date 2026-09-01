@@ -512,13 +512,13 @@ class SignaturePdfTests(unittest.TestCase):
     def test_approval_name_slot_matches_the_step_signature_cell(self):
         first_step = _request_approval_name_slot(1, 2)
         self.assertAlmostEqual(first_step["x"], .2717)
-        self.assertAlmostEqual(first_step["y"], .8535)
+        self.assertAlmostEqual(first_step["y"], .8558)
         self.assertAlmostEqual(first_step["width"], .2265)
-        self.assertAlmostEqual(first_step["height"], .016)
+        self.assertAlmostEqual(first_step["height"], .0128)
         self.assertEqual(first_step["page_number"], 2)
         fourth_step = _request_approval_name_slot(4, 3)
         self.assertAlmostEqual(fourth_step["x"], .042)
-        self.assertAlmostEqual(fourth_step["y"], .9165)
+        self.assertAlmostEqual(fourth_step["y"], .9188)
         self.assertEqual(fourth_step["page_number"], 3)
 
     def test_requested_placement_keeps_browser_coordinates_and_clamps_page(self):
@@ -587,8 +587,11 @@ class SignaturePdfTests(unittest.TestCase):
                 "approval_name": "สมหญิง รักงาน",
                 "approval_step_no": 1,
             }])
-            text = PdfReader(io.BytesIO(output)).pages[0].extract_text() or ""
+            stamped_page = PdfReader(io.BytesIO(output)).pages[0]
+            text = stamped_page.extract_text() or ""
             self.assertIn("สมหญิง", text)
+            content = stamped_page.get_contents().get_data()
+            self.assertGreater(content.rfind(b" Do"), content.rfind(b" re"))
 
 
 def base64_png() -> bytes:
