@@ -1,15 +1,33 @@
-import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, FileSignature, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CheckCircle2, Eraser, Eye, FileSignature, Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { approvalInboxApi } from "@/api/approvals";
 import type { InboxItem } from "@/api/approvals";
 import { getApiErrorMessage } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { dataListTableHeaderCellClass, dataListTableScrollClass } from "@/components/data-list/styles";
+import { DataListFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { DataListPagination } from "@/components/data-list/DataListPagination";
+import { dataListFilterPanelClass, dataListTableHeaderCellClass, dataListTableScrollClass } from "@/components/data-list/styles";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
+
+const inboxStatusOptions = [
+  { value: "pending", label: "รออนุมัติ" },
+  { value: "approved", label: "อนุมัติแล้ว" },
+  { value: "returned", label: "ส่งคืนแก้ไข" },
+  { value: "rejected", label: "ไม่อนุมัติ" },
+] as const;
+
+type InboxStatus = InboxItem["status"];
+
+const inboxStatusStyle: Record<InboxStatus, string> = {
+  pending: "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200",
+  approved: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200",
+  returned: "bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-200",
+  rejected: "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-200",
+};
 
 export function ApprovalInboxPage() {
   const { user } = useAuth();
@@ -17,6 +35,9 @@ export function ApprovalInboxPage() {
   const [items, setItems] = useState<InboxItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [status, setStatus] = useState<InboxStatus>("pending");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
 
   // super_admin ต้องเห็นรายการรออนุมัติของทุกคนในบริษัทเสมอ (ไม่ใช่แค่ของตัวเอง)
   // เพราะต้องใช้ตรวจสอบ/แก้ไขปัญหาที่พนักงานคนอื่นแจ้งมาได้
@@ -26,24 +47,57 @@ export function ApprovalInboxPage() {
     setLoading(true);
     setError("");
     try {
-      setItems(await approvalInboxApi.list({ scope: seesEveryonesInbox ? "all" : "mine" }));
+      setItems(await approvalInboxApi.list({
+        scope: seesEveryonesInbox ? "all" : "mine",
+        status,
+      }));
     } catch (requestError) {
       setError(getApiErrorMessage(requestError, "โหลดรายการรออนุมัติไม่สำเร็จ"));
     } finally {
       setLoading(false);
     }
-  }, [seesEveryonesInbox]);
+  }, [seesEveryonesInbox, status]);
 
   useEffect(() => {
     load();
   }, [load]);
 
+  const visibleItems = useMemo(() => pageSize === 0
+    ? items
+    : items.slice((page - 1) * pageSize, page * pageSize), [items, page, pageSize]);
+  const statusLabel = inboxStatusOptions.find(option => option.value === status)?.label || status;
+
+  const changeStatus = (nextStatus: string) => {
+    setPage(1);
+    setStatus(nextStatus as InboxStatus);
+  };
+
   return (
     <div className="space-y-4 p-6">
       <PageHeader
         title="รายการรอคุณอนุมัติ"
-        subtitle="เปิดเอกสาร ตรวจรายละเอียด วาดลายเซ็น และวางลง PDF ก่อนอนุมัติ"
+        subtitle="ตรวจรายการที่รอพิจารณาและย้อนดูรายการที่คุณเคยดำเนินการ"
       />
+
+      <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} rounded-2xl border bg-card/80 p-5 shadow-sm backdrop-blur-xl`}>
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div className="w-full sm:max-w-xs">
+            <DataListFilterSelect
+              label="สถานะ"
+              value={status}
+              allLabel="รออนุมัติ"
+              allowEmpty={false}
+              options={[...inboxStatusOptions]}
+              onChange={changeStatus}
+            />
+          </div>
+          <button type="button" onClick={() => changeStatus("pending")} disabled={status === "pending"}
+            className="inline-flex h-11 items-center gap-2 rounded-md border border-input bg-background px-5 text-sm font-bold text-muted-foreground transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-rose-950/30">
+            <Eraser className="h-4 w-4" />ล้างตัวกรอง
+          </button>
+        </div>
+        <p className="mt-3 border-t pt-3 text-xs font-medium text-muted-foreground">ตัวกรองทำงานอัตโนมัติ · ค่าเริ่มต้นคือ “รออนุมัติ”</p>
+      </form>
 
       {error && (
         <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
@@ -60,8 +114,8 @@ export function ApprovalInboxPage() {
           ) : items.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-14 text-center">
               <CheckCircle2 className="h-10 w-10 text-emerald-500" />
-              <h2 className="mt-4 font-semibold">ไม่มีรายการค้างอนุมัติ</h2>
-              <p className="mt-1 text-sm text-muted-foreground">รายการใหม่ที่มาถึงขั้นของคุณจะแสดงที่นี่</p>
+              <h2 className="mt-4 font-semibold">ไม่พบรายการสถานะ {statusLabel}</h2>
+              <p className="mt-1 text-sm text-muted-foreground">ลองเลือกสถานะอื่นเพื่อดูประวัติการพิจารณาของคุณ</p>
             </div>
           ) : (
             <div className={dataListTableScrollClass}>
@@ -79,7 +133,7 @@ export function ApprovalInboxPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {items.map((item) => (
+                  {visibleItems.map((item) => (
                     <tr key={item.step_id} className="hover:bg-muted/20">
                       <td className="px-4 py-4">
                         <Link
@@ -103,8 +157,8 @@ export function ApprovalInboxPage() {
                       </td>
                       <td className="px-4 py-4 text-right font-semibold">{formatCurrency(item.amount)}</td>
                       <td className="px-4 py-4">
-                        <span className="inline-flex whitespace-nowrap rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
-                          รออนุมัติ
+                        <span className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold ${inboxStatusStyle[item.status]}`}>
+                          {inboxStatusOptions.find(option => option.value === item.status)?.label || item.status}
                         </span>
                       </td>
                       <td className="px-4 py-4 text-right">
@@ -112,8 +166,8 @@ export function ApprovalInboxPage() {
                           to={`/expense-requests/${item.expense_request_id}`}
                           className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90"
                         >
-                          <FileSignature className="h-4 w-4" />
-                          ตรวจและเซ็น
+                          {item.status === "pending" ? <FileSignature className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                          {item.status === "pending" ? "ตรวจและเซ็น" : "ดูรายละเอียด"}
                         </Link>
                       </td>
                     </tr>
@@ -124,6 +178,13 @@ export function ApprovalInboxPage() {
           )}
         </CardContent>
       </Card>
+      {!loading && <DataListPagination
+        total={items.length}
+        page={page}
+        pageSize={pageSize}
+        onPageChange={setPage}
+        onPageSizeChange={value => { setPage(1); setPageSize(value); }}
+      />}
     </div>
   );
 }

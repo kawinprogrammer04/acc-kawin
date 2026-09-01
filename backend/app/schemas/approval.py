@@ -432,6 +432,7 @@ class InboxItemOut(BaseModel):
     expense_type_name: Optional[str] = None
     request_date: date
     submitted_at: Optional[datetime]
+    status: str = Field(pattern="^(pending|approved|returned|rejected)$")
 
 
 class InboxCountOut(BaseModel):
