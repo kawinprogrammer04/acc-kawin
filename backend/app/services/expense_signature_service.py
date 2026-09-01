@@ -7,6 +7,8 @@ import io
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 from sqlalchemy import select
@@ -14,7 +16,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.approval import ApprovalRequestStep, ExpenseRequest, ExpenseRequestAttachment
-from app.models.expense_finance import ExpenseAttachmentRequirement, ExpenseSignaturePlacement
+from app.models.expense_finance import (
+    ExpenseApprovalCandidate,
+    ExpenseAttachmentRequirement,
+    ExpenseSignaturePlacement,
+)
+from app.models.user import User
+
+
+_THAI_FONT_NAME = "THSarabunNew"
+_THAI_FONT_PATH = Path(__file__).resolve().parents[1] / "templates" / "fonts" / "THSarabunNew.ttf"
 
 
 def _signature_bytes(data_url: str) -> bytes:
@@ -78,6 +89,21 @@ def _request_signature_slot(step_no: int, page_count: int) -> dict:
     }
 
 
+def _request_approval_name_slot(step_no: int, page_count: int) -> dict:
+    """Return the name row inside the same four-column approval grid cell."""
+    cell_index = max(1, int(step_no))
+    column = cell_index % 4
+    row = cell_index // 4
+    return {
+        "page_number": page_count,
+        "x": .0420 + (column * .2297),
+        "y": .8535 + (row * .0630),
+        "width": .2265,
+        "height": .0160,
+        "coordinate_system": "top_left",
+    }
+
+
 def _requested_placement(placement: dict, page_count: int) -> dict:
     """Normalize a browser placement without changing its visible position."""
     return {
@@ -116,6 +142,23 @@ def _stamp_pdf(source: Path, signature: bytes, placements: list[dict]) -> bytes:
             overlay = canvas.Canvas(overlay_stream, pagesize=(width, height))
             overlay.drawImage(ImageReader(io.BytesIO(signature)), x, y, stamp_w, stamp_h,
                               preserveAspectRatio=True, mask="auto", anchor="c")
+            approval_name = str(placement.get("approval_name") or "").strip()
+            if approval_name:
+                name_slot = _request_approval_name_slot(
+                    int(placement.get("approval_step_no", 1)), len(reader.pages)
+                )
+                name_x, name_y, name_w, name_h = _placement_box(name_slot, width, height)
+                overlay.setFillColorRGB(1, 1, 1)
+                overlay.rect(name_x, name_y, name_w, name_h, fill=1, stroke=0)
+                if _THAI_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
+                    pdfmetrics.registerFont(TTFont(_THAI_FONT_NAME, str(_THAI_FONT_PATH)))
+                label = f"({approval_name})"
+                font_size = 8.7
+                while font_size > 6 and pdfmetrics.stringWidth(label, _THAI_FONT_NAME, font_size) > name_w - 4:
+                    font_size -= .25
+                overlay.setFillColorRGB(55 / 255, 65 / 255, 81 / 255)
+                overlay.setFont(_THAI_FONT_NAME, font_size)
+                overlay.drawCentredString(name_x + (name_w / 2), name_y + 2, label)
             overlay.save()
             overlay_stream.seek(0)
             page.merge_page(PdfReader(overlay_stream).pages[0])
@@ -129,6 +172,32 @@ async def stamp_required_documents(db: AsyncSession, req: ExpenseRequest, step: 
                                    actor_user_id: int, data_url: str, placements: list[dict]) -> None:
     signature = _signature_bytes(data_url)
     signature_hash = hashlib.sha256(signature).hexdigest()
+    candidate_rows = (await db.execute(
+        select(
+            ExpenseApprovalCandidate.user_id,
+            ExpenseApprovalCandidate.status,
+        )
+        .where(ExpenseApprovalCandidate.request_step_id == step.id)
+        .order_by(ExpenseApprovalCandidate.id)
+    )).all()
+    approval_name = None
+    if len(candidate_rows) > 1:
+        signed_user_ids = [
+            user_id for user_id, status in candidate_rows if status == "approved"
+        ]
+        if actor_user_id not in signed_user_ids:
+            signed_user_ids.append(actor_user_id)
+        user_rows = (await db.execute(
+            select(User.id, User.full_name, User.username).where(User.id.in_(signed_user_ids))
+        )).all()
+        names_by_id = {
+            user_id: full_name or username
+            for user_id, full_name, username in user_rows
+        }
+        approval_name = ", ".join(
+            names_by_id.get(user_id, f"ผู้ใช้ #{user_id}")
+            for user_id in signed_user_ids
+        )
     attachments = [a for a in (await db.execute(
         ExpenseRequestAttachment.__table__.select().where(
             ExpenseRequestAttachment.expense_request_id == req.id,
@@ -168,6 +237,9 @@ async def stamp_required_documents(db: AsyncSession, req: ExpenseRequest, step: 
                 [_requested_placement(file_placements[-1], page_count)]
                 if file_placements else [_request_signature_slot(step.step_no, page_count)]
             )
+            if approval_name:
+                file_placements[0]["approval_name"] = approval_name
+                file_placements[0]["approval_step_no"] = step.step_no
         elif not file_placements:
             file_placements = [{
                 "page_number": requirement.default_signature_page if requirement and requirement.default_signature_page else 1,

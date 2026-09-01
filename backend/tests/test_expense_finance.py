@@ -16,6 +16,7 @@ from app.services.expense_finance_service import excel_bytes
 from app.services.expense_request_service import calculate_totals, render_payment_approval_pdf
 from app.services.expense_signature_service import (
     _placement_box,
+    _request_approval_name_slot,
     _request_signature_slot,
     _requested_placement,
     _stamp_pdf,
@@ -482,6 +483,18 @@ class SignaturePdfTests(unittest.TestCase):
         self.assertAlmostEqual(fourth_step["y"], .858878)
         self.assertEqual(fourth_step["page_number"], 3)
 
+    def test_approval_name_slot_matches_the_step_signature_cell(self):
+        first_step = _request_approval_name_slot(1, 2)
+        self.assertAlmostEqual(first_step["x"], .2717)
+        self.assertAlmostEqual(first_step["y"], .8535)
+        self.assertAlmostEqual(first_step["width"], .2265)
+        self.assertAlmostEqual(first_step["height"], .016)
+        self.assertEqual(first_step["page_number"], 2)
+        fourth_step = _request_approval_name_slot(4, 3)
+        self.assertAlmostEqual(fourth_step["x"], .042)
+        self.assertAlmostEqual(fourth_step["y"], .9165)
+        self.assertEqual(fourth_step["page_number"], 3)
+
     def test_requested_placement_keeps_browser_coordinates_and_clamps_page(self):
         placement = _requested_placement({
             "attachment_id": "primary-id",
@@ -531,6 +544,25 @@ class SignaturePdfTests(unittest.TestCase):
             stamped = PdfReader(io.BytesIO(output))
             self.assertEqual(len(stamped.pages), 20)
             self.assertEqual(stamped.pages[12].rotation, 0)
+
+    def test_stamp_adds_the_actual_approver_name(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source.pdf"
+            pdf = canvas.Canvas(str(source))
+            pdf.drawString(50, 800, "source")
+            pdf.save()
+            output = _stamp_pdf(source, base64_png(), [{
+                "page_number": 1,
+                "x": .307,
+                "y": .795878,
+                "width": .155,
+                "height": .026,
+                "coordinate_system": "top_left",
+                "approval_name": "สมหญิง รักงาน",
+                "approval_step_no": 1,
+            }])
+            text = PdfReader(io.BytesIO(output)).pages[0].extract_text() or ""
+            self.assertIn("สมหญิง", text)
 
 
 def base64_png() -> bytes:
