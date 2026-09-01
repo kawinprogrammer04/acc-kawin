@@ -718,12 +718,21 @@ export function ExpenseRequestDetailPage() {
     <Dialog open={Boolean(attachmentPreview)} onOpenChange={(open) => { if (!open) closeAttachmentPreview(); }}>
       <DialogContent className="flex h-[92vh] max-w-[96vw] flex-col overflow-hidden p-0 sm:max-w-7xl">
         <DialogHeader className="border-b px-6 pb-4 pt-6">
-          <DialogTitle className="break-all pr-8">{attachmentPreview?.title || "ดูไฟล์"}</DialogTitle>
-          <DialogDescription>
-            {attachmentPreview && attachmentPreview.items.length > 1
-              ? `แสดงเอกสารคำขอพร้อมกัน ${attachmentPreview.items.length} ไฟล์`
-              : attachmentPreview?.items[0]?.file.has_signed_file ? "ฉบับลงนามแล้ว" : "ไฟล์เอกสารคำขอ"}
-          </DialogDescription>
+          <div className="flex flex-wrap items-start justify-between gap-3 pr-8">
+            <div className="min-w-0">
+              <DialogTitle className="break-all">{attachmentPreview?.title || "ดูไฟล์"}</DialogTitle>
+              <DialogDescription className="mt-1.5">
+                {attachmentPreview && attachmentPreview.items.length > 1
+                  ? `แสดงเอกสารคำขอพร้อมกัน ${attachmentPreview.items.length} ไฟล์`
+                  : attachmentPreview?.items[0]?.file.has_signed_file ? "ฉบับลงนามแล้ว" : "ไฟล์เอกสารคำขอ"}
+              </DialogDescription>
+            </div>
+            {attachmentPreview && attachmentPreview.items.length > 1 && <button type="button" onClick={downloadAllAttachments} disabled={attachmentPreview.loading || downloadingAllAttachments}
+              className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-4 text-sm font-semibold text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50">
+              {downloadingAllAttachments ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              {downloadingAllAttachments ? "กำลังรวมไฟล์..." : "ดาวน์โหลดทั้งหมด (.zip)"}
+            </button>}
+          </div>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-auto bg-muted/20 p-4">
           {attachmentPreview?.loading ? (
@@ -758,11 +767,6 @@ export function ExpenseRequestDetailPage() {
           )}
         </div>
         <DialogFooter className="border-t px-6 py-4">
-          {attachmentPreview && attachmentPreview.items.length > 1 && <button type="button" onClick={downloadAllAttachments} disabled={attachmentPreview.loading || downloadingAllAttachments}
-            className="inline-flex min-h-10 items-center gap-2 rounded-lg border px-4 text-sm font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
-            {downloadingAllAttachments ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            {downloadingAllAttachments ? "กำลังรวมไฟล์..." : "ดาวน์โหลดทั้งหมด (.zip)"}
-          </button>}
           <button type="button" onClick={closeAttachmentPreview} className="inline-flex min-h-10 items-center rounded-lg bg-primary px-5 text-sm font-medium text-primary-foreground hover:bg-primary/90">ปิด</button>
         </DialogFooter>
       </DialogContent>
