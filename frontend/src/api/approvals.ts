@@ -508,8 +508,12 @@ export const expenseRequestsApi = {
 export const APPROVAL_INBOX_CHANGED_EVENT = "approval-inbox:changed";
 
 export const approvalInboxApi = {
-  list: (params?: { scope?: "mine" | "all"; status?: InboxItem["status"] }) =>
-    api.get<InboxItem[]>("/approvals/inbox", { params }).then((r) => r.data),
+  list: (params?: { scope?: "mine" | "all"; statuses?: InboxItem["status"][] }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.scope) searchParams.set("scope", params.scope);
+    params?.statuses?.forEach(status => searchParams.append("statuses", status));
+    return api.get<InboxItem[]>("/approvals/inbox", { params: searchParams }).then((r) => r.data);
+  },
   count: (params?: { scope?: "mine" | "all" }): Promise<number> =>
     api.get("/approvals/inbox/count", { params }).then((r) => Number(r.data.count || 0)),
   decide: (

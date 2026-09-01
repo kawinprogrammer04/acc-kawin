@@ -6,7 +6,7 @@ import type { InboxItem } from "@/api/approvals";
 import { getApiErrorMessage } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { DataListFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
 import { dataListFilterPanelClass, dataListTableHeaderCellClass, dataListTableScrollClass } from "@/components/data-list/styles";
 import { formatCurrency, formatDate } from "@/lib/format";
@@ -21,6 +21,7 @@ const inboxStatusOptions = [
 ] as const;
 
 type InboxStatus = InboxItem["status"];
+const allInboxStatuses = inboxStatusOptions.map(option => option.value);
 
 const inboxStatusStyle: Record<InboxStatus, string> = {
   pending: "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200",
@@ -35,7 +36,7 @@ export function ApprovalInboxPage() {
   const [items, setItems] = useState<InboxItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [status, setStatus] = useState<InboxStatus>("pending");
+  const [statuses, setStatuses] = useState<InboxStatus[]>(["pending"]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
@@ -49,14 +50,14 @@ export function ApprovalInboxPage() {
     try {
       setItems(await approvalInboxApi.list({
         scope: seesEveryonesInbox ? "all" : "mine",
-        status,
+        statuses: statuses.length > 0 ? statuses : [...allInboxStatuses],
       }));
     } catch (requestError) {
       setError(getApiErrorMessage(requestError, "โหลดรายการรออนุมัติไม่สำเร็จ"));
     } finally {
       setLoading(false);
     }
-  }, [seesEveryonesInbox, status]);
+  }, [seesEveryonesInbox, statuses]);
 
   useEffect(() => {
     load();
@@ -65,11 +66,13 @@ export function ApprovalInboxPage() {
   const visibleItems = useMemo(() => pageSize === 0
     ? items
     : items.slice((page - 1) * pageSize, page * pageSize), [items, page, pageSize]);
-  const statusLabel = inboxStatusOptions.find(option => option.value === status)?.label || status;
+  const statusLabel = statuses.length === 0
+    ? "ทุกสถานะ"
+    : statuses.map(status => inboxStatusOptions.find(option => option.value === status)?.label || status).join(", ");
 
-  const changeStatus = (nextStatus: string) => {
+  const changeStatuses = (nextStatuses: string[]) => {
     setPage(1);
-    setStatus(nextStatus as InboxStatus);
+    setStatuses(nextStatuses as InboxStatus[]);
   };
 
   return (
@@ -82,16 +85,15 @@ export function ApprovalInboxPage() {
       <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} rounded-2xl border bg-card/80 p-5 shadow-sm backdrop-blur-xl`}>
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="w-full sm:max-w-xs">
-            <DataListFilterSelect
+            <DataListMultiFilterSelect
               label="สถานะ"
-              value={status}
-              allLabel="รออนุมัติ"
-              allowEmpty={false}
+              values={statuses}
+              allLabel="ทุกสถานะ"
               options={[...inboxStatusOptions]}
-              onChange={changeStatus}
+              onChange={changeStatuses}
             />
           </div>
-          <button type="button" onClick={() => changeStatus("pending")} disabled={status === "pending"}
+          <button type="button" onClick={() => changeStatuses(["pending"])} disabled={statuses.length === 1 && statuses[0] === "pending"}
             className="inline-flex h-11 items-center gap-2 rounded-md border border-input bg-background px-5 text-sm font-bold text-muted-foreground transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-rose-950/30">
             <Eraser className="h-4 w-4" />ล้างตัวกรอง
           </button>
@@ -134,7 +136,7 @@ export function ApprovalInboxPage() {
                 </thead>
                 <tbody className="divide-y">
                   {visibleItems.map((item) => (
-                    <tr key={item.step_id} className="hover:bg-muted/20">
+                    <tr key={`${item.step_id}-${item.status}`} className="hover:bg-muted/20">
                       <td className="px-4 py-4">
                         <Link
                           to={`/expense-requests/${item.expense_request_id}`}
