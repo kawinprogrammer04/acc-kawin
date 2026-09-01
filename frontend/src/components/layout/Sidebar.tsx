@@ -33,6 +33,14 @@ type NavGroup = { label: string; icon: React.ComponentType<any>; children: NavLe
 type NavItem = NavLeaf | NavGroup;
 
 // ── Navigation config ─────────────────────────────────────────────────────────
+const hrExpenseRequestsNav: NavLeaf = {
+  key: "hr_expense_requests",
+  label: "กลับไประบบ HR",
+  href: "https://hr.kawinbrothers.com/hr/expense-requests",
+  icon: ExternalLink,
+  external: true,
+};
+
 const cashflowNav: NavItem[] = [
   { key: "dashboard", label: "แดชบอร์ด", href: "/", icon: LayoutDashboard },
   { key: "income", label: "รายรับ", href: "/income", icon: ArrowUpCircle },
@@ -55,17 +63,10 @@ const cashflowNav: NavItem[] = [
     key: "expense_requests", label: "เบิกเงิน / ขออนุมัติ", href: "/expense-requests", icon: Send,
     excludePrefixes: ["/expense-requests/accounting", "/expense-requests/dashboard", "/expense-requests/settings"],
   },
+  hrExpenseRequestsNav,
   { key: "approvals_inbox", label: "รออนุมัติของฉัน", href: "/approvals/inbox", icon: Inbox },
   { key: "activity_logs", label: "Activity Log", href: "/activity-logs", icon: ClipboardList },
 ];
-
-const hrExpenseRequestsNav: NavLeaf = {
-  key: "hr_expense_requests",
-  label: "กลับไประบบ HR",
-  href: "https://hr.kawinbrothers.com/hr/expense-requests",
-  icon: ExternalLink,
-  external: true,
-};
 
 const accountingNav: NavItem[] = [
   { key: "accounting", label: "ภาพรวมบัญชี", href: "/accounting", icon: LayoutDashboard },
@@ -273,7 +274,7 @@ function filterNavItems(items: NavItem[], canView: (key: string) => boolean): Na
         const children = item.children.filter(child => canView(child.key));
         return children.length ? { ...item, children } : null;
       }
-      return canView(item.key) ? item : null;
+      return item.external || canView(item.key) ? item : null;
     })
     .filter(Boolean) as NavItem[];
 }
@@ -285,6 +286,7 @@ function menuToLeaf(menu: AppMenu): NavLeaf | null {
     label: menu.label,
     href: menu.path,
     icon: resolveIcon(menu.icon),
+    external: /^https?:\/\//i.test(menu.path),
     // These pages share the `/expense-requests` prefix but are separate
     // finance sections. Without this exclusion, NavLink marks both the
     // parent request menu and the accounting/settings menu as active.
@@ -347,14 +349,6 @@ function DynamicNav({
     return acc;
   }, {});
 
-  const expenseGroup = Object.values(groups).find(group =>
-    group.items.some(item => item.key === "expense_requests"),
-  );
-  if (expenseGroup && !expenseGroup.items.some(item => item.key === hrExpenseRequestsNav.key)) {
-    const expenseIndex = expenseGroup.items.findIndex(item => item.key === "expense_requests");
-    expenseGroup.items.splice(expenseIndex + 1, 0, hrExpenseRequestsNav);
-  }
-
   const cashflow = [...(groups.cashflow?.items ?? [])];
   const hasReconciliation = cashflow.some(item => item.href === "/bank-reconciliation");
   const walletIndex = cashflow.findIndex(item => item.key === "wallet_accounts");
@@ -415,12 +409,6 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
     : (user?.menus ?? []);
   const useDynamicMenu = Boolean(dynamicMenus.length);
   const visibleCashflowNav = filterNavItems(cashflowNav, (key) => can(key));
-  const expenseRequestIndex = visibleCashflowNav.findIndex(item =>
-    !("children" in item) && item.key === "expense_requests",
-  );
-  if (expenseRequestIndex >= 0) {
-    visibleCashflowNav.splice(expenseRequestIndex + 1, 0, hrExpenseRequestsNav);
-  }
   const visibleAccountingNav = filterNavItems(accountingNav, (key) => can(key));
   const visibleStatementNavCount = statementNav.filter(({ tab }) => can(statementKeyByTab[tab])).length;
   const visibleAdminNav = adminNav.filter((item) => {
