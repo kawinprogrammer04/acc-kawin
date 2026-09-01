@@ -97,9 +97,9 @@ def _request_approval_name_slot(step_no: int, page_count: int) -> dict:
     return {
         "page_number": page_count,
         "x": .0420 + (column * .2297),
-        "y": .8535 + (row * .0630),
+        "y": .8558 + (row * .0630),
         "width": .2265,
-        "height": .0160,
+        "height": .0128,
         "coordinate_system": "top_left",
     }
 
@@ -140,8 +140,6 @@ def _stamp_pdf(source: Path, signature: bytes, placements: list[dict]) -> bytes:
             x, y, stamp_w, stamp_h = _placement_box(placement, width, height)
             overlay_stream = io.BytesIO()
             overlay = canvas.Canvas(overlay_stream, pagesize=(width, height))
-            overlay.drawImage(ImageReader(io.BytesIO(signature)), x, y, stamp_w, stamp_h,
-                              preserveAspectRatio=True, mask="auto", anchor="c")
             approval_name = str(placement.get("approval_name") or "").strip()
             if approval_name:
                 name_slot = _request_approval_name_slot(
@@ -159,6 +157,10 @@ def _stamp_pdf(source: Path, signature: bytes, placements: list[dict]) -> bytes:
                 overlay.setFillColorRGB(55 / 255, 65 / 255, 81 / 255)
                 overlay.setFont(_THAI_FONT_NAME, font_size)
                 overlay.drawCentredString(name_x + (name_w / 2), name_y + 2, label)
+            # Draw the signature last so the name-row cleanup can never erase
+            # or visually shift any part of the placement confirmed in preview.
+            overlay.drawImage(ImageReader(io.BytesIO(signature)), x, y, stamp_w, stamp_h,
+                              preserveAspectRatio=True, mask="auto", anchor="c")
             overlay.save()
             overlay_stream.seek(0)
             page.merge_page(PdfReader(overlay_stream).pages[0])
