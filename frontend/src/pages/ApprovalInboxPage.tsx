@@ -6,6 +6,7 @@ import type { InboxItem } from "@/api/approvals";
 import { getApiErrorMessage } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { dataListTableHeaderCellClass, dataListTableScrollClass } from "@/components/data-list/styles";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -63,27 +64,18 @@ export function ApprovalInboxPage() {
               <p className="mt-1 text-sm text-muted-foreground">รายการใหม่ที่มาถึงขั้นของคุณจะแสดงที่นี่</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[960px] text-sm">
-                <thead className="border-b bg-muted/40">
+            <div className={dataListTableScrollClass}>
+              <table className="w-full min-w-[1180px] text-sm">
+                <thead className="text-xs font-semibold text-muted-foreground">
                   <tr>
-                    {[
-                      "คำขอ",
-                      "ผู้ขอ / แผนก",
-                      "วัตถุประสงค์",
-                      "ส่งเมื่อ",
-                      "ยอดเบิก",
-                      "ดำเนินการ",
-                    ].map((heading) => (
-                      <th
-                        key={heading}
-                        className={`px-4 py-3 text-left text-xs font-semibold text-muted-foreground ${
-                          ["ยอดเบิก", "ดำเนินการ"].includes(heading) ? "text-right" : ""
-                        }`}
-                      >
-                        {heading}
-                      </th>
-                    ))}
+                    <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>คำขอ</th>
+                    <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>วันที่เบิก</th>
+                    <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>ผู้ขอ</th>
+                    <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>แผนก</th>
+                    <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>วัตถุประสงค์</th>
+                    <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-right`}>ยอดเงิน</th>
+                    <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>สถานะ</th>
+                    <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-right`}>ดำเนินการ</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
@@ -98,19 +90,23 @@ export function ApprovalInboxPage() {
                         </Link>
                         <p className="mt-1 text-xs text-muted-foreground">{item.expense_type_name || "-"}</p>
                       </td>
+                      <td className="whitespace-nowrap px-4 py-4 text-muted-foreground">
+                        {formatDate(`${item.request_date}T00:00:00`)}
+                      </td>
                       <td className="px-4 py-4">
                         <p className="font-medium">{item.requester_name || "-"}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {item.department_name || "ไม่มีแผนก"}
-                        </p>
+                        {item.requester_position_name && <p className="mt-1 text-xs text-muted-foreground">{item.requester_position_name}</p>}
                       </td>
+                      <td className="px-4 py-4 text-muted-foreground">{item.department_name || "ไม่มีแผนก"}</td>
                       <td className="max-w-xs px-4 py-4">
                         <p className="line-clamp-2 text-muted-foreground">{item.title}</p>
                       </td>
-                      <td className="px-4 py-4 text-muted-foreground">
-                        {item.submitted_at ? formatDate(item.submitted_at) : "-"}
-                      </td>
                       <td className="px-4 py-4 text-right font-semibold">{formatCurrency(item.amount)}</td>
+                      <td className="px-4 py-4">
+                        <span className="inline-flex whitespace-nowrap rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-200">
+                          รออนุมัติ
+                        </span>
+                      </td>
                       <td className="px-4 py-4 text-right">
                         <Link
                           to={`/expense-requests/${item.expense_request_id}`}
