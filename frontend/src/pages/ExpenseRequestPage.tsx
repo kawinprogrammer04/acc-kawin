@@ -166,10 +166,6 @@ export function ExpenseRequestPage() {
   return (
     <div className="space-y-5 p-6">
       <PageHeader title="คำขอเบิกค่าใช้จ่าย" subtitle="สร้างคำขอ ติดตามสถานะ และตรวจสอบเอกสาร">
-        <a href="https://hr.kawinbrothers.com/hr/expense-requests"
-          className="inline-flex items-center gap-2 rounded-lg border border-input bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-muted">
-          <ArrowLeft className="h-4 w-4" /> กลับไประบบ HR
-        </a>
         <button onClick={() => navigate("/expense-requests/create?step=0")}
           className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
           <Plus className="h-4 w-4" /> สร้างคำขอ

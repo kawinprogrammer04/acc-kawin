@@ -8,6 +8,7 @@ import {
   Upload, List, PenSquare,
   Receipt, ShieldCheck, ListTree,
   RefreshCcw, Send, Inbox, Workflow, KeyRound, X,
+  ExternalLink,
 } from "lucide-react";
 import * as LucideIcons from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -21,6 +22,7 @@ import type { AppMenu } from "@/types";
 // ── Types ─────────────────────────────────────────────────────────────────────
 type NavLeaf = {
   key: string; label: string; href: string; icon?: React.ComponentType<any>;
+  external?: boolean;
   // Sub-routes nested under `href` that are actually a different section
   // (e.g. /expense-requests/accounting is "บัญชีตรวจจ่าย", not "เบิกเงิน / ขออนุมัติ")
   // and have no nav entry of their own — NavLink's default prefix matching would
@@ -56,6 +58,14 @@ const cashflowNav: NavItem[] = [
   { key: "approvals_inbox", label: "รออนุมัติของฉัน", href: "/approvals/inbox", icon: Inbox },
   { key: "activity_logs", label: "Activity Log", href: "/activity-logs", icon: ClipboardList },
 ];
+
+const hrExpenseRequestsNav: NavLeaf = {
+  key: "hr_expense_requests",
+  label: "กลับไประบบ HR",
+  href: "https://hr.kawinbrothers.com/hr/expense-requests",
+  icon: ExternalLink,
+  external: true,
+};
 
 const accountingNav: NavItem[] = [
   { key: "accounting", label: "ภาพรวมบัญชี", href: "/accounting", icon: LayoutDashboard },
@@ -135,6 +145,14 @@ function LeafLink({
   const excluded = item.excludePrefixes?.some(
     (prefix) => location.pathname === prefix || location.pathname.startsWith(prefix + "/"),
   );
+  if (item.external) {
+    return (
+      <a href={item.href} className={cn(baseCls, inactiveCls)}>
+        {Icon && <Icon className="h-4 w-4 shrink-0" />}
+        <span className="min-w-0 flex-1 truncate">{item.label}</span>
+      </a>
+    );
+  }
   return (
     <NavLink
       to={item.href}
@@ -329,6 +347,14 @@ function DynamicNav({
     return acc;
   }, {});
 
+  const expenseGroup = Object.values(groups).find(group =>
+    group.items.some(item => item.key === "expense_requests"),
+  );
+  if (expenseGroup && !expenseGroup.items.some(item => item.key === hrExpenseRequestsNav.key)) {
+    const expenseIndex = expenseGroup.items.findIndex(item => item.key === "expense_requests");
+    expenseGroup.items.splice(expenseIndex + 1, 0, hrExpenseRequestsNav);
+  }
+
   const cashflow = [...(groups.cashflow?.items ?? [])];
   const hasReconciliation = cashflow.some(item => item.href === "/bank-reconciliation");
   const walletIndex = cashflow.findIndex(item => item.key === "wallet_accounts");
@@ -389,6 +415,12 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
     : (user?.menus ?? []);
   const useDynamicMenu = Boolean(dynamicMenus.length);
   const visibleCashflowNav = filterNavItems(cashflowNav, (key) => can(key));
+  const expenseRequestIndex = visibleCashflowNav.findIndex(item =>
+    !("children" in item) && item.key === "expense_requests",
+  );
+  if (expenseRequestIndex >= 0) {
+    visibleCashflowNav.splice(expenseRequestIndex + 1, 0, hrExpenseRequestsNav);
+  }
   const visibleAccountingNav = filterNavItems(accountingNav, (key) => can(key));
   const visibleStatementNavCount = statementNav.filter(({ tab }) => can(statementKeyByTab[tab])).length;
   const visibleAdminNav = adminNav.filter((item) => {
