@@ -78,6 +78,15 @@ def _request_signature_slot(step_no: int, page_count: int) -> dict:
     }
 
 
+def _requested_placement(placement: dict, page_count: int) -> dict:
+    """Normalize a browser placement without changing its visible position."""
+    return {
+        **placement,
+        "page_number": max(1, min(page_count, int(placement.get("page_number", 1)))),
+        "coordinate_system": "top_left",
+    }
+
+
 def _stamp_pdf(source: Path, signature: bytes, placements: list[dict]) -> bytes:
     reader = PdfReader(str(source))
     if reader.is_encrypted:
@@ -152,9 +161,13 @@ async def stamp_required_documents(db: AsyncSession, req: ExpenseRequest, step: 
         ]
         requirement = requirements_by_id.get(attachment["requirement_id"])
         if attachment["attachment_type"] == "primary":
-            # HR never trusts a dragged primary-document position. The
-            # approver's signature is stamped into their deterministic slot.
-            file_placements = [_request_signature_slot(step.step_no, page_count)]
+            # The preview is the source of truth: stamp exactly where the
+            # approver confirmed it. Older clients that send no placement
+            # still receive the deterministic HR-grid fallback.
+            file_placements = (
+                [_requested_placement(file_placements[-1], page_count)]
+                if file_placements else [_request_signature_slot(step.step_no, page_count)]
+            )
         elif not file_placements:
             file_placements = [{
                 "page_number": requirement.default_signature_page if requirement and requirement.default_signature_page else 1,
@@ -168,11 +181,7 @@ async def stamp_required_documents(db: AsyncSession, req: ExpenseRequest, step: 
             # Supporting documents keep the page selected by the approver,
             # matching HR. A remembered page is clamped when a replacement
             # file has fewer pages than the previous document.
-            file_placements = [{
-                **p,
-                "page_number": max(1, min(page_count, int(p.get("page_number", 1)))),
-                "coordinate_system": "top_left",
-            } for p in file_placements]
+            file_placements = [_requested_placement(p, page_count) for p in file_placements]
         signed = _stamp_pdf(source, signature, file_placements)
         digest = hashlib.sha256(signed).hexdigest()
         output = Path(settings.EXPENSE_REQUEST_UPLOAD_DIR) / req.id / "signed" / f"r{req.current_revision}-{attachment['id']}-{digest[:12]}.pdf"

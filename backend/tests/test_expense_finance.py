@@ -14,7 +14,12 @@ from reportlab.pdfgen import canvas
 
 from app.services.expense_finance_service import excel_bytes
 from app.services.expense_request_service import calculate_totals, render_payment_approval_pdf
-from app.services.expense_signature_service import _placement_box, _request_signature_slot, _stamp_pdf
+from app.services.expense_signature_service import (
+    _placement_box,
+    _request_signature_slot,
+    _requested_placement,
+    _stamp_pdf,
+)
 from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
 from app.routers.approvals import _employee_organization, _rule_specificity
 from app.routers.expense_finance import (
@@ -476,6 +481,23 @@ class SignaturePdfTests(unittest.TestCase):
         self.assertAlmostEqual(fourth_step["x"], .0773)
         self.assertAlmostEqual(fourth_step["y"], .858878)
         self.assertEqual(fourth_step["page_number"], 3)
+
+    def test_requested_placement_keeps_browser_coordinates_and_clamps_page(self):
+        placement = _requested_placement({
+            "attachment_id": "primary-id",
+            "page_number": 999,
+            "x": .18,
+            "y": .72,
+            "width": .21,
+            "height": .05,
+            "coordinate_system": "bottom_left",
+        }, 4)
+        self.assertEqual(placement["page_number"], 4)
+        self.assertAlmostEqual(placement["x"], .18)
+        self.assertAlmostEqual(placement["y"], .72)
+        self.assertAlmostEqual(placement["width"], .21)
+        self.assertAlmostEqual(placement["height"], .05)
+        self.assertEqual(placement["coordinate_system"], "top_left")
 
     def test_browser_top_left_coordinates_are_converted_for_reportlab(self):
         self.assertEqual(
