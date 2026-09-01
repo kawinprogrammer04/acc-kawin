@@ -9,15 +9,17 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import mimetypes
 from pathlib import Path
+import tempfile
 from typing import Optional
 import re
 import uuid
 import hashlib
 import shutil
+import zipfile
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import Range
 from sqlalchemy.exc import IntegrityError
@@ -1640,6 +1642,64 @@ async def generate_expense_request_primary_document(
         "file_name": attachment.file_name, "content_type": attachment.content_type,
         "file_size": attachment.file_size, "created_at": attachment.created_at,
     }
+
+
+@router.get("/expense-requests/{request_id}/attachments/archive")
+async def download_expense_request_attachments_archive(
+    request_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    req = await _get_company_row(db, ExpenseRequest, request_id, company.id, "ไม่พบคำขอเบิกเงินนี้")
+    steps = (await db.execute(select(ApprovalRequestStep).where(
+        ApprovalRequestStep.expense_request_id == request_id,
+        ApprovalRequestStep.resolved_approver_user_id == current_user.id,
+    ))).scalars().all()
+    if not (req.requester_user_id == current_user.id or steps or await _is_company_accounting(db, current_user, company.id)):
+        raise HTTPException(403, "คุณไม่มีสิทธิ์ดูเอกสารนี้")
+
+    attachments = await _request_attachments(db, request_id)
+    archive = tempfile.SpooledTemporaryFile(max_size=20 * 1024 * 1024, mode="w+b")
+    used_names: set[str] = set()
+    file_count = 0
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zipped:
+        for attachment in attachments:
+            selected_path = attachment.signed_file_path or attachment.file_path
+            if not selected_path or not Path(selected_path).is_file():
+                continue
+            original_name = Path(attachment.file_name or "document").name or "document"
+            archive_name = original_name
+            duplicate_no = 2
+            while archive_name.casefold() in used_names:
+                name_path = Path(original_name)
+                archive_name = f"{name_path.stem} ({duplicate_no}){name_path.suffix}"
+                duplicate_no += 1
+            used_names.add(archive_name.casefold())
+            zipped.write(selected_path, arcname=archive_name)
+            file_count += 1
+
+    if file_count == 0:
+        archive.close()
+        raise HTTPException(404, "ไม่พบไฟล์เอกสารสำหรับดาวน์โหลด")
+    archive.seek(0)
+
+    def stream_archive():
+        try:
+            while chunk := archive.read(1024 * 1024):
+                yield chunk
+        finally:
+            archive.close()
+
+    archive_filename = f"{req.request_no or 'expense-request'}-documents.zip"
+    return StreamingResponse(
+        stream_archive(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(archive_filename)}",
+            "Cache-Control": "private, no-store, max-age=0",
+        },
+    )
 
 
 @router.get("/expense-requests/{request_id}/attachments/{attachment_id}")
