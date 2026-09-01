@@ -10,7 +10,7 @@ from decimal import Decimal
 import mimetypes
 from pathlib import Path
 import tempfile
-from typing import Optional
+from typing import Literal, Optional
 import re
 import uuid
 import hashlib
@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import Range
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1885,6 +1885,8 @@ async def permanently_delete_expense_request(
 # Approver — inbox & decisions
 # ═══════════════════════════════════════════════════════════════════════════
 
+InboxStatus = Literal["pending", "approved", "returned", "rejected"]
+
 async def _inbox_conditions(
     scope: str,
     db: AsyncSession,
@@ -1900,13 +1902,19 @@ async def _inbox_conditions(
     if status == "pending":
         conditions.append(ApprovalRequestStep.status == "pending")
         if not can_view_all:
+            has_candidates = select(ExpenseApprovalCandidate.id).where(
+                ExpenseApprovalCandidate.request_step_id == ApprovalRequestStep.id,
+            ).exists()
             is_pending_candidate = select(ExpenseApprovalCandidate.id).where(
                 ExpenseApprovalCandidate.request_step_id == ApprovalRequestStep.id,
                 ExpenseApprovalCandidate.user_id == current_user.id,
                 ExpenseApprovalCandidate.status == "pending",
             ).exists()
             conditions.append(or_(
-                ApprovalRequestStep.resolved_approver_user_id == current_user.id,
+                and_(
+                    ~has_candidates,
+                    ApprovalRequestStep.resolved_approver_user_id == current_user.id,
+                ),
                 is_pending_candidate,
             ))
         return conditions
@@ -1947,25 +1955,31 @@ async def get_inbox_count(
 @router.get("/approvals/inbox", response_model=list[InboxItemOut])
 async def get_inbox(
     scope: str = Query("mine", pattern="^(mine|all)$"),
-    status: str = Query("pending", pattern="^(pending|approved|returned|rejected)$"),
+    statuses: list[InboxStatus] = Query(default=["pending"]),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
-    conditions = await _inbox_conditions(scope, db, current_user, company, status)
-    order_by = (
-        ExpenseRequest.submitted_at.asc()
-        if status == "pending"
-        else ApprovalRequestStep.decided_at.desc()
-    )
-    rows = (
-        await db.execute(
-            select(ApprovalRequestStep, ExpenseRequest)
-            .join(ExpenseRequest, ExpenseRequest.id == ApprovalRequestStep.expense_request_id)
-            .where(*conditions)
-            .order_by(order_by)
+    selected_statuses = list(dict.fromkeys(statuses or ["pending"]))
+    rows = []
+    for selected_status in selected_statuses:
+        conditions = await _inbox_conditions(
+            scope, db, current_user, company, selected_status
         )
-    ).all()
+        order_by = (
+            ExpenseRequest.submitted_at.asc()
+            if selected_status == "pending"
+            else ApprovalRequestStep.decided_at.desc()
+        )
+        status_rows = (
+            await db.execute(
+                select(ApprovalRequestStep, ExpenseRequest)
+                .join(ExpenseRequest, ExpenseRequest.id == ApprovalRequestStep.expense_request_id)
+                .where(*conditions)
+                .order_by(order_by)
+            )
+        ).all()
+        rows.extend((step, req, selected_status) for step, req in status_rows)
     positions = {p.id: p.name for p in (await db.execute(select(Position).where(Position.company_id == company.id))).scalars().all()}
     users = {u.id: (u.full_name or u.username) for u in (await db.execute(select(User))).scalars().all()}
     expense_types = {e.id: e.name for e in (await db.execute(select(ExpenseType).where(ExpenseType.company_id == company.id))).scalars().all()}
@@ -1981,7 +1995,7 @@ async def get_inbox(
             request_date=req.request_date, submitted_at=req.submitted_at,
             status=status,
         )
-        for step, req in rows
+        for step, req, status in rows
     ]
 
 
