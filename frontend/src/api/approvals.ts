@@ -268,6 +268,7 @@ export interface InboxItem {
   expense_type_name?: string;
   request_date: string;
   submitted_at?: string;
+  status: "pending" | "approved" | "returned" | "rejected";
 }
 
 // ── Positions ────────────────────────────────────────────────────────────────
@@ -507,7 +508,8 @@ export const expenseRequestsApi = {
 export const APPROVAL_INBOX_CHANGED_EVENT = "approval-inbox:changed";
 
 export const approvalInboxApi = {
-  list: (params?: { scope?: "mine" | "all" }) => api.get("/approvals/inbox", { params }).then((r) => r.data),
+  list: (params?: { scope?: "mine" | "all"; status?: InboxItem["status"] }) =>
+    api.get<InboxItem[]>("/approvals/inbox", { params }).then((r) => r.data),
   count: (params?: { scope?: "mine" | "all" }): Promise<number> =>
     api.get("/approvals/inbox/count", { params }).then((r) => Number(r.data.count || 0)),
   decide: (

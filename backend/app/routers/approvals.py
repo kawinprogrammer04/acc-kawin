@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import Range
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,7 @@ from app.core.dependencies import (
     require_permission,
 )
 from app.models.approval import (
+    ApprovalAction,
     ApprovalDelegation,
     ApprovalPolicyVersion,
     ApprovalRequestStep,
@@ -1882,15 +1883,41 @@ async def _inbox_conditions(
     db: AsyncSession,
     current_user: User,
     company: Company,
+    status: str = "pending",
 ):
-    conditions = [
-        ApprovalRequestStep.status == "pending",
-        ExpenseRequest.company_id == company.id,
-    ]
+    conditions = [ExpenseRequest.company_id == company.id]
+    can_view_all = scope == "all" and await _can_view_all_company_requests(
+        db, current_user, company.id
+    )
+
+    if status == "pending":
+        conditions.append(ApprovalRequestStep.status == "pending")
+        if not can_view_all:
+            is_pending_candidate = select(ExpenseApprovalCandidate.id).where(
+                ExpenseApprovalCandidate.request_step_id == ApprovalRequestStep.id,
+                ExpenseApprovalCandidate.user_id == current_user.id,
+                ExpenseApprovalCandidate.status == "pending",
+            ).exists()
+            conditions.append(or_(
+                ApprovalRequestStep.resolved_approver_user_id == current_user.id,
+                is_pending_candidate,
+            ))
+        return conditions
+
+    action_by_status = {
+        "approved": "approve",
+        "returned": "return",
+        "rejected": "reject",
+    }
+    action_exists = select(ApprovalAction.id).where(
+        ApprovalAction.request_step_id == ApprovalRequestStep.id,
+        ApprovalAction.action == action_by_status[status],
+    )
+    if not can_view_all:
+        action_exists = action_exists.where(ApprovalAction.actor_user_id == current_user.id)
+    conditions.append(action_exists.exists())
     # scope=all is only honored for super_admin/platform_admin — everyone else's
-    # inbox stays scoped to steps actually resolved to them.
-    if scope == "mine" or not await _can_view_all_company_requests(db, current_user, company.id):
-        conditions.append(ApprovalRequestStep.resolved_approver_user_id == current_user.id)
+    # history stays scoped to actions the current user actually performed.
     return conditions
 
 
@@ -1913,17 +1940,23 @@ async def get_inbox_count(
 @router.get("/approvals/inbox", response_model=list[InboxItemOut])
 async def get_inbox(
     scope: str = Query("mine", pattern="^(mine|all)$"),
+    status: str = Query("pending", pattern="^(pending|approved|returned|rejected)$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
     company: Company = Depends(get_current_company),
 ):
-    conditions = await _inbox_conditions(scope, db, current_user, company)
+    conditions = await _inbox_conditions(scope, db, current_user, company, status)
+    order_by = (
+        ExpenseRequest.submitted_at.asc()
+        if status == "pending"
+        else ApprovalRequestStep.decided_at.desc()
+    )
     rows = (
         await db.execute(
             select(ApprovalRequestStep, ExpenseRequest)
             .join(ExpenseRequest, ExpenseRequest.id == ApprovalRequestStep.expense_request_id)
             .where(*conditions)
-            .order_by(ExpenseRequest.submitted_at)
+            .order_by(order_by)
         )
     ).all()
     positions = {p.id: p.name for p in (await db.execute(select(Position).where(Position.company_id == company.id))).scalars().all()}
@@ -1939,6 +1972,7 @@ async def get_inbox(
             department_name=req.department_name_snapshot,
             expense_type_name=expense_types.get(req.expense_type_id),
             request_date=req.request_date, submitted_at=req.submitted_at,
+            status=status,
         )
         for step, req in rows
     ]
