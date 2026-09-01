@@ -423,7 +423,7 @@ export function ExpenseRequestDetailPage() {
         <Field label="รูปแบบ" value={requestFormatLabel[request.request_format]} />
         <Field label="ประเภท" value={request.expense_type_name} />
         <Field label="ตำแหน่ง" value={request.requester_position_name} />
-        <Field label="วันที่ต้องการใช้" value={formatDate(`${request.request_date}T00:00:00`)} />
+        <Field label="วันที่ต้องการใช้" value={request.required_date ? formatDate(`${request.required_date}T00:00:00`) : "-"} />
         <Field label="บริษัทผู้จ่าย" value={request.payer_company_name} />
         <div className="sm:col-span-2"><Field label="วัตถุประสงค์" value={request.description || request.title} /></div>
       </div>
