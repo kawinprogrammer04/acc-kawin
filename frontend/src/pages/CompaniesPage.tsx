@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback } from "react";
-import { Loader2, Building2, Plus, Pencil, Users, ChevronDown, ChevronUp, Settings } from "lucide-react";
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { Loader2, Building2, Plus, Pencil, Users, ChevronDown, ChevronUp, Settings, Eraser } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { api, getApiErrorMessage } from "@/api/client";
@@ -8,6 +8,8 @@ import { rolesApi } from "@/api/roles";
 import type { Role } from "@/api/roles";
 import { RoleManagerModal } from "@/components/RoleManager";
 import { getCompanyIcon } from "@/lib/companyPresentation";
+import { DataListFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { dataListFilterControlClass, dataListFilterPanelClass } from "@/components/data-list/styles";
 
 interface Company {
   id: number;
@@ -37,6 +39,8 @@ interface UserSearchResult {
   username: string;
   full_name?: string;
   email: string;
+  department_names: string[];
+  position_names: string[];
 }
 
 const emptyForm = {
@@ -65,6 +69,9 @@ export function CompaniesPage() {
   const [showRoleManager, setShowRoleManager] = useState(false);
   const [grantCompanyId, setGrantCompanyId] = useState<number | null>(null);
   const [grantQuery, setGrantQuery] = useState("");
+  const [debouncedGrantQuery, setDebouncedGrantQuery] = useState("");
+  const [grantDepartment, setGrantDepartment] = useState("");
+  const [grantPosition, setGrantPosition] = useState("");
   const [grantResults, setGrantResults] = useState<UserSearchResult[]>([]);
   const [grantSearching, setGrantSearching] = useState(false);
   const [grantingUserId, setGrantingUserId] = useState<number | null>(null);
@@ -163,20 +170,43 @@ export function CompaniesPage() {
   }
 
   useEffect(() => {
-    if (!grantCompanyId || grantQuery.trim().length < 2) { setGrantResults([]); return; }
-    const timer = window.setTimeout(async () => {
-      setGrantSearching(true);
-      try {
-        const res = await api.get(`/companies/${grantCompanyId}/users/search`, { params: { q: grantQuery.trim() } });
-        setGrantResults(res.data);
-      } catch (e: unknown) {
-        setError(getApiErrorMessage(e));
-      } finally {
-        setGrantSearching(false);
-      }
-    }, 300);
+    const timer = window.setTimeout(() => setDebouncedGrantQuery(grantQuery.trim().toLocaleLowerCase("th")), 300);
     return () => window.clearTimeout(timer);
-  }, [grantCompanyId, grantQuery]);
+  }, [grantQuery]);
+
+  useEffect(() => {
+    if (!grantCompanyId) { setGrantResults([]); return; }
+    let cancelled = false;
+    setGrantSearching(true);
+    api.get(`/companies/${grantCompanyId}/users/search`)
+      .then(res => { if (!cancelled) setGrantResults(res.data); })
+      .catch((e: unknown) => { if (!cancelled) setError(getApiErrorMessage(e)); })
+      .finally(() => { if (!cancelled) setGrantSearching(false); });
+    return () => { cancelled = true; };
+  }, [grantCompanyId]);
+
+  const grantDepartmentOptions = useMemo(() => Array.from(new Set(
+    grantResults.flatMap(userResult => userResult.department_names || []),
+  )).sort((a, b) => a.localeCompare(b, "th")), [grantResults]);
+
+  const grantPositionOptions = useMemo(() => Array.from(new Set(
+    grantResults.flatMap(userResult => userResult.position_names || []),
+  )).sort((a, b) => a.localeCompare(b, "th")), [grantResults]);
+
+  const filteredGrantResults = useMemo(() => grantResults.filter(userResult => {
+    const matchesQuery = !debouncedGrantQuery || [userResult.username, userResult.email, userResult.full_name || ""]
+      .some(value => value.toLocaleLowerCase("th").includes(debouncedGrantQuery));
+    const matchesDepartment = !grantDepartment || userResult.department_names?.includes(grantDepartment);
+    const matchesPosition = !grantPosition || userResult.position_names?.includes(grantPosition);
+    return matchesQuery && matchesDepartment && matchesPosition;
+  }), [grantResults, debouncedGrantQuery, grantDepartment, grantPosition]);
+
+  function resetGrantFilters() {
+    setGrantQuery("");
+    setDebouncedGrantQuery("");
+    setGrantDepartment("");
+    setGrantPosition("");
+  }
 
   async function grantExisting(targetUser: UserSearchResult) {
     if (!grantCompanyId) return;
@@ -288,17 +318,42 @@ export function CompaniesPage() {
 
       {grantCompanyId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-xl">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-xl bg-white p-6 shadow-xl">
             <h2 className="mb-1 text-base font-semibold">เพิ่มสิทธิ์ผู้ใช้ที่มีอยู่แล้ว</h2>
-            <p className="mb-4 text-xs text-muted-foreground">ค้นหาด้วย username, email หรือชื่อ (ผู้ใช้ที่เป็นสมาชิกแล้วจะไม่แสดง)</p>
+            <p className="mb-4 text-xs text-muted-foreground">ค้นหาด้วย username, email หรือชื่อ หรือเลือกกรองตามแผนกและตำแหน่ง (ผู้ใช้ที่เป็นสมาชิกแล้วจะไม่แสดง)</p>
             <div className="space-y-3">
-              <input
-                autoFocus
-                className="w-full rounded-md border px-3 py-2 text-sm"
-                value={grantQuery}
-                onChange={e => setGrantQuery(e.target.value)}
-                placeholder="พิมพ์อย่างน้อย 2 ตัวอักษร..."
-              />
+              <div className={`${dataListFilterPanelClass} grid gap-3 rounded-xl border bg-muted/20 p-4 md:grid-cols-3`}>
+                <label className="text-sm font-bold">ค้นหาผู้ใช้
+                  <input
+                    autoFocus
+                    className={dataListFilterControlClass}
+                    value={grantQuery}
+                    onChange={e => setGrantQuery(e.target.value)}
+                    placeholder="username, email หรือชื่อ"
+                  />
+                </label>
+                <DataListFilterSelect
+                  label="แผนก"
+                  value={grantDepartment}
+                  allLabel="ทุกแผนก"
+                  options={grantDepartmentOptions.map(value => ({ value, label: value }))}
+                  onChange={setGrantDepartment}
+                />
+                <DataListFilterSelect
+                  label="ตำแหน่ง"
+                  value={grantPosition}
+                  allLabel="ทุกตำแหน่ง"
+                  options={grantPositionOptions.map(value => ({ value, label: value }))}
+                  onChange={setGrantPosition}
+                />
+                <div className="flex items-center justify-between gap-3 md:col-span-3">
+                  <span className="text-xs text-muted-foreground">แสดง {filteredGrantResults.length} จาก {grantResults.length} คน</span>
+                  <button type="button" onClick={resetGrantFilters} disabled={!grantQuery && !grantDepartment && !grantPosition}
+                    className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-bold text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40">
+                    <Eraser className="h-3.5 w-3.5" /> ล้างตัวกรอง
+                  </button>
+                </div>
+              </div>
               <div className="flex items-center gap-2">
                 <select className="flex-1 rounded-md border px-3 py-2 text-sm"
                   value={grantRole}
@@ -313,18 +368,23 @@ export function CompaniesPage() {
                 </button>
               </div>
               {error && <p className="text-xs text-rose-600">{error}</p>}
-              <div className="max-h-60 space-y-1 overflow-y-auto">
+              <div className="max-h-80 space-y-1 overflow-y-auto">
                 {grantSearching && (
                   <div className="flex justify-center py-3"><Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /></div>
                 )}
-                {!grantSearching && grantQuery.trim().length >= 2 && grantResults.length === 0 && (
+                {!grantSearching && filteredGrantResults.length === 0 && (
                   <p className="py-2 text-center text-xs text-muted-foreground">ไม่พบผู้ใช้ที่ตรงกัน (หรือเป็นสมาชิกอยู่แล้ว)</p>
                 )}
-                {grantResults.map(u => (
+                {filteredGrantResults.map(u => (
                   <div key={u.id} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
-                    <div>
+                    <div className="min-w-0">
                       <p className="font-medium">{u.full_name || u.username}</p>
-                      <p className="text-xs text-muted-foreground">{u.username} · {u.email}</p>
+                      <p className="truncate text-xs text-muted-foreground">{u.username} · {u.email}</p>
+                      {(u.department_names?.length > 0 || u.position_names?.length > 0) && (
+                        <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                          {[u.department_names?.join(", "), u.position_names?.join(", ")].filter(Boolean).join(" · ")}
+                        </p>
+                      )}
                     </div>
                     <button
                       onClick={() => grantExisting(u)}
@@ -339,7 +399,7 @@ export function CompaniesPage() {
             </div>
             <div className="mt-5 flex justify-end">
               <button
-                onClick={() => { setGrantCompanyId(null); setGrantQuery(""); setGrantResults([]); setError(""); }}
+                onClick={() => { setGrantCompanyId(null); resetGrantFilters(); setGrantResults([]); setError(""); }}
                 className="rounded-lg border px-4 py-2 text-sm hover:bg-muted"
               >
                 ปิด
@@ -445,7 +505,7 @@ export function CompaniesPage() {
                       <p className="text-xs font-medium text-muted-foreground">ผู้ใช้ที่มีสิทธิ์</p>
                       <div className="flex gap-1">
                         <button
-                          onClick={() => { setGrantCompanyId(c.id); setGrantQuery(""); setGrantResults([]); setGrantRole("viewer"); setError(""); }}
+                          onClick={() => { resetGrantFilters(); setGrantResults([]); setGrantCompanyId(c.id); setGrantRole("viewer"); setError(""); }}
                           className="flex items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted"
                         >
                           <Plus className="h-3 w-3" /> เพิ่มผู้ใช้ที่มีอยู่แล้ว
