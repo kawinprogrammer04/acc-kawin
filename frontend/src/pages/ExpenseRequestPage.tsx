@@ -7,7 +7,7 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { PageHeader } from "@/components/layout/PageHeader";
-import { getApiErrorMessage } from "@/api/client";
+import { api, getApiErrorMessage } from "@/api/client";
 import {
   positionsApi, expenseTypesApi, approvalRoutesApi, expenseRequestsApi, expenseSettingsApi,
 } from "@/api/approvals";
@@ -236,6 +236,13 @@ type HeaderForm = {
   installment_enabled: boolean;
 };
 
+type PayerCompanyOption = {
+  id: number;
+  code: string;
+  name_th: string;
+  name_en?: string;
+};
+
 type ItemForm = { description: string; quantity: string; unit: string; unit_price: string };
 
 const blankItem = (): ItemForm => ({ description: "", quantity: "1", unit: "รายการ", unit_price: "" });
@@ -270,8 +277,9 @@ export function ExpenseRequestWizardPage() {
   const [searchParams] = useSearchParams();
   const rawStep = Number(searchParams.get("step") || 0);
   const step = Number.isInteger(rawStep) ? Math.min(3, Math.max(0, rawStep)) : 0;
-  const { companies, currentCompany } = useCompany();
-  const defaultPayerCompanyName = companies.find((company) => company.code === "KAWIN_BROTHERS" && company.is_active)?.name_th
+  const { currentCompany } = useCompany();
+  const [payerCompanies, setPayerCompanies] = useState<PayerCompanyOption[]>([]);
+  const defaultPayerCompanyName = payerCompanies.find((company) => company.code === "KAWIN_BROTHERS")?.name_th
     || currentCompany?.name_th || "";
   const [positions, setPositions] = useState<Position[]>([]);
   const [types, setTypes] = useState<ExpenseType[]>([]);
@@ -366,15 +374,28 @@ export function ExpenseRequestWizardPage() {
 
   useEffect(() => {
     setLoading(true); setError("");
-    Promise.all([positionsApi.mine(), expenseTypesApi.list(), requestId ? expenseRequestsApi.get(requestId) : Promise.resolve(null)])
-      .then(([pos, expenseTypes, detail]) => {
-        setPositions(pos); setTypes(expenseTypes);
+    Promise.all([
+      positionsApi.mine(),
+      expenseTypesApi.list(),
+      requestId ? expenseRequestsApi.get(requestId) : Promise.resolve(null),
+      api.get<PayerCompanyOption[]>("/companies/payer-options").then((response) => response.data),
+    ])
+      .then(([pos, expenseTypes, detail, payerOptions]) => {
+        setPositions(pos); setTypes(expenseTypes); setPayerCompanies(payerOptions);
         if (detail) hydrate(detail);
-        else if (pos.length === 1) setHeader(current => ({ ...current, requester_position_id: String(pos[0].id) }));
+        else {
+          const preferredPayer = payerOptions.find((company) => company.code === "KAWIN_BROTHERS")?.name_th
+            || currentCompany?.name_th || "";
+          setHeader(current => ({
+            ...current,
+            payer_company_name: preferredPayer,
+            requester_position_id: pos.length === 1 ? String(pos[0].id) : current.requester_position_id,
+          }));
+        }
       })
       .catch((e) => setError(getApiErrorMessage(e, "โหลดข้อมูลคำขอไม่สำเร็จ")))
       .finally(() => setLoading(false));
-  }, [requestId, hydrate]);
+  }, [requestId, hydrate, currentCompany?.name_th]);
 
   const editable = !request || ["draft", "returned_for_correction"].includes(request.status);
   const availableKinds = useMemo(() => {
@@ -392,7 +413,6 @@ export function ExpenseRequestWizardPage() {
     [types, header.request_format, header.expense_type_id],
   );
   const selectedType = types.find((type) => type.id === Number(header.expense_type_id));
-  const payerCompanies = companies.filter((company) => company.is_active);
   const payerCompanyIsAvailable = payerCompanies.some((company) => company.name_th === header.payer_company_name);
   const typeMayRequireWithholding = Boolean(selectedType?.may_require_withholding_tax);
   const wantsWithholding = typeMayRequireWithholding && tax.requester_withholding_status === "deduct";

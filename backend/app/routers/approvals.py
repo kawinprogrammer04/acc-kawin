@@ -111,6 +111,27 @@ async def _get_company_row(db: AsyncSession, model, row_id, company_id: int, not
     return obj
 
 
+async def _resolve_payer_company_name(
+    db: AsyncSession,
+    requested_name: Optional[str],
+    fallback_name: str,
+) -> str:
+    normalized_name = (requested_name or "").strip()
+    if not normalized_name:
+        return fallback_name
+    payer_company = (
+        await db.execute(
+            select(Company)
+            .where(Company.name_th == normalized_name, Company.is_active.is_(True))
+            .order_by(Company.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not payer_company:
+        raise HTTPException(400, "ไม่พบบริษัทผู้จ่ายที่เลือก หรือบริษัทถูกปิดใช้งานแล้ว")
+    return payer_company.name_th
+
+
 async def _validate_position_department(
     db: AsyncSession, department_id: Optional[int], company_id: int,
 ) -> None:
@@ -1083,6 +1104,9 @@ async def create_expense_request(
         raise HTTPException(400, "คำขอเงินทดรองไม่รองรับการแบ่งจ่ายเป็นงวด")
     data = payload.model_dump(exclude={"bank_account_number", "department_id"})
     bank_account_number = payload.bank_account_number or ""
+    payer_company_name = await _resolve_payer_company_name(
+        db, payload.payer_company_name, company.name_th
+    )
     obj = ExpenseRequest(
         company_id=company.id, requester_user_id=current_user.id, status="draft",
         company_name_snapshot=company.name_th,
@@ -1090,7 +1114,7 @@ async def create_expense_request(
         department_name_snapshot=department.name if department else None,
         requester_name_snapshot=current_user.full_name or current_user.username,
         requester_position_snapshot=position.name,
-        payer_company_name=payload.payer_company_name or company.name_th,
+        payer_company_name=payer_company_name,
         bank_account_number_encrypted=expense_request_service.encrypt_account_number(bank_account_number),
         bank_account_last4=bank_account_number[-4:] or None,
         **{key: value for key, value in data.items() if key != "payer_company_name"},
@@ -1275,6 +1299,10 @@ async def update_expense_request_draft(
     expected_version = data.pop("version", None)
     if expected_version is not None and expected_version != req.version:
         raise HTTPException(409, f"ข้อมูลถูกแก้ไขจากอีกหน้าจอ กรุณาโหลดใหม่ (version ปัจจุบัน {req.version})")
+    if "payer_company_name" in data and data["payer_company_name"] != req.payer_company_name:
+        data["payer_company_name"] = await _resolve_payer_company_name(
+            db, data["payer_company_name"], company.name_th
+        )
     previous_revision = req.current_revision
     revision_created = req.status == "returned_for_correction"
     if revision_created:

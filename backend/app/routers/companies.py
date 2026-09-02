@@ -49,6 +49,14 @@ class CompanyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PayerCompanyOptionOut(BaseModel):
+    id: int
+    code: str
+    name_th: str
+    name_en: Optional[str]
+    model_config = {"from_attributes": True}
+
+
 class CompanyIn(BaseModel):
     code: str
     name_th: str
@@ -240,6 +248,18 @@ async def list_companies(
             )
             .order_by(Company.id)
         )
+    return result.scalars().all()
+
+
+@router.get("/payer-options", response_model=list[PayerCompanyOptionOut])
+async def list_payer_company_options(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Return active payer names without granting cross-company tenant access."""
+    result = await db.execute(
+        select(Company).where(Company.is_active.is_(True)).order_by(Company.id)
+    )
     return result.scalars().all()
 
 
