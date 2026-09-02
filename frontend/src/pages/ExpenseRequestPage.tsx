@@ -271,6 +271,8 @@ export function ExpenseRequestWizardPage() {
   const rawStep = Number(searchParams.get("step") || 0);
   const step = Number.isInteger(rawStep) ? Math.min(3, Math.max(0, rawStep)) : 0;
   const { companies, currentCompany } = useCompany();
+  const defaultPayerCompanyName = companies.find((company) => company.code === "KAWIN_BROTHERS" && company.is_active)?.name_th
+    || currentCompany?.name_th || "";
   const [positions, setPositions] = useState<Position[]>([]);
   const [types, setTypes] = useState<ExpenseType[]>([]);
   const [requirements, setRequirements] = useState<AttachmentRequirement[]>([]);
@@ -290,7 +292,7 @@ export function ExpenseRequestWizardPage() {
   const generatedFor = useRef("");
   const [header, setHeader] = useState<HeaderForm>({
     request_format: "reimbursement", expense_type_id: "", requester_position_id: "",
-    payer_company_name: currentCompany?.name_th || "", request_date: today(), required_date: "", title: "", description: "",
+    payer_company_name: defaultPayerCompanyName, request_date: today(), required_date: "", title: "", description: "",
     recipient_type: "employee", recipient_name: user?.full_name || user?.username || "", bank_name: "",
     bank_account_name: user?.full_name || user?.username || "", bank_account_number: "",
     installment_enabled: false,
@@ -312,7 +314,7 @@ export function ExpenseRequestWizardPage() {
     const hydratedHeader: HeaderForm = {
       request_format: detail.request_format || "reimbursement",
       expense_type_id: String(detail.expense_type_id || ""), requester_position_id: String(detail.requester_position_id || ""),
-      payer_company_name: detail.payer_company_name || currentCompany?.name_th || "", request_date: detail.request_date || today(), required_date: detail.required_date || "",
+      payer_company_name: detail.payer_company_name || defaultPayerCompanyName, request_date: detail.request_date || today(), required_date: detail.required_date || "",
       title: detail.title || "", description: detail.description || "", recipient_type: detail.recipient_type || "employee",
       recipient_name: detail.recipient_name || "", bank_name: detail.bank_name || "", bank_account_name: detail.bank_account_name || "",
       bank_account_number: detail.bank_account_number || "",
@@ -336,7 +338,13 @@ export function ExpenseRequestWizardPage() {
       discount_amount: String(detail.discount_amount || 0), price_mode: detail.price_mode || "exclude_vat", gross_up_enabled: detail.gross_up_enabled,
       installment_payment_amount: detail.installment_payment_amount ? String(detail.installment_payment_amount) : "",
     });
-  }, [currentCompany?.name_th]);
+  }, [defaultPayerCompanyName]);
+
+  useEffect(() => {
+    if (!requestId && !header.payer_company_name && defaultPayerCompanyName) {
+      setHeader((current) => ({ ...current, payer_company_name: defaultPayerCompanyName }));
+    }
+  }, [requestId, header.payer_company_name, defaultPayerCompanyName]);
 
   const reload = useCallback(async () => {
     if (!requestId) return;
