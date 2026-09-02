@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS companies (
     updated_at              TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 2. Seed the 3 companies
+-- 2. Seed the 5 companies
 INSERT INTO companies (code, name_th, name_en, tax_id, address, phone)
 VALUES
   ('KAWIN_BROTHERS',  'บริษัท กวิน บราเธอร์ส จำกัด',         'Kawin Brothers Co., Ltd.',
@@ -38,7 +38,11 @@ VALUES
   ('KAWIN_CONSULT',   'บริษัท กวิน คอนเซาท์ จำกัด',          'Kawin Consult Co., Ltd.',
    '0105566152405',
    '88/6 หมู่บ้าน เดอะวินน์ กาญจนาภิเษก-สาทร ซอยกาญจนาภิเษก 0010 แยก 2 แขวงบางแค เขตบางแค กรุงเทพฯ 10160',
-   '082-494-9524')
+   '082-494-9524'),
+  ('GOOD_FERTILIZER', 'บริษัท กู๊ด เฟอร์ติไลเซอร์ จำกัด',    'Good Fertilizer Co., Ltd.',
+   NULL, NULL, NULL),
+  ('HENGHENG_PANGPANG', 'บริษัท ขอให้เฮงเฮงปังปัง จำกัด',   'Kho Hai Heng Heng Pang Pang Co., Ltd.',
+   NULL, NULL, NULL)
 ON CONFLICT (code) DO NOTHING;
 
 -- Migrate legacy company_settings when upgrading an older database.

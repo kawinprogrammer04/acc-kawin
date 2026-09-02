@@ -10,6 +10,7 @@ import type { Role } from "@/api/roles";
 import { RoleManagerModal } from "@/components/RoleManager";
 import { UserPositionChecklist } from "@/components/UserPositionChecklist";
 import { OrganizationStructureManager } from "@/components/OrganizationStructureManager";
+import { formatCompanyLabel } from "@/lib/companyPresentation";
 
 interface UserOut {
   id: number;
@@ -377,13 +378,13 @@ export function UserManagementPage() {
                   )}
                   {companies.map(c => (
                     <option key={c.id} value={c.id}>
-                      {c.name_th}{userCompanies.some(m => m.company_id === c.id) ? " (เป็นสมาชิกอยู่แล้ว)" : ""}
+                      {formatCompanyLabel(c)}{userCompanies.some(m => m.company_id === c.id) ? " (เป็นสมาชิกอยู่แล้ว)" : ""}
                     </option>
                   ))}
                 </select>
                 {!editing && (
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    ตั้งค่าเริ่มต้นเป็นบริษัทที่คุณกำลังใช้งานอยู่ ({currentCompany?.name_th ?? "-"}) เปลี่ยนเองได้
+                    ตั้งค่าเริ่มต้นเป็นบริษัทที่คุณกำลังใช้งานอยู่ ({currentCompany ? formatCompanyLabel(currentCompany) : "-"}) เปลี่ยนเองได้
                   </p>
                 )}
               </div>
