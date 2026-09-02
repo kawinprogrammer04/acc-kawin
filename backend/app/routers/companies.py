@@ -122,6 +122,8 @@ class UserSearchOut(BaseModel):
     username: str
     full_name: Optional[str]
     email: str
+    department_names: list[str] = Field(default_factory=list)
+    position_names: list[str] = Field(default_factory=list)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -377,28 +379,65 @@ async def list_company_users(
 @router.get("/{company_id}/users/search", response_model=list[UserSearchOut])
 async def search_users_to_grant(
     company_id: int,
-    q: str = Query(min_length=2),
+    q: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Find existing, active users not yet granted access to this company."""
     await _require_company_admin(company_id, current_user, db)
-    pattern = f"%{q}%"
-    result = await db.execute(
-        select(User)
-        .where(
-            (User.username.ilike(pattern)) | (User.email.ilike(pattern)) | (User.full_name.ilike(pattern)),
-            User.is_active == True,
-            ~User.id.in_(
-                select(UserCompany.user_id).where(
-                    UserCompany.company_id == company_id, UserCompany.is_active == True
-                )
-            ),
-        )
-        .order_by(User.username)
-        .limit(20)
+    statement = select(User).where(
+        User.is_active == True,
+        ~User.id.in_(
+            select(UserCompany.user_id).where(
+                UserCompany.company_id == company_id, UserCompany.is_active == True
+            )
+        ),
     )
-    return result.scalars().all()
+    normalized_query = (q or "").strip()
+    if normalized_query:
+        pattern = f"%{normalized_query}%"
+        statement = statement.where(
+            (User.username.ilike(pattern))
+            | (User.email.ilike(pattern))
+            | (User.full_name.ilike(pattern))
+        )
+    users = (await db.execute(statement.order_by(User.username))).scalars().all()
+    user_ids = [user.id for user in users]
+    departments_by_user: dict[int, set[str]] = {}
+    positions_by_user: dict[int, set[str]] = {}
+    if user_ids:
+        department_rows = (await db.execute(
+            select(UserCompany.user_id, Department.name)
+            .join(Department, Department.id == UserCompany.department_id)
+            .where(
+                UserCompany.user_id.in_(user_ids),
+                UserCompany.is_active.is_(True),
+                Department.is_active.is_(True),
+            )
+        )).all()
+        for user_id, department_name in department_rows:
+            departments_by_user.setdefault(user_id, set()).add(department_name)
+
+        position_rows = (await db.execute(
+            select(UserPosition.user_id, Position.name)
+            .join(Position, Position.id == UserPosition.position_id)
+            .where(
+                UserPosition.user_id.in_(user_ids),
+                UserPosition.is_active.is_(True),
+                Position.is_active.is_(True),
+            )
+        )).all()
+        for user_id, position_name in position_rows:
+            positions_by_user.setdefault(user_id, set()).add(position_name)
+
+    return [{
+        "id": user.id,
+        "username": user.username,
+        "full_name": user.full_name,
+        "email": user.email,
+        "department_names": sorted(departments_by_user.get(user.id, set())),
+        "position_names": sorted(positions_by_user.get(user.id, set())),
+    } for user in users]
 
 
 @router.post("/{company_id}/users", status_code=201)
