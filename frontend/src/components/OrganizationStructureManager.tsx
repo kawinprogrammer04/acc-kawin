@@ -9,9 +9,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { formatCompanyLabel } from "@/lib/companyPresentation";
 
 interface CompanyOption {
   id: number;
+  code: string;
   name_th: string;
 }
 
@@ -267,7 +269,7 @@ export function OrganizationStructureManager({
             onChange={(event) => { setCompanyId(event.target.value); setDraft(emptyDraft); setPositionDraft(emptyPositionDraft); }}
           >
             {companies.length === 0 && <option value="">-- ไม่มีบริษัทที่เข้าถึงได้ --</option>}
-            {companies.map((company) => <option key={company.id} value={company.id}>{company.name_th}</option>)}
+            {companies.map((company) => <option key={company.id} value={company.id}>{formatCompanyLabel(company)}</option>)}
           </select>
         </div>
 

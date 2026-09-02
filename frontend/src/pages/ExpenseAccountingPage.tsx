@@ -25,6 +25,7 @@ import type {
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
 import { formatCurrency, formatDate, today } from "@/lib/format";
+import { formatCompanyLabel } from "@/lib/companyPresentation";
 
 const FILTER_STORAGE_KEY = "expense_accounting_filters";
 const DEFAULT_PAGE_SIZE = 25;
@@ -225,7 +226,7 @@ export function ExpenseAccountingPage() {
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <DataListMultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
-        <DataListFilterSelect label="บริษัท" value={filters.company_id} allLabel="เลือกบริษัท" allowEmpty={false} options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: company.name_th }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
+        <DataListFilterSelect label="บริษัท" value={filters.company_id} allLabel="เลือกบริษัท" allowEmpty={false} options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: formatCompanyLabel(company) }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
         <DataListMultiFilterSelect label="แผนก" values={filters.department_ids} allLabel="ทุกแผนก" options={visibleDepartments.map(item => ({ value: String(item.id), label: item.name }))} onChange={department_ids => setFilters(current => ({ ...current, department_ids }))} />
         <DataListMultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={visibleTypes.map(item => ({ value: String(item.id), label: item.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
       </div>

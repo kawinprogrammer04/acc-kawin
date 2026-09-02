@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { AppMenu, DiscoveredRoute, PermissionItem, PermissionSet, PositionPermissionCatalog, UserPermissionCatalog } from "@/types";
+import { formatCompanyLabel } from "@/lib/companyPresentation";
 
 interface UserOption {
   id: number;
@@ -733,7 +734,7 @@ export function PermissionPage() {
               onChange={e => setPositionCompanyId(e.target.value ? Number(e.target.value) : null)}
             >
               {companies.map(c => (
-                <option key={c.id} value={c.id}>{c.name_th}</option>
+                <option key={c.id} value={c.id}>{formatCompanyLabel(c)}</option>
               ))}
             </select>
             <span className="text-xs text-muted-foreground">

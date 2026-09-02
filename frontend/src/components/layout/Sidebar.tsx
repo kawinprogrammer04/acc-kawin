@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { APPROVAL_INBOX_CHANGED_EVENT, approvalInboxApi } from "@/api/approvals";
 import { useAuth } from "@/context/AuthContext";
 import { useCompany } from "@/context/CompanyContext";
+import { getCompanyIcon } from "@/lib/companyPresentation";
 import { Separator } from "@/components/ui/separator";
 import { useCallback, useEffect, useState } from "react";
 import type { AppMenu } from "@/types";
@@ -485,7 +486,13 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
             onClick={() => setShowCompanySwitcher(o => !o)}
             className="flex w-full items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-sm hover:bg-muted transition-colors"
           >
-            <Building2 className="h-4 w-4 shrink-0 text-primary" />
+            {currentCompany && getCompanyIcon(currentCompany) ? (
+              <span className="w-4 shrink-0 text-center text-sm leading-none" aria-hidden="true">
+                {getCompanyIcon(currentCompany)}
+              </span>
+            ) : (
+              <Building2 className="h-4 w-4 shrink-0 text-primary" />
+            )}
             <span className="flex-1 text-left text-xs font-medium truncate">
               {currentCompany?.name_th ?? "เลือกบริษัท"}
             </span>
@@ -502,7 +509,11 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
                     c.id === currentCompany?.id && "bg-primary/10 text-primary font-medium"
                   )}
                 >
-                  <Building2 className="h-3.5 w-3.5 shrink-0" />
+                  {getCompanyIcon(c) ? (
+                    <span className="w-3.5 shrink-0 text-center text-sm leading-none" aria-hidden="true">{getCompanyIcon(c)}</span>
+                  ) : (
+                    <Building2 className="h-3.5 w-3.5 shrink-0" />
+                  )}
                   <span className="truncate">{c.name_th}</span>
                 </button>
               ))}

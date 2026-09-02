@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 import { rolesApi } from "@/api/roles";
 import type { Role } from "@/api/roles";
 import { RoleManagerModal } from "@/components/RoleManager";
+import { getCompanyIcon } from "@/lib/companyPresentation";
 
 interface Company {
   id: number;
@@ -408,7 +409,11 @@ export function CompaniesPage() {
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex items-start gap-3">
                     <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary shrink-0">
-                      <Building2 className="h-5 w-5" />
+                      {getCompanyIcon(c) ? (
+                        <span className="text-xl leading-none" aria-hidden="true">{getCompanyIcon(c)}</span>
+                      ) : (
+                        <Building2 className="h-5 w-5" />
+                      )}
                     </div>
                     <div>
                       <p className="font-medium text-sm">{c.name_th}</p>
