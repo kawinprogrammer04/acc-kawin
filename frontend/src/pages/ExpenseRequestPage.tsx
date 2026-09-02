@@ -16,6 +16,7 @@ import type {
   ExpenseRequestDetail, ExpenseRequestItem,
 } from "@/api/approvals";
 import { formatCurrency, formatDate, today } from "@/lib/format";
+import { formatCompanyLabel } from "@/lib/companyPresentation";
 import { useCompany } from "@/context/CompanyContext";
 import { useAuth } from "@/context/AuthContext";
 
@@ -269,7 +270,7 @@ export function ExpenseRequestWizardPage() {
   const [searchParams] = useSearchParams();
   const rawStep = Number(searchParams.get("step") || 0);
   const step = Number.isInteger(rawStep) ? Math.min(3, Math.max(0, rawStep)) : 0;
-  const { currentCompany } = useCompany();
+  const { companies, currentCompany } = useCompany();
   const [positions, setPositions] = useState<Position[]>([]);
   const [types, setTypes] = useState<ExpenseType[]>([]);
   const [requirements, setRequirements] = useState<AttachmentRequirement[]>([]);
@@ -383,6 +384,8 @@ export function ExpenseRequestWizardPage() {
     [types, header.request_format, header.expense_type_id],
   );
   const selectedType = types.find((type) => type.id === Number(header.expense_type_id));
+  const payerCompanies = companies.filter((company) => company.is_active);
+  const payerCompanyIsAvailable = payerCompanies.some((company) => company.name_th === header.payer_company_name);
   const typeMayRequireWithholding = Boolean(selectedType?.may_require_withholding_tax);
   const wantsWithholding = typeMayRequireWithholding && tax.requester_withholding_status === "deduct";
   const subtotal = useMemo(() => items.reduce((sum, item) => sum + (Number(item.quantity) || 0) * (Number(item.unit_price) || 0), 0), [items]);
@@ -426,7 +429,7 @@ export function ExpenseRequestWizardPage() {
 
   const go = (nextStep: number, id = requestId) => navigate(`/expense-requests/${id}/edit?step=${nextStep}`);
 
-  const headerReady = Boolean(header.requester_position_id && header.expense_type_id && header.title.trim()
+  const headerReady = Boolean(header.requester_position_id && header.expense_type_id && header.payer_company_name.trim() && header.title.trim()
     && header.recipient_name.trim() && header.bank_name.trim() && header.bank_account_name.trim()
     && header.bank_account_number.trim());
 
@@ -587,7 +590,7 @@ export function ExpenseRequestWizardPage() {
           <div><label className={labelCls}>รูปแบบคำขอ *</label><select className={inputCls} value={header.request_format} onChange={(e) => { const format = e.target.value as HeaderForm["request_format"]; setHeader((f) => ({ ...f, request_format: format, installment_enabled: format === "advance" ? false : f.installment_enabled })); }}>{availableKinds.map((kind) => <option key={kind} value={kind}>{REQUEST_FORMAT_LABEL[kind]}</option>)}</select></div>
           <div><label className={labelCls}>ประเภทการเบิก *</label><select className={inputCls} value={header.expense_type_id} onChange={(e) => setHeader((f) => ({ ...f, expense_type_id: e.target.value }))}><option value="">เลือกประเภท</option>{visibleTypes.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}</select>{selectedType?.description && <p className="mt-2 text-xs text-muted-foreground">{selectedType.description}</p>}</div>
           <div><label className={labelCls}>ตำแหน่งที่ใช้ทำรายการ *</label><select className={inputCls} value={header.requester_position_id} onChange={(e) => setHeader((f) => ({ ...f, requester_position_id: e.target.value }))}><option value="">เลือกตำแหน่ง</option>{positions.map((position) => <option key={position.id} value={position.id}>{position.name}</option>)}</select><p className="mt-1 text-xs text-muted-foreground">ระบบใช้ตำแหน่งนี้ร่วมกับประเภทและยอดเงินเพื่อเลือกสายอนุมัติ</p></div>
-          <div><label className={labelCls}>บริษัทผู้จ่าย</label><input readOnly className={`${inputCls} bg-muted/40`} value={header.payer_company_name} /></div>
+          <div><label className={labelCls}>บริษัทผู้จ่าย *</label><select className={inputCls} value={header.payer_company_name} onChange={(e) => setHeader((f) => ({ ...f, payer_company_name: e.target.value }))}><option value="" disabled>เลือกบริษัทผู้จ่าย</option>{header.payer_company_name && !payerCompanyIsAvailable && <option value={header.payer_company_name}>{header.payer_company_name} (ข้อมูลเดิม)</option>}{payerCompanies.map((company) => <option key={company.id} value={company.name_th}>{formatCompanyLabel(company)}</option>)}</select></div>
           <div><label className={labelCls}>วันที่ต้องการใช้เงิน</label><input type="date" className={inputCls} value={header.required_date} onChange={(e) => setHeader((f) => ({ ...f, required_date: e.target.value }))} /></div>
           <div className="md:col-span-2 2xl:col-span-3"><label className={labelCls}>วัตถุประสงค์ *</label><textarea rows={3} maxLength={3000} className={inputCls} value={header.title} placeholder="เช่น ค่าเดินทางไปพบลูกค้าที่จังหวัดเชียงใหม่" onChange={(e) => setHeader((f) => ({ ...f, title: e.target.value }))} /></div>
         </div>
