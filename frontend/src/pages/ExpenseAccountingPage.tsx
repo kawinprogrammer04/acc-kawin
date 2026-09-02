@@ -29,6 +29,9 @@ import { formatCompanyLabel } from "@/lib/companyPresentation";
 
 const FILTER_STORAGE_KEY = "expense_accounting_filters";
 const DEFAULT_PAGE_SIZE = 25;
+const accountingTableHeadings = ["คำขอ", "วันที่", "ธนาคาร", "เลขบัญชี", "ชื่อผู้รับ", "ยอดโอน", "รายการ", "ประเภท", "สถานะ", "ใบกำกับ", "ดำเนินการ"];
+const accountingTableGroupEndIndexes = new Set([0, 4, 7, 9]);
+const accountingTableGroupDividerClass = "border-r-2 border-border";
 
 type FilterForm = {
   statuses: string[]; company_id: string; department_ids: string[]; type_ids: string[];
@@ -245,31 +248,33 @@ export function ExpenseAccountingPage() {
     {error && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-200">{error}</div>}
     {notice && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200">{notice}</div>}
 
-    <Card className="overflow-hidden"><CardContent className="p-0"><div className={dataListTableScrollClass}><table className="w-full min-w-[1760px] text-sm"><thead className="text-left text-xs font-black uppercase text-muted-foreground"><tr>{["คำขอ", "วันที่", "ธนาคาร", "เลขบัญชี", "ชื่อผู้รับ", "ยอดโอน", "รายการ", "ประเภท", "สถานะ", "ใบกำกับ", "ดำเนินการ"].map((heading, index) => <th key={heading} className={`${dataListTableHeaderCellClass} px-4 py-3 ${[5, 10].includes(index) ? "text-right" : "text-left"}`}>{heading}</th>)}</tr></thead>
+    <Card className="overflow-hidden"><CardContent className="p-0"><div className={dataListTableScrollClass}><table className="w-full min-w-[1760px] text-sm"><thead className="text-left text-xs font-black uppercase text-muted-foreground"><tr>{accountingTableHeadings.map((heading, index) => <th key={heading} className={`${dataListTableHeaderCellClass} px-4 py-3 ${[5, 10].includes(index) ? "text-right" : "text-left"} ${accountingTableGroupEndIndexes.has(index) ? accountingTableGroupDividerClass : ""}`}>{heading}</th>)}</tr></thead>
       <tbody className="divide-y">{rows.map(row => <tr key={row.id} className="hover:bg-muted/40">
-        <td className="px-4 py-4"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="font-mono font-black text-primary hover:underline">{row.request_no}</Link><p className="mt-1 text-xs text-muted-foreground">{row.department_name || "ไม่ระบุแผนก"}</p></td>
+        <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="font-mono font-black text-primary hover:underline">{row.request_no}</Link><p className="mt-1 text-xs text-muted-foreground">{row.department_name || "ไม่ระบุแผนก"}</p></td>
         <td className="whitespace-nowrap px-4 py-4 font-medium">{formatDate(`${row.request_date}T00:00:00`)}</td>
         <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-bold">{row.bank_name || "-"}</span><CopyIconButton value={row.bank_name} label="ธนาคาร" onCopy={copyField} /></div></td>
         <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-mono text-xs">{row.bank_account_number || "-"}</span><CopyIconButton value={row.bank_account_number} label="เลขบัญชี" onCopy={copyField} /></div></td>
-        <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-bold">{row.bank_account_name || "-"}</span><CopyIconButton value={row.bank_account_name} label="ชื่อผู้รับ" onCopy={copyField} /></div></td>
+        <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><div className="flex items-center justify-between gap-2"><span className="font-bold">{row.bank_account_name || "-"}</span><CopyIconButton value={row.bank_account_name} label="ชื่อผู้รับ" onCopy={copyField} /></div></td>
         <td className="px-4 py-4 text-right"><div className="flex items-center justify-end gap-2"><span className="font-black text-primary">{formatCurrency(row.transfer_amount)}</span><CopyIconButton value={row.transfer_amount != null ? String(row.transfer_amount) : undefined} label="ยอดโอน" onCopy={copyField} /></div></td>
         <td className="px-4 py-4"><p className="max-w-xs break-words">{row.title || "-"}</p></td>
-        <td className="px-4 py-4"><p className="font-bold">{row.expense_type_name || "-"}</p></td>
+        <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><p className="font-bold">{row.expense_type_name || "-"}</p></td>
         <td className="px-4 py-4">
           <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${statusColor[row.status] || "bg-muted"}`}>{statusLabel[row.status] || row.status}</span>
           {row.installment_no && <span className="ml-1.5 inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">งวด {row.installment_no}</span>}
           {row.installment_chain_status === "in_progress" && <p className="mt-1 text-xs font-bold text-orange-600">แบ่งจ่ายยังไม่ครบ</p>}
         </td>
-        <td className="px-4 py-4">
+        <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}>
           {Number(row.vat || 0) > 0 && <span className="inline-flex whitespace-nowrap rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">มีใบกำกับภาษี</span>}
         </td>
         <td className="px-4 py-4 text-right"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="inline-flex h-10 items-center rounded-md bg-primary/10 px-6 text-xs font-black text-primary hover:bg-primary/20 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700">เปิดรายการ</Link></td>
       </tr>)}</tbody>
       {!loading && total > 0 && <tfoot className="border-t-2 bg-muted/50">
         <tr>
-          <td colSpan={5} className="px-4 py-4 text-right text-sm font-black">ยอดโอนรวม</td>
+          <td colSpan={5} className={`px-4 py-4 text-right text-sm font-black ${accountingTableGroupDividerClass}`}>ยอดโอนรวม</td>
           <td className="whitespace-nowrap px-4 py-4 text-right text-base font-black text-primary">{formatCurrency(stats.transfer_amount_total || 0)}</td>
-          <td colSpan={5} />
+          <td colSpan={2} className={accountingTableGroupDividerClass} />
+          <td colSpan={2} className={accountingTableGroupDividerClass} />
+          <td />
         </tr>
       </tfoot>}
     </table>
