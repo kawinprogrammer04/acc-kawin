@@ -5,6 +5,7 @@ import {
   Landmark, Loader2, RotateCcw, Settings2, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
+import { BankLogo } from "@/components/ui/bank-logo";
 import { DataListFilterSelect, DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
 import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
@@ -252,7 +253,7 @@ export function ExpenseAccountingPage() {
       <tbody className="divide-y">{rows.map(row => <tr key={row.id} className="hover:bg-muted/40">
         <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="font-mono font-black text-primary hover:underline">{row.request_no}</Link><p className="mt-1 text-xs text-muted-foreground">{row.department_name || "ไม่ระบุแผนก"}</p></td>
         <td className="whitespace-nowrap px-4 py-4 font-medium">{formatDate(`${row.request_date}T00:00:00`)}</td>
-        <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-bold">{row.bank_name || "-"}</span><CopyIconButton value={row.bank_name} label="ธนาคาร" onCopy={copyField} /></div></td>
+        <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><div className="flex min-w-0 items-center gap-2.5"><BankLogo bankName={row.bank_name} /><span className="font-bold">{row.bank_name || "-"}</span></div><CopyIconButton value={row.bank_name} label="ธนาคาร" onCopy={copyField} /></div></td>
         <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-mono text-xs">{row.bank_account_number || "-"}</span><CopyIconButton value={row.bank_account_number} label="เลขบัญชี" onCopy={copyField} /></div></td>
         <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><div className="flex items-center justify-between gap-2"><span className="font-bold">{row.bank_account_name || "-"}</span><CopyIconButton value={row.bank_account_name} label="ชื่อผู้รับ" onCopy={copyField} /></div></td>
         <td className="px-4 py-4 text-right"><div className="flex items-center justify-end gap-2"><span className="font-black text-primary">{formatCurrency(row.transfer_amount)}</span><CopyIconButton value={row.transfer_amount != null ? String(row.transfer_amount) : undefined} label="ยอดโอน" onCopy={copyField} /></div></td>

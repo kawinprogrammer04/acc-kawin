@@ -58,11 +58,10 @@ export function initialPlacement(document: ExpenseRequestAttachment, stepNo: num
       attachment_id: document.id,
       // The primary signature grid is on the final generated page. The
       // sentinel is resolved after PDF.js knows the real number of pages.
-      // Coordinates mirror the HR slot, with the vertical position calibrated
-      // to the requested 79.5878% top value for the acc-kawin PDF template.
+      // Keep the default box on the requested signature-line position.
       page_number: 999,
       x: 0.0773 + column * 0.2297,
-      y: 0.795878 + row * 0.063,
+      y: 0.8250 + row * 0.063,
       width: 0.155,
       height: 0.026,
       page_rotation: 0,

@@ -26,6 +26,7 @@ from app.models.user import User
 
 _THAI_FONT_NAME = "THSarabunNew"
 _THAI_FONT_PATH = Path(__file__).resolve().parents[1] / "templates" / "fonts" / "THSarabunNew.ttf"
+_APPROVAL_NAME_LINE_GAP = .0030
 
 
 def _signature_bytes(data_url: str) -> bytes:
@@ -73,7 +74,8 @@ def _request_signature_slot(step_no: int, page_count: int) -> dict:
     Cell 0 belongs to the requester. Approval step 1 therefore starts in the
     second cell of the four-column grid. These are the exact normalized,
     top-left coordinates from HR's ExpensePdfService::requestSignatureSlot,
-    with top calibrated to 79.5878% for the acc-kawin template.
+    with top calibrated to the requested signature-line position in the
+    acc-kawin template.
     """
     cell_index = max(1, int(step_no))
     column = cell_index % 4
@@ -81,7 +83,7 @@ def _request_signature_slot(step_no: int, page_count: int) -> dict:
     return {
         "page_number": page_count,
         "x": .0773 + (column * .2297),
-        "y": .795878 + (row * .0630),
+        "y": .8250 + (row * .0630),
         "width": .1550,
         "height": .0260,
         "page_rotation": 0,
@@ -97,10 +99,29 @@ def _request_approval_name_slot(step_no: int, page_count: int) -> dict:
     return {
         "page_number": page_count,
         "x": .0420 + (column * .2297),
-        "y": .8558 + (row * .0630),
+        "y": .8545 + (row * .0630),
         "width": .2265,
         "height": .0128,
         "coordinate_system": "top_left",
+    }
+
+
+def _request_approval_name_clear_slot(step_no: int, page_count: int) -> dict:
+    """Keep the name-row whiteout below the signature line.
+
+    The source PDF already contains every eligible approver in this row.  The
+    whiteout must cover that text, but it must never reach the black signature
+    line immediately above it.
+    """
+    name_slot = _request_approval_name_slot(step_no, page_count)
+    signature_slot = _request_signature_slot(step_no, page_count)
+    safe_top = signature_slot["y"] + signature_slot["height"] + _APPROVAL_NAME_LINE_GAP
+    clear_top = max(name_slot["y"], safe_top)
+    clear_bottom = name_slot["y"] + name_slot["height"]
+    return {
+        **name_slot,
+        "y": clear_top,
+        "height": max(0.0, clear_bottom - clear_top),
     }
 
 
@@ -111,6 +132,41 @@ def _requested_placement(placement: dict, page_count: int) -> dict:
         "page_number": max(1, min(page_count, int(placement.get("page_number", 1)))),
         "coordinate_system": "top_left",
     }
+
+
+async def _approval_name_for_signature(
+    db: AsyncSession, step_id: int, actor_user_id: int
+) -> str:
+    """Return only the approvers who have actually signed this step.
+
+    The request PDF is generated before approval and may contain every eligible
+    candidate in its name row.  Always replace that snapshot when someone
+    signs, even if the candidate table currently contains only one row.
+    """
+    candidate_rows = (await db.execute(
+        select(
+            ExpenseApprovalCandidate.user_id,
+            ExpenseApprovalCandidate.status,
+        )
+        .where(ExpenseApprovalCandidate.request_step_id == step_id)
+        .order_by(ExpenseApprovalCandidate.id)
+    )).all()
+    signed_user_ids = [
+        user_id for user_id, status in candidate_rows if status == "approved"
+    ]
+    if actor_user_id not in signed_user_ids:
+        signed_user_ids.append(actor_user_id)
+    user_rows = (await db.execute(
+        select(User.id, User.full_name, User.username).where(User.id.in_(signed_user_ids))
+    )).all()
+    names_by_id = {
+        user_id: full_name or username
+        for user_id, full_name, username in user_rows
+    }
+    return ", ".join(
+        names_by_id.get(user_id, f"ผู้ใช้ #{user_id}")
+        for user_id in signed_user_ids
+    )
 
 
 def _stamp_pdf(source: Path, signature: bytes, placements: list[dict]) -> bytes:
@@ -146,8 +202,13 @@ def _stamp_pdf(source: Path, signature: bytes, placements: list[dict]) -> bytes:
                     int(placement.get("approval_step_no", 1)), len(reader.pages)
                 )
                 name_x, name_y, name_w, name_h = _placement_box(name_slot, width, height)
-                overlay.setFillColorRGB(1, 1, 1)
-                overlay.rect(name_x, name_y, name_w, name_h, fill=1, stroke=0)
+                clear_slot = _request_approval_name_clear_slot(
+                    int(placement.get("approval_step_no", 1)), len(reader.pages)
+                )
+                clear_x, clear_y, clear_w, clear_h = _placement_box(clear_slot, width, height)
+                if clear_w > 0 and clear_h > 0:
+                    overlay.setFillColorRGB(1, 1, 1)
+                    overlay.rect(clear_x, clear_y, clear_w, clear_h, fill=1, stroke=0)
                 if _THAI_FONT_NAME not in pdfmetrics.getRegisteredFontNames():
                     pdfmetrics.registerFont(TTFont(_THAI_FONT_NAME, str(_THAI_FONT_PATH)))
                 label = f"({approval_name})"
@@ -174,32 +235,7 @@ async def stamp_required_documents(db: AsyncSession, req: ExpenseRequest, step: 
                                    actor_user_id: int, data_url: str, placements: list[dict]) -> None:
     signature = _signature_bytes(data_url)
     signature_hash = hashlib.sha256(signature).hexdigest()
-    candidate_rows = (await db.execute(
-        select(
-            ExpenseApprovalCandidate.user_id,
-            ExpenseApprovalCandidate.status,
-        )
-        .where(ExpenseApprovalCandidate.request_step_id == step.id)
-        .order_by(ExpenseApprovalCandidate.id)
-    )).all()
-    approval_name = None
-    if len(candidate_rows) > 1:
-        signed_user_ids = [
-            user_id for user_id, status in candidate_rows if status == "approved"
-        ]
-        if actor_user_id not in signed_user_ids:
-            signed_user_ids.append(actor_user_id)
-        user_rows = (await db.execute(
-            select(User.id, User.full_name, User.username).where(User.id.in_(signed_user_ids))
-        )).all()
-        names_by_id = {
-            user_id: full_name or username
-            for user_id, full_name, username in user_rows
-        }
-        approval_name = ", ".join(
-            names_by_id.get(user_id, f"ผู้ใช้ #{user_id}")
-            for user_id in signed_user_ids
-        )
+    approval_name = await _approval_name_for_signature(db, step.id, actor_user_id)
     attachments = [a for a in (await db.execute(
         ExpenseRequestAttachment.__table__.select().where(
             ExpenseRequestAttachment.expense_request_id == req.id,
@@ -239,9 +275,8 @@ async def stamp_required_documents(db: AsyncSession, req: ExpenseRequest, step: 
                 [_requested_placement(file_placements[-1], page_count)]
                 if file_placements else [_request_signature_slot(step.step_no, page_count)]
             )
-            if approval_name:
-                file_placements[0]["approval_name"] = approval_name
-                file_placements[0]["approval_step_no"] = step.step_no
+            file_placements[0]["approval_name"] = approval_name
+            file_placements[0]["approval_step_no"] = step.step_no
         elif not file_placements:
             file_placements = [{
                 "page_number": requirement.default_signature_page if requirement and requirement.default_signature_page else 1,

@@ -16,14 +16,16 @@ from reportlab.pdfgen import canvas
 from app.services.expense_finance_service import excel_bytes
 from app.services.expense_request_service import calculate_totals, render_payment_approval_pdf
 from app.services.expense_signature_service import (
+    _approval_name_for_signature,
     _placement_box,
+    _request_approval_name_clear_slot,
     _request_approval_name_slot,
     _request_signature_slot,
     _requested_placement,
     _stamp_pdf,
 )
 from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
-from app.routers.approvals import _employee_organization, _rule_specificity
+from app.routers.approvals import _employee_organization, _rule_specificity, _timeline_approvers_by_step
 from app.routers.expense_finance import (
     EXPENSE_DASHBOARD_STATUS_GROUPS, _accounting_query, _append_legacy_approval_steps,
     _apply_accounting_pagination, _expense_dashboard_query, accounting_stats,
@@ -345,6 +347,28 @@ class EmployeeApprovalResolutionTests(unittest.TestCase):
 
 
 class AccountingApprovalTimelineTests(unittest.TestCase):
+    def test_native_step_exposes_every_pending_approval_candidate(self):
+        step = SimpleNamespace(
+            id=10, approver_position_id=7, resolved_approver_user_id=3,
+            status="pending", comment=None, decided_by=None, decided_at=None,
+        )
+        candidates = [
+            SimpleNamespace(request_step_id=10, user_id=3, status="pending", decided_at=None),
+            SimpleNamespace(request_step_id=10, user_id=53, status="pending", decided_at=None),
+            SimpleNamespace(request_step_id=10, user_id=481, status="pending", decided_at=None),
+        ]
+
+        result = _timeline_approvers_by_step(
+            [step], candidates,
+            {3: "ผู้อนุมัติ คนที่หนึ่ง", 53: "ผู้อนุมัติ คนที่สอง", 481: "ผู้อนุมัติ คนที่สาม"},
+            {7: "Accounting"},
+        )
+
+        self.assertEqual(
+            [(person["user_id"], person["status"]) for person in result[10]],
+            [(3, "pending"), (53, "pending"), (481, "pending")],
+        )
+
     def test_all_legacy_steps_are_appended_in_order(self):
         steps_by_request = {"request-1": []}
         legacy_steps = [
@@ -496,30 +520,85 @@ class ExpenseRequestPdfTests(unittest.TestCase):
 
 
 class SignaturePdfTests(unittest.TestCase):
+    def test_signature_name_replaces_candidate_snapshot_even_with_one_candidate(self):
+        class Result:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def all(self):
+                return self.rows
+
+        class Database:
+            def __init__(self):
+                self.results = iter([
+                    Result([(53, "pending")]),
+                    Result([(53, "ผู้อนุมัติ คนที่หนึ่ง", "approver-one")]),
+                ])
+
+            async def execute(self, _query):
+                return next(self.results)
+
+        name = asyncio.run(_approval_name_for_signature(Database(), 12, 53))
+
+        self.assertEqual(name, "ผู้อนุมัติ คนที่หนึ่ง")
+
+    def test_signature_name_excludes_other_pending_candidates(self):
+        class Result:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def all(self):
+                return self.rows
+
+        class Database:
+            def __init__(self):
+                self.results = iter([
+                    Result([(53, "pending"), (481, "pending")]),
+                    Result([(53, "ผู้อนุมัติ คนที่หนึ่ง", "approver-one")]),
+                ])
+
+            async def execute(self, _query):
+                return next(self.results)
+
+        name = asyncio.run(_approval_name_for_signature(Database(), 12, 53))
+
+        self.assertEqual(name, "ผู้อนุมัติ คนที่หนึ่ง")
+
     def test_primary_signature_slot_matches_hr_grid(self):
         first_step = _request_signature_slot(1, 2)
         self.assertAlmostEqual(first_step["x"], .307)
-        self.assertAlmostEqual(first_step["y"], .795878)
+        self.assertAlmostEqual(first_step["y"], .8250)
         self.assertAlmostEqual(first_step["width"], .155)
         self.assertAlmostEqual(first_step["height"], .026)
         self.assertEqual(first_step["page_number"], 2)
         self.assertEqual(first_step["coordinate_system"], "top_left")
         fourth_step = _request_signature_slot(4, 3)
         self.assertAlmostEqual(fourth_step["x"], .0773)
-        self.assertAlmostEqual(fourth_step["y"], .858878)
+        self.assertAlmostEqual(fourth_step["y"], .8880)
         self.assertEqual(fourth_step["page_number"], 3)
 
     def test_approval_name_slot_matches_the_step_signature_cell(self):
         first_step = _request_approval_name_slot(1, 2)
         self.assertAlmostEqual(first_step["x"], .2717)
-        self.assertAlmostEqual(first_step["y"], .8558)
+        self.assertAlmostEqual(first_step["y"], .8545)
         self.assertAlmostEqual(first_step["width"], .2265)
         self.assertAlmostEqual(first_step["height"], .0128)
         self.assertEqual(first_step["page_number"], 2)
         fourth_step = _request_approval_name_slot(4, 3)
         self.assertAlmostEqual(fourth_step["x"], .042)
-        self.assertAlmostEqual(fourth_step["y"], .9188)
+        self.assertAlmostEqual(fourth_step["y"], .9175)
         self.assertEqual(fourth_step["page_number"], 3)
+
+    def test_approval_name_whiteout_stays_below_the_black_signature_line(self):
+        for step_no in range(1, 9):
+            signature = _request_signature_slot(step_no, 3)
+            name = _request_approval_name_slot(step_no, 3)
+            clear = _request_approval_name_clear_slot(step_no, 3)
+            signature_line = signature["y"] + signature["height"]
+
+            self.assertGreater(clear["y"], signature_line)
+            self.assertGreaterEqual(clear["y"], name["y"])
+            self.assertLessEqual(clear["y"] + clear["height"], name["y"] + name["height"])
 
     def test_requested_placement_keeps_browser_coordinates_and_clamps_page(self):
         placement = _requested_placement({

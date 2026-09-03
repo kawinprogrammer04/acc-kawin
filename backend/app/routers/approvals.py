@@ -5,7 +5,7 @@ Position-based expense approval workflow — endpoints for:
   /api/expense-requests, /api/approval-routes/preview, /api/approvals/inbox,
   /api/approval-steps/{id}/decisions
 """
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 import mimetypes
 from pathlib import Path
@@ -66,7 +66,9 @@ from app.schemas.approval import (
     ExpenseRequestCreate,
     ExpenseRequestDraftUpdate,
     ExpenseRequestDetailOut,
+    ExpenseRequestListOut,
     ExpenseRequestOut,
+    ExpenseRequestStatsOut,
     ExpenseTypeCreate,
     ExpenseTypeOut,
     ExpenseTypeUpdate,
@@ -1058,6 +1060,68 @@ async def _request_to_out(
     )
 
 
+def _parse_personal_csv_values(value: Optional[str]) -> list[str]:
+    return sorted({item.strip() for item in (value or "").split(",") if item.strip()})
+
+
+def _parse_personal_csv_ints(value: Optional[str], field_name: str) -> list[int]:
+    try:
+        return sorted({int(item) for item in _parse_personal_csv_values(value)})
+    except ValueError as exc:
+        raise HTTPException(400, f"{field_name} ต้องเป็นรายการตัวเลขคั่นด้วย comma") from exc
+
+
+def _personal_expense_request_query(
+    company: Company,
+    current_user: User,
+    *,
+    statuses: Optional[str] = None,
+    type_ids: Optional[str] = None,
+    request_formats: Optional[str] = None,
+    query: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+):
+    stmt = select(ExpenseRequest).where(
+        ExpenseRequest.company_id == company.id,
+        ExpenseRequest.requester_user_id == current_user.id,
+    )
+    parsed_statuses = _parse_personal_csv_values(statuses)
+    parsed_type_ids = _parse_personal_csv_ints(type_ids, "type_ids")
+    parsed_formats = _parse_personal_csv_values(request_formats)
+    if parsed_statuses:
+        stmt = stmt.where(ExpenseRequest.status.in_(parsed_statuses))
+    if parsed_type_ids:
+        stmt = stmt.where(ExpenseRequest.expense_type_id.in_(parsed_type_ids))
+    if parsed_formats:
+        stmt = stmt.where(ExpenseRequest.request_format.in_(parsed_formats))
+    if date_from:
+        stmt = stmt.where(ExpenseRequest.request_date >= date_from)
+    if date_to:
+        stmt = stmt.where(ExpenseRequest.request_date <= date_to)
+    if query and query.strip():
+        pattern = f"%{query.strip()}%"
+        stmt = stmt.where(or_(
+            ExpenseRequest.request_no.ilike(pattern),
+            ExpenseRequest.title.ilike(pattern),
+            ExpenseRequest.recipient_name.ilike(pattern),
+            ExpenseRequest.bank_name.ilike(pattern),
+        ))
+    return stmt
+
+
+def _summarize_personal_expense_requests(rows: list[ExpenseRequest]) -> ExpenseRequestStatsOut:
+    action_required_statuses = {"draft", "returned_for_correction"}
+    terminal_statuses = {"draft", "returned_for_correction", "rejected", "cancelled", "completed"}
+    return ExpenseRequestStatsOut(
+        total_count=len(rows),
+        action_required_count=sum(row.status in action_required_statuses for row in rows),
+        in_progress_count=sum(row.status not in terminal_statuses for row in rows),
+        completed_count=sum(row.status == "completed" for row in rows),
+        amount_total=sum((Decimal(row.amount or 0) for row in rows), Decimal("0")),
+    )
+
+
 @router.get("/expense-requests", response_model=list[ExpenseRequestOut])
 async def list_expense_requests(
     scope: str = Query("mine", pattern="^(mine|all)$"),
@@ -1085,6 +1149,68 @@ async def list_expense_requests(
     q = q.order_by(ExpenseRequest.created_at.desc()).limit(limit).offset(offset)
     rows = (await db.execute(q)).scalars().all()
     return [await _request_to_out(db, r) for r in rows]
+
+
+@router.get("/expense-requests/mine/list", response_model=ExpenseRequestListOut)
+async def list_personal_expense_requests(
+    statuses: Optional[str] = None,
+    type_ids: Optional[str] = None,
+    request_formats: Optional[str] = None,
+    query: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    limit: int = Query(25, ge=0, le=5000),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    stmt = _personal_expense_request_query(
+        company,
+        current_user,
+        statuses=statuses,
+        type_ids=type_ids,
+        request_formats=request_formats,
+        query=query,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    ordered = stmt.order_by(ExpenseRequest.request_date.desc(), ExpenseRequest.created_at.desc())
+    if limit > 0:
+        ordered = ordered.limit(limit).offset(offset)
+    rows = (await db.execute(ordered)).scalars().all()
+    return ExpenseRequestListOut(
+        items=[await _request_to_out(db, row) for row in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/expense-requests/mine/stats", response_model=ExpenseRequestStatsOut)
+async def personal_expense_request_stats(
+    statuses: Optional[str] = None,
+    type_ids: Optional[str] = None,
+    request_formats: Optional[str] = None,
+    query: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    rows = (await db.execute(_personal_expense_request_query(
+        company,
+        current_user,
+        statuses=statuses,
+        type_ids=type_ids,
+        request_formats=request_formats,
+        query=query,
+        date_from=date_from,
+        date_to=date_to,
+    ))).scalars().all()
+    return _summarize_personal_expense_requests(rows)
 
 
 @router.post("/expense-requests", response_model=ExpenseRequestOut, status_code=201)
@@ -1123,6 +1249,47 @@ async def create_expense_request(
     await db.commit()
     await db.refresh(obj)
     return await _request_to_out(db, obj, include_sensitive=True)
+
+
+def _timeline_approvers_by_step(
+    steps: list[ApprovalRequestStep],
+    candidates: list[ExpenseApprovalCandidate],
+    users: dict[int, str],
+    positions: dict[int, str],
+) -> dict[int, list[dict]]:
+    """Return every concrete candidate for each current approval step.
+
+    ``resolved_approver_user_id`` is retained as the legacy primary/fallback
+    value, but position- and HR-position rules may resolve to several users.
+    The detail API must return all of them so each pending candidate can see
+    and sign the request.
+    """
+    step_by_id = {step.id: step for step in steps}
+    approvers_by_step = {step.id: [] for step in steps}
+    for candidate in candidates:
+        step = step_by_id.get(candidate.request_step_id)
+        if step is None:
+            continue
+        approvers_by_step[step.id].append({
+            "user_id": candidate.user_id,
+            "name": users.get(candidate.user_id),
+            "position_name": positions.get(step.approver_position_id),
+            "status": candidate.status,
+            "comments": step.comment if candidate.user_id == step.decided_by else None,
+            "acted_at": candidate.decided_at,
+        })
+    for step in steps:
+        if approvers_by_step[step.id] or not step.resolved_approver_user_id:
+            continue
+        approvers_by_step[step.id].append({
+            "user_id": step.resolved_approver_user_id,
+            "name": users.get(step.resolved_approver_user_id),
+            "position_name": positions.get(step.approver_position_id),
+            "status": step.status,
+            "comments": step.comment,
+            "acted_at": step.decided_at,
+        })
+    return approvers_by_step
 
 
 @router.get("/expense-requests/{request_id}", response_model=ExpenseRequestDetailOut)
@@ -1179,6 +1346,12 @@ async def get_expense_request(
 
     positions = {p.id: p.name for p in (await db.execute(select(Position).where(Position.company_id == company.id))).scalars().all()}
     users = {u.id: (u.full_name or u.username) for u in (await db.execute(select(User))).scalars().all()}
+    candidates = (await db.execute(
+        select(ExpenseApprovalCandidate)
+        .where(ExpenseApprovalCandidate.request_step_id.in_([step.id for step in steps]))
+        .order_by(ExpenseApprovalCandidate.request_step_id, ExpenseApprovalCandidate.id)
+    )).scalars().all() if steps else []
+    approvers_by_step = _timeline_approvers_by_step(steps, candidates, users, positions)
     base = await _request_to_out(db, req, include_sensitive=True)
     items = await _request_items(db, request_id)
     attachments = await _request_attachments(db, request_id)
@@ -1243,14 +1416,7 @@ async def get_expense_request(
                 "resolved_approver_name": users.get(s.resolved_approver_user_id) if s.resolved_approver_user_id else None,
                 "status": s.status, "comment": s.comment,
                 "decided_by": s.decided_by, "decided_at": s.decided_at,
-                "approvers": [{
-                    "user_id": s.resolved_approver_user_id,
-                    "name": users.get(s.resolved_approver_user_id),
-                    "position_name": positions.get(s.approver_position_id),
-                    "status": s.status,
-                    "comments": s.comment,
-                    "acted_at": s.decided_at,
-                }] if s.resolved_approver_user_id else [],
+                "approvers": approvers_by_step[s.id],
             }
             for s in steps
         ] if steps else [
