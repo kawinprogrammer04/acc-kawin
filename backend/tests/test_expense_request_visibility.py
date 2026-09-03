@@ -1,8 +1,14 @@
 import unittest
+from datetime import date
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from app.routers.approvals import list_expense_requests
+from app.routers.approvals import (
+    _personal_expense_request_query,
+    _summarize_personal_expense_requests,
+    list_expense_requests,
+)
 
 
 class _EmptyScalarResult:
@@ -49,6 +55,42 @@ class ExpenseRequestVisibilityTest(unittest.IsolatedAsyncioTestCase):
         statement = db.execute.await_args.args[0]
         sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
         self.assertIn("expense_requests.status IN ('completed', 'draft')", sql)
+
+    def test_personal_data_list_propagates_every_filter(self) -> None:
+        statement = _personal_expense_request_query(
+            SimpleNamespace(id=7),
+            SimpleNamespace(id=42),
+            statuses="completed,draft",
+            type_ids="9,3",
+            request_formats="advance,reimbursement",
+            query="ACC-2026",
+            date_from=date(2026, 9, 1),
+            date_to=date(2026, 9, 30),
+        )
+
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        self.assertIn("expense_requests.company_id = 7", sql)
+        self.assertIn("expense_requests.requester_user_id = 42", sql)
+        self.assertIn("expense_requests.status IN ('completed', 'draft')", sql)
+        self.assertIn("expense_requests.expense_type_id IN (3, 9)", sql)
+        self.assertIn("expense_requests.request_format IN ('advance', 'reimbursement')", sql)
+        self.assertIn("expense_requests.request_date >= '2026-09-01'", sql)
+        self.assertIn("expense_requests.request_date <= '2026-09-30'", sql)
+        self.assertIn("ACC-2026", sql)
+
+    def test_personal_stats_use_the_filtered_rows_and_full_amount(self) -> None:
+        result = _summarize_personal_expense_requests([
+            SimpleNamespace(status="draft", amount=Decimal("100.25")),
+            SimpleNamespace(status="pending_approval", amount=Decimal("200.50")),
+            SimpleNamespace(status="completed", amount=Decimal("300.75")),
+            SimpleNamespace(status="returned_for_correction", amount=Decimal("50.00")),
+        ])
+
+        self.assertEqual(result.total_count, 4)
+        self.assertEqual(result.action_required_count, 2)
+        self.assertEqual(result.in_progress_count, 1)
+        self.assertEqual(result.completed_count, 1)
+        self.assertEqual(result.amount_total, Decimal("651.50"))
 
 
 if __name__ == "__main__":

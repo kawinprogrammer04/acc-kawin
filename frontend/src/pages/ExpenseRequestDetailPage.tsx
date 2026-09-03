@@ -75,6 +75,13 @@ function getStepApprovers(step: ApprovalStepTimeline) {
     : [{ name: step.resolved_approver_name, status: step.status, acted_at: step.decided_at }];
 }
 
+function getVisibleStepApprovers(step: ApprovalStepTimeline) {
+  // In an "any" step the service marks the other candidates as skipped once
+  // one person approves. The timeline should then show the person who actually
+  // signed, not the people whose action was no longer required.
+  return getStepApprovers(step).filter((approver) => approver.status !== "skipped");
+}
+
 function ApprovalPath({ steps, currentStepNo, approvedAt }: { steps: ApprovalStepTimeline[]; currentStepNo?: number; approvedAt?: string }) {
   const orderedSteps = [...steps].sort((left, right) => left.step_no - right.step_no);
   const currentStep = (currentStepNo ? orderedSteps.find((step) => step.step_no === currentStepNo) : undefined)
@@ -97,7 +104,7 @@ function ApprovalPath({ steps, currentStepNo, approvedAt }: { steps: ApprovalSte
         const isCompleted = completedStepStatuses.includes(step.status);
         const isCurrent = currentStep?.id === step.id;
         const isRejected = ["rejected", "returned", "returned_for_correction"].includes(step.status);
-        const people = getStepApprovers(step);
+        const people = getVisibleStepApprovers(step);
         return <li key={step.id} className="relative flex gap-3 pb-5 last:pb-0">
           {index < orderedSteps.length - 1 && <span className={`absolute left-[11px] top-7 h-[calc(100%-1.25rem)] w-0.5 ${isCompleted ? "bg-emerald-300" : "bg-border"}`} aria-hidden="true" />}
           <span className={`relative z-10 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 text-[10px] font-black ${isCompleted ? "border-emerald-500 bg-emerald-500 text-white" : isRejected ? "border-rose-500 bg-rose-50 text-rose-600" : isCurrent ? "border-amber-500 bg-amber-100 text-amber-700" : "border-muted-foreground/30 bg-background text-muted-foreground"}`}>
@@ -261,10 +268,13 @@ export function ExpenseRequestDetailPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const pendingStep = useMemo(
-    () => request?.steps.find((step) => step.status === "pending" && step.resolved_approver_user_id === user?.id),
-    [request, user?.id],
-  );
+  const pendingStep = useMemo(() => request?.steps.find((step) => {
+    if (step.status !== "pending") return false;
+    if (step.approvers?.length) {
+      return step.approvers.some((approver) => approver.user_id === user?.id && approver.status === "pending");
+    }
+    return step.resolved_approver_user_id === user?.id;
+  }), [request, user?.id]);
   const signableDocuments = useMemo(
     () => request?.attachments.filter((attachment) =>
       attachment.attachment_type === "primary" || attachment.requires_signature,

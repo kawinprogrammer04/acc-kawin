@@ -381,6 +381,21 @@ class ExpenseRequestOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ExpenseRequestListOut(BaseModel):
+    items: list[ExpenseRequestOut]
+    total: int
+    limit: int
+    offset: int
+
+
+class ExpenseRequestStatsOut(BaseModel):
+    total_count: int
+    action_required_count: int
+    in_progress_count: int
+    completed_count: int
+    amount_total: Decimal
+
+
 class ApprovalStepTimelineOut(BaseModel):
     id: int
     step_no: int

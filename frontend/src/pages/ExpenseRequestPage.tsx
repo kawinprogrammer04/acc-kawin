@@ -1,11 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Clock3, Eye, FileCheck2,
-  FileText, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, Save, Send, Trash2, Upload, UploadCloud,
+  ArrowLeft, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Eraser, Eye, FileCheck2,
+  FileText, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, Save, Send, Trash2, Upload, UploadCloud, Wallet,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { BankLogo } from "@/components/ui/bank-logo";
+import { DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
+import { DataListPagination } from "@/components/data-list/DataListPagination";
+import { PresetDateRangeFilter } from "@/components/data-list/PresetDateRangeFilter";
+import {
+  dataListFilterControlClass,
+  dataListFilterPanelClass,
+  dataListTableHeaderCellClass,
+  dataListTableScrollClass,
+} from "@/components/data-list/styles";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { api, getApiErrorMessage } from "@/api/client";
 import {
@@ -13,9 +23,10 @@ import {
 } from "@/api/approvals";
 import type {
   Position, ExpenseType, RoutePreview, ExpenseRequest, ExpenseRequestAttachment, AttachmentRequirement,
-  ExpenseRequestDetail, ExpenseRequestItem,
+  ExpenseRequestDetail, ExpenseRequestItem, PersonalExpenseRequestFilters, PersonalExpenseRequestStats,
 } from "@/api/approvals";
 import { formatCurrency, formatDate, today } from "@/lib/format";
+import { THAI_BANK_OPTIONS } from "@/lib/banks";
 import { formatCompanyLabel } from "@/lib/companyPresentation";
 import { useCompany } from "@/context/CompanyContext";
 import { useAuth } from "@/context/AuthContext";
@@ -61,13 +72,36 @@ const RECIPIENT_TYPE_LABEL: Record<string, string> = {
   employee: "พนักงาน", individual: "บุคคลภายนอก", company: "นิติบุคคล",
 };
 
-const BANKS = [
-  "ธนาคารกรุงเทพ (BBL)", "ธนาคารกสิกรไทย (KBank)", "ธนาคารกรุงไทย (KTB)",
-  "ธนาคารไทยพาณิชย์ (SCB)", "ธนาคารกรุงศรีอยุธยา (Krungsri)", "ธนาคารทหารไทยธนชาต (ttb)",
-  "ธนาคารเกียรตินาคินภัทร (KKP)", "ธนาคารซีไอเอ็มบี ไทย (CIMB)", "ธนาคารทิสโก้ (TISCO)",
-  "ธนาคารยูโอบี (UOB)", "ธนาคารออมสิน (GSB)", "ธนาคารอาคารสงเคราะห์ (GHB)",
-  "ธ.ก.ส. (BAAC)", "ธนาคารอิสลามแห่งประเทศไทย (iBank)",
-];
+const PERSONAL_REQUEST_PAGE_SIZE = 25;
+
+type PersonalRequestFilterForm = {
+  statuses: string[];
+  type_ids: string[];
+  request_formats: string[];
+  query: string;
+  date_from: string;
+  date_to: string;
+};
+
+const emptyPersonalRequestFilters = (): PersonalRequestFilterForm => ({
+  statuses: [],
+  type_ids: [],
+  request_formats: [],
+  query: "",
+  date_from: today(),
+  date_to: today(),
+});
+
+function toPersonalRequestApiFilters(filters: PersonalRequestFilterForm): PersonalExpenseRequestFilters {
+  return {
+    statuses: filters.statuses.length ? filters.statuses.join(",") : undefined,
+    type_ids: filters.type_ids.length ? filters.type_ids.join(",") : undefined,
+    request_formats: filters.request_formats.length ? filters.request_formats.join(",") : undefined,
+    query: filters.query.trim() || undefined,
+    date_from: filters.date_from || undefined,
+    date_to: filters.date_to || undefined,
+  };
+}
 
 const inputCls = "w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/15";
 const labelCls = "mb-1.5 block text-sm font-medium text-foreground";
@@ -84,36 +118,38 @@ function SuccessNotice({ message }: { message: string }) {
 
 function RequestTableRow({ item, onCancel }: { item: ExpenseRequest; onCancel: (item: ExpenseRequest) => void }) {
   return (
-    <tr className="hover:bg-muted/20">
-      <td className="px-4 py-3 font-medium">{item.request_no || item.id.slice(0, 8)}</td>
-      <td className="px-4 py-3">
-        <p>{item.expense_type_name || "-"}</p>
-        <p className="text-xs text-muted-foreground">{REQUEST_FORMAT_LABEL[item.request_format] || item.request_format}</p>
+    <tr className="hover:bg-muted/40">
+      <td className="px-4 py-4"><Link to={`/expense-requests/${item.id}`} className="font-mono font-black text-primary hover:underline">{item.request_no || item.id.slice(0, 8)}</Link><p className="mt-1 text-xs text-muted-foreground">{item.department_name || "ไม่ระบุแผนก"}</p></td>
+      <td className="whitespace-nowrap px-4 py-4 font-medium">{formatDate(`${item.request_date}T00:00:00`)}</td>
+      <td className="px-4 py-4"><div className="flex items-center gap-2.5"><BankLogo bankName={item.bank_name} /><span className="font-bold">{item.bank_name || "-"}</span></div></td>
+      <td className="px-4 py-4"><p className="font-bold">{item.recipient_name || "-"}</p><p className="mt-1 text-xs text-muted-foreground">{item.bank_account_name || "ไม่ระบุชื่อบัญชี"}</p></td>
+      <td className="max-w-[320px] px-4 py-4"><p className="break-words">{item.title || "-"}</p></td>
+      <td className="px-4 py-4">
+        <p className="font-bold">{item.expense_type_name || "-"}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{REQUEST_FORMAT_LABEL[item.request_format] || item.request_format}</p>
       </td>
-      <td className="max-w-[280px] px-4 py-3"><p className="truncate">{item.title}</p></td>
-      <td className="px-4 py-3">
-        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-medium ${STATUS_COLOR[item.status] || "bg-muted"}`}>
+      <td className="whitespace-nowrap px-4 py-4 text-right font-black text-primary">{formatCurrency(item.amount)}</td>
+      <td className="px-4 py-4">
+        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${STATUS_COLOR[item.status] || "bg-muted"}`}>
           {STATUS_LABEL[item.status] || item.status}
         </span>
-        {item.installment_no && <span className="ml-1.5 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700">งวด {item.installment_no}</span>}
-        {item.installment_chain_status === "in_progress" && <p className="mt-1 text-xs font-medium text-orange-600">แบ่งจ่ายยังไม่ครบ</p>}
+        {item.installment_no && <span className="ml-1.5 inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">งวด {item.installment_no}</span>}
+        {item.installment_chain_status === "in_progress" && <p className="mt-1 text-xs font-bold text-orange-600">แบ่งจ่ายยังไม่ครบ</p>}
       </td>
-      <td className="px-4 py-3 text-muted-foreground">{formatDate(item.created_at)}</td>
-      <td className="px-4 py-3 text-right font-semibold">{formatCurrency(item.amount)}</td>
-      <td className="px-4 py-3">
+      <td className="px-4 py-4">
         <div className="flex items-center justify-end gap-1">
           <Link to={`/expense-requests/${item.id}`}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-primary hover:bg-primary/10">
-            <Eye className="h-3.5 w-3.5" /> ดูรายละเอียด
+            className="inline-flex h-10 items-center gap-1.5 rounded-md bg-primary/10 px-4 text-xs font-black text-primary hover:bg-primary/20">
+            <Eye className="h-3.5 w-3.5" /> เปิดรายการ
           </Link>
           {["draft", "returned_for_correction"].includes(item.status) && (
             <>
               <Link to={`/expense-requests/${item.id}/edit?step=0`}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-primary hover:bg-primary/10">
+                className="inline-flex h-10 items-center gap-1.5 rounded-md px-3 text-xs font-bold text-primary hover:bg-primary/10">
                 <Pencil className="h-3.5 w-3.5" /> แก้ไข
               </Link>
               <button onClick={() => onCancel(item)} title="ยกเลิกแบบร่าง"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
+                className="inline-flex h-10 w-10 items-center justify-center rounded-md text-muted-foreground hover:bg-rose-50 hover:text-rose-600">
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
             </>
@@ -126,37 +162,58 @@ function RequestTableRow({ item, onCancel }: { item: ExpenseRequest; onCancel: (
 
 export function ExpenseRequestPage() {
   const navigate = useNavigate();
+  const { currentCompany } = useCompany();
   const [items, setItems] = useState<ExpenseRequest[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PERSONAL_REQUEST_PAGE_SIZE);
+  const [stats, setStats] = useState<PersonalExpenseRequestStats>({
+    total_count: 0, action_required_count: 0, in_progress_count: 0, completed_count: 0, amount_total: 0,
+  });
+  const [types, setTypes] = useState<ExpenseType[]>([]);
+  const [filters, setFilters] = useState<PersonalRequestFilterForm>(emptyPersonalRequestFilters);
+  const [applied, setApplied] = useState<PersonalRequestFilterForm>(emptyPersonalRequestFilters);
   const [loading, setLoading] = useState(true);
-  const [statuses, setStatuses] = useState<string[]>([]);
   const [error, setError] = useState("");
 
-  const statusFilter = useMemo(() => statuses.join(","), [statuses]);
-  const statusFilterLabel = statuses.length === 0
-    ? "ทุกสถานะ"
-    : statuses.length === 1
-      ? STATUS_LABEL[statuses[0]] || statuses[0]
-      : `เลือกแล้ว ${statuses.length} สถานะ`;
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setPage(1);
+      setApplied(current => JSON.stringify(current) === JSON.stringify(filters) ? current : { ...filters });
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [filters]);
 
-  const toggleStatus = (value: string) => {
-    setStatuses((current) => current.includes(value)
-      ? current.filter((item) => item !== value)
-      : [...current, value]);
-  };
+  useEffect(() => {
+    setPage(1);
+    setFilters(current => current.type_ids.length ? { ...current, type_ids: [] } : current);
+    expenseTypesApi.list().then(setTypes).catch(() => setTypes([]));
+  }, [currentCompany?.id]);
 
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      setItems(await expenseRequestsApi.list({
-        scope: "mine",
-        status: statusFilter || undefined, limit: 100,
-      }));
+      const apiFilters = toPersonalRequestApiFilters(applied);
+      const [result, summary] = await Promise.all([
+        expenseRequestsApi.listMine(apiFilters, page, pageSize),
+        expenseRequestsApi.statsMine(apiFilters),
+      ]);
+      setItems(result.items);
+      setTotal(result.total);
+      setStats(summary);
     } catch (e) {
       setError(getApiErrorMessage(e, "โหลดรายการคำขอไม่สำเร็จ"));
     } finally { setLoading(false); }
-  }, [statusFilter]);
+  }, [applied, page, pageSize, currentCompany?.id]);
 
   useEffect(() => { load(); }, [load]);
+
+  const resetFilters = () => {
+    const cleared = emptyPersonalRequestFilters();
+    setPage(1);
+    setFilters(cleared);
+    setApplied(cleared);
+  };
 
   const cancelDraft = async (item: ExpenseRequest) => {
     if (!window.confirm(`ต้องการยกเลิกแบบร่าง ${item.request_no || "นี้"} หรือไม่?`)) return;
@@ -165,64 +222,55 @@ export function ExpenseRequestPage() {
   };
 
   return (
-    <div className="space-y-5 p-6">
+    <div className="w-full space-y-6 p-6">
       <PageHeader title="คำขอเบิกค่าใช้จ่าย" subtitle="สร้างคำขอ ติดตามสถานะ และตรวจสอบเอกสาร">
         <button onClick={() => navigate("/expense-requests/create?step=0")}
-          className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+          className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-black text-primary-foreground shadow-sm hover:bg-primary/90">
           <Plus className="h-4 w-4" /> สร้างคำขอ
         </button>
       </PageHeader>
-      <ErrorNotice message={error} />
-      <div className="flex items-center justify-between gap-3">
-        <Popover>
-          <PopoverTrigger asChild>
-            <button type="button" className="inline-flex h-10 min-w-[220px] max-w-full items-center justify-between gap-3 rounded-lg border border-input bg-background px-3 text-sm hover:bg-muted/40">
-              <span className="truncate">สถานะ: {statusFilterLabel}</span>
-              <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-            </button>
-          </PopoverTrigger>
-          <PopoverContent align="start" className="w-[280px] p-2">
-            <div className="flex items-center justify-between border-b px-2 pb-2">
-              <p className="text-sm font-semibold">เลือกสถานะ</p>
-              <button type="button" onClick={() => setStatuses([])} disabled={statuses.length === 0}
-                className="text-xs font-medium text-primary hover:underline disabled:text-muted-foreground disabled:no-underline">
-                ทุกสถานะ
-              </button>
-            </div>
-            <div className="max-h-72 space-y-1 overflow-y-auto py-2">
-              {STATUS_FILTER_OPTIONS.map(([value, label]) => {
-                const selected = statuses.includes(value);
-                return <button key={value} type="button" onClick={() => toggleStatus(value)}
-                  className={`flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition ${selected ? "bg-primary/10 text-primary" : "hover:bg-muted"}`}>
-                  <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${selected ? "border-primary bg-primary text-primary-foreground" : "border-input bg-background"}`}>
-                    {selected && <Check className="h-3 w-3" />}
-                  </span>
-                  <span>{label}</span>
-                </button>;
-              })}
-            </div>
-            {statuses.length > 0 && <p className="border-t px-2 pt-2 text-xs text-muted-foreground">เลือกไว้ {statuses.length} สถานะ</p>}
-          </PopoverContent>
-        </Popover>
-        <button onClick={load} className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted">
-          <RefreshCw className="h-4 w-4" /> รีเฟรช
-        </button>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <DataListKpiCard label="คำขอทั้งหมด" value={stats.total_count} tone="bg-slate-100 text-slate-700 dark:bg-slate-900" icon={FileText} />
+        <DataListKpiCard label="ต้องดำเนินการ" value={stats.action_required_count} tone="bg-amber-100 text-amber-700 dark:bg-amber-950" icon={Pencil} />
+        <DataListKpiCard label="กำลังดำเนินการ" value={stats.in_progress_count} tone="bg-sky-100 text-sky-700 dark:bg-sky-950" icon={Clock3} />
+        <DataListKpiCard label="เสร็จสิ้น" value={stats.completed_count} tone="bg-emerald-100 text-emerald-700 dark:bg-emerald-950" icon={FileCheck2} />
+        <DataListKpiCard label="ยอดเบิกรวม" value={Number(stats.amount_total || 0)} currency tone="bg-violet-100 text-violet-700 dark:bg-violet-950" icon={Wallet} />
       </div>
-      <Card><CardContent className="p-0">
-        {loading ? <div className="flex h-44 items-center justify-center"><Loader2 className="h-5 w-5 animate-spin text-muted-foreground" /></div> : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[920px] text-sm">
-              <thead className="border-b bg-muted/30"><tr>
-                {["เลขที่คำขอ", "ประเภท", "วัตถุประสงค์", "สถานะ", "วันที่สร้าง", "ยอดเบิก", "ดำเนินการ"].map((h) => (
-                  <th key={h} className={`px-4 py-3 text-xs font-medium text-muted-foreground ${["ยอดเบิก", "ดำเนินการ"].includes(h) ? "text-right" : "text-left"}`}>{h}</th>
-                ))}
-              </tr></thead>
-              <tbody className="divide-y">{items.map((item) => <RequestTableRow key={item.id} item={item} onCancel={cancelDraft} />)}</tbody>
-            </table>
-            {items.length === 0 && <div className="flex flex-col items-center justify-center py-14 text-muted-foreground"><FileText className="mb-2 h-9 w-9" /><p className="text-sm">ยังไม่มีคำขอเบิกค่าใช้จ่าย</p></div>}
-          </div>
-        )}
-      </CardContent></Card>
+
+      <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl`}>
+        <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
+          <input className={dataListFilterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ ชื่อผู้รับ หรือธนาคาร" />
+        </label>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <DataListMultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={STATUS_FILTER_OPTIONS.map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
+          <DataListMultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={types.filter(type => type.is_active).map(type => ({ value: String(type.id), label: type.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
+          <DataListMultiFilterSelect label="รูปแบบคำขอ" values={filters.request_formats} allLabel="ทุกรูปแบบ" options={Object.entries(REQUEST_FORMAT_LABEL).map(([value, label]) => ({ value, label }))} onChange={request_formats => setFilters(current => ({ ...current, request_formats }))} />
+          <PresetDateRangeFilter dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))} />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
+          <span className="text-xs font-bold text-muted-foreground">ตัวกรองทำงานอัตโนมัติเมื่อเลือกหรือกรอกข้อมูล</span>
+          <button type="button" onClick={resetFilters} className="inline-flex h-11 items-center gap-2 rounded-md border border-input bg-background px-8 text-sm font-bold text-muted-foreground transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/30"><Eraser className="h-4 w-4" />ล้างตัวกรอง</button>
+        </div>
+      </form>
+
+      <ErrorNotice message={error} />
+      <Card className="overflow-hidden"><CardContent className="p-0"><div className={dataListTableScrollClass}>
+        <table className="w-full min-w-[1540px] text-sm">
+          <thead className="text-left text-xs font-black uppercase text-muted-foreground"><tr>
+            {["คำขอ", "วันที่", "ธนาคาร", "ชื่อผู้รับ", "รายการ", "ประเภท", "ยอดเบิก", "สถานะ", "ดำเนินการ"].map((heading, index) => <th key={heading} className={`${dataListTableHeaderCellClass} px-4 py-3 ${[6, 8].includes(index) ? "text-right" : "text-left"}`}>{heading}</th>)}
+          </tr></thead>
+          <tbody className="divide-y">{items.map(item => <RequestTableRow key={item.id} item={item} onCancel={cancelDraft} />)}</tbody>
+          {!loading && total > 0 && <tfoot className="border-t-2 bg-muted/50"><tr>
+            <td colSpan={6} className="px-4 py-4 text-right text-sm font-black">ยอดเบิกรวม</td>
+            <td className="whitespace-nowrap px-4 py-4 text-right text-base font-black text-primary">{formatCurrency(stats.amount_total)}</td>
+            <td colSpan={2} />
+          </tr></tfoot>}
+        </table>
+        {loading && <div className="flex justify-center p-12"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>}
+        {!loading && items.length === 0 && <div className="flex flex-col items-center justify-center py-14 text-muted-foreground"><FileText className="mb-3 h-9 w-9" /><p>ไม่มีคำขอตามตัวกรอง</p></div>}
+      </div></CardContent></Card>
+      {!loading && <DataListPagination total={total} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={value => { setError(""); setPage(1); setPageSize(value); }} />}
     </div>
   );
 }
@@ -329,7 +377,7 @@ export function ExpenseRequestWizardPage() {
       installment_enabled: Boolean(detail.installment_enabled),
     };
     setHeader(hydratedHeader);
-    setBankPicker(BANKS.includes(hydratedHeader.bank_name) ? hydratedHeader.bank_name : hydratedHeader.bank_name ? "__other__" : "");
+    setBankPicker(THAI_BANK_OPTIONS.includes(hydratedHeader.bank_name) ? hydratedHeader.bank_name : hydratedHeader.bank_name ? "__other__" : "");
     lastSavedHeader.current = JSON.stringify(hydratedHeader);
     setItems(detail.items.length ? detail.items.map((item) => ({ description: item.description, quantity: String(item.quantity), unit: item.unit, unit_price: String(item.unit_price) })) : [blankItem()]);
     setTax({
@@ -638,7 +686,7 @@ export function ExpenseRequestWizardPage() {
         <div className="border-t pt-6"><SectionHeading title="ผู้รับเงินและบัญชีธนาคาร" subtitle="ข้อมูลนี้เข้ารหัสและเปิดดูได้เฉพาะผู้เกี่ยวข้องกับคำขอ" /><div className="mt-6 grid gap-6 md:grid-cols-2 2xl:grid-cols-3">
           <div><label className={labelCls}>ประเภทผู้รับเงินจริง *</label><select className={inputCls} value={header.recipient_type === "employee" ? "employee" : "external"} onChange={(e) => { const employee = e.target.value === "employee"; setHeader((f) => ({ ...f, recipient_type: employee ? "employee" : "individual", recipient_name: employee ? (user?.full_name || user?.username || "") : "", bank_account_name: employee ? (user?.full_name || user?.username || "") : "" })); }}><option value="employee">พนักงาน</option><option value="external">บุคคลหรือบริษัทภายนอก</option></select></div>
           <div><label className={labelCls}>ชื่อผู้รับเงิน *</label><input className={inputCls} value={header.recipient_name} onChange={(e) => setHeader((f) => ({ ...f, recipient_name: e.target.value }))} /></div>
-          <div><label className={labelCls}>ธนาคาร *</label><select className={inputCls} value={bankPicker} onChange={(e) => { const value = e.target.value; setBankPicker(value); setHeader((f) => ({ ...f, bank_name: value === "__other__" ? "" : value })); }}><option value="">เลือกธนาคาร</option>{BANKS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}<option value="__other__">อื่นๆ (ระบุเอง)</option></select>{bankPicker === "__other__" && <input className={`${inputCls} mt-2`} maxLength={100} value={header.bank_name} placeholder="พิมพ์ชื่อธนาคาร" onChange={(e) => setHeader((f) => ({ ...f, bank_name: e.target.value }))} />}</div>
+          <div><label className={labelCls}>ธนาคาร *</label><select className={inputCls} value={bankPicker} onChange={(e) => { const value = e.target.value; setBankPicker(value); setHeader((f) => ({ ...f, bank_name: value === "__other__" ? "" : value })); }}><option value="">เลือกธนาคาร</option>{THAI_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}<option value="__other__">อื่นๆ (ระบุเอง)</option></select>{bankPicker === "__other__" && <input className={`${inputCls} mt-2`} maxLength={100} value={header.bank_name} placeholder="พิมพ์ชื่อธนาคาร" onChange={(e) => setHeader((f) => ({ ...f, bank_name: e.target.value }))} />}</div>
           <div><label className={labelCls}>ชื่อบัญชี *</label><input className={inputCls} value={header.bank_account_name} onChange={(e) => setHeader((f) => ({ ...f, bank_account_name: e.target.value }))} /></div>
           <div className="md:col-span-2 2xl:col-span-3"><label className={labelCls}>เลขบัญชี *</label><input inputMode="numeric" autoComplete="off" maxLength={30} className={inputCls} value={header.bank_account_number} onChange={(e) => setHeader((f) => ({ ...f, bank_account_number: e.target.value }))} /><p className="mt-2 text-xs text-muted-foreground">ตรวจชื่อบัญชีและเลขบัญชีก่อนบันทึกทุกครั้ง</p></div>
           <div className="md:col-span-2 2xl:col-span-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700"><LockKeyhole className="h-4 w-4" /> จัดเก็บแบบเข้ารหัสและแสดงเฉพาะผู้เกี่ยวข้องกับคำขอ</div>

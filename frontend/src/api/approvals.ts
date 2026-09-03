@@ -189,6 +189,30 @@ export interface ExpenseRequest {
   created_at: string;
 }
 
+export interface PersonalExpenseRequestFilters {
+  statuses?: string;
+  type_ids?: string;
+  request_formats?: string;
+  query?: string;
+  date_from?: string;
+  date_to?: string;
+}
+
+export interface PersonalExpenseRequestListResponse {
+  items: ExpenseRequest[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface PersonalExpenseRequestStats {
+  total_count: number;
+  action_required_count: number;
+  in_progress_count: number;
+  completed_count: number;
+  amount_total: number;
+}
+
 export interface ExpenseRequestItem {
   id?: number;
   sort_order?: number;
@@ -391,6 +415,12 @@ export const approvalRoutesApi = {
 export const expenseRequestsApi = {
   list: (params?: { scope?: "mine" | "all"; status?: string; limit?: number; offset?: number }) =>
     api.get("/expense-requests", { params }).then((r) => r.data),
+  listMine: (params?: PersonalExpenseRequestFilters, page = 1, limit = 25): Promise<PersonalExpenseRequestListResponse> =>
+    api.get("/expense-requests/mine/list", {
+      params: { ...params, limit, offset: limit === 0 ? 0 : (page - 1) * limit },
+    }).then((r) => r.data),
+  statsMine: (params?: PersonalExpenseRequestFilters): Promise<PersonalExpenseRequestStats> =>
+    api.get("/expense-requests/mine/stats", { params }).then((r) => r.data),
   create: (data: {
     requester_position_id: number;
     expense_type_id: number;
