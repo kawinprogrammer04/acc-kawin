@@ -45,10 +45,15 @@ into `frontend/src/components/data-list/` and use it from both pages.
 7. Filter dropdowns must render above sticky table headers. Apply the shared
    `dataListFilterPanelClass` to the whole filter panel and use the shared
    popover/table-header layers; do not add page-specific z-index fixes.
+8. When a date-range filter exists, it must be the first filter in visual and
+   keyboard order. On desktop, place it immediately before the text-search
+   field; on small screens, place it directly above the text-search field.
 
 ## Date Range Picker with Presets
 
 Always reuse `PresetDateRangeFilter`; do not use two independent date inputs.
+The date-range filter always comes before every other filter, including text
+search, regardless of the page-specific filter set.
 
 Required presets, in this order:
 

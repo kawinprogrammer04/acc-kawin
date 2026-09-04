@@ -14,7 +14,12 @@ from pypdf import PdfReader, PdfWriter
 from reportlab.pdfgen import canvas
 
 from app.services.expense_finance_service import excel_bytes
-from app.services.expense_request_service import calculate_totals, render_payment_approval_pdf
+from app.services.expense_request_service import (
+    calculate_totals,
+    per_item_vat_amounts,
+    per_item_withholding_amounts,
+    render_payment_approval_pdf,
+)
 from app.services.expense_signature_service import (
     _approval_name_for_signature,
     _placement_box,
@@ -237,6 +242,100 @@ class ExpenseCalculationTests(unittest.TestCase):
         self.assertIsNone(getattr(req, "installment_payment_amount", None))
         result = calculate_totals(req, [SimpleNamespace(line_total=Decimal("1000"))])
         self.assertEqual(result["price_before_vat"], Decimal("900.00"))
+
+    def test_per_item_vat_rates_mixed(self):
+        # หัวหน้า's case 2/3: two lines, each carrying its own VAT rate — a service
+        # line at 2% and another line (product, or a second service) at 7%. VAT is
+        # computed per line, not from one rate applied to the combined total.
+        req = request(discount_amount=Decimal("0"))
+        items = [
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("2")),
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("7")),
+        ]
+        result = calculate_totals(req, items)
+        self.assertEqual(result["price_before_vat"], Decimal("200.00"))
+        self.assertEqual(result["vat_amount"], Decimal("9.00"))  # 2.00 + 7.00
+        # Old rows without a per-item withholding rate keep the request-level rate.
+        self.assertEqual(result["withholding_amount"], Decimal("6.00"))  # 200 * 3%
+        self.assertEqual(result["payable_total"], Decimal("203.00"))
+
+    def test_per_item_withholding_rates_match_supplier_example(self):
+        req = request(vat_rate=Decimal("7"), discount_amount=Decimal("0"))
+        items = [
+            SimpleNamespace(
+                line_total=Decimal("3000"), vat_rate=Decimal("7"),
+                withholding_rate=Decimal("2"),
+            ),
+            SimpleNamespace(
+                line_total=Decimal("1000"), vat_rate=Decimal("7"),
+                withholding_rate=Decimal("3"),
+            ),
+        ]
+        result = calculate_totals(req, items)
+        self.assertEqual(result["price_before_vat"], Decimal("4000.00"))
+        self.assertEqual(result["vat_amount"], Decimal("280.00"))
+        self.assertEqual(result["withholding_amount"], Decimal("90.00"))
+        self.assertEqual(result["grand_total"], Decimal("4280.00"))
+        self.assertEqual(result["payable_total"], Decimal("4190.00"))
+        self.assertEqual(
+            per_item_withholding_amounts(req, items),
+            [Decimal("60.00"), Decimal("30.00")],
+        )
+
+    def test_blank_item_withholding_rate_uses_request_default(self):
+        req = request(withholding_rate=Decimal("3"))
+        items = [
+            SimpleNamespace(line_total=Decimal("100"), withholding_rate=Decimal("2")),
+            SimpleNamespace(line_total=Decimal("100"), withholding_rate=None),
+        ]
+        result = calculate_totals(req, items)
+        self.assertEqual(result["withholding_amount"], Decimal("5.00"))
+
+    def test_per_item_vat_rate_missing_falls_back_to_request_rate(self):
+        # An item with no vat_rate of its own (old rows, or a row left blank)
+        # inherits the request-level rate — same as before per-item VAT existed.
+        req = request(vat_rate=Decimal("7"))
+        items = [
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("2")),
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=None),
+        ]
+        result = calculate_totals(req, items)
+        self.assertEqual(result["vat_amount"], Decimal("9.00"))  # 2.00 + 7.00 (fallback)
+
+    def test_per_item_vat_rates_with_discount_prorated(self):
+        # Discount is a request-level figure (not allocated per line), so it's
+        # spread proportionally across items before each item's own rate applies.
+        req = request(discount_amount=Decimal("40"))
+        items = [
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("2")),
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("7")),
+        ]
+        result = calculate_totals(req, items)
+        # scale = (200-40)/200 = 0.8 -> each line's base becomes 80
+        self.assertEqual(result["price_before_vat"], Decimal("160.00"))
+        self.assertEqual(result["vat_amount"], Decimal("1.60") + Decimal("5.60"))
+
+    def test_per_item_vat_amounts_display_matches_calculate_totals(self):
+        # The per-item breakdown exposed for display must sum to exactly the
+        # aggregate `vat_amount` calculate_totals() returns.
+        req = request(discount_amount=Decimal("40"))
+        items = [
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("2")),
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("7")),
+        ]
+        totals = calculate_totals(req, items)
+        breakdown = per_item_vat_amounts(req, items)
+        self.assertEqual(sum(breakdown), totals["vat_amount"])
+
+    def test_per_item_vat_amounts_zero_when_vat_mode_not_rate(self):
+        # "amount" (actual invoice total) and "none" modes can't be split back
+        # out per line — display breakdown is all zeros in those modes.
+        req = request(vat_mode="amount", vat_amount=Decimal("14"))
+        items = [
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("2")),
+            SimpleNamespace(line_total=Decimal("100"), vat_rate=Decimal("7")),
+        ]
+        self.assertEqual(per_item_vat_amounts(req, items), [Decimal("0.00"), Decimal("0.00")])
 
 
 class ApprovalRoutingAmountTests(unittest.TestCase):

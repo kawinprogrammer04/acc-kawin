@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Eraser, Eye, FileCheck2,
-  FileText, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, Save, Send, Trash2, Upload, UploadCloud, Wallet,
+  FileText, Info, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, Save, Send, Trash2, Upload, UploadCloud, Wallet,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { BankLogo } from "@/components/ui/bank-logo";
@@ -225,8 +225,8 @@ export function ExpenseRequestPage() {
     <div className="w-full space-y-6 p-6">
       <PageHeader title="คำขอเบิกค่าใช้จ่าย" subtitle="สร้างคำขอ ติดตามสถานะ และตรวจสอบเอกสาร">
         <button onClick={() => navigate("/expense-requests/create?step=0")}
-          className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-primary px-5 text-sm font-black text-primary-foreground shadow-sm hover:bg-primary/90">
-          <Plus className="h-4 w-4" /> สร้างคำขอ
+          className="inline-flex min-h-14 items-center gap-3 rounded-2xl bg-primary px-8 text-base font-black text-primary-foreground shadow-md transition hover:-translate-y-0.5 hover:bg-primary/90 hover:shadow-lg">
+          <Plus className="h-5 w-5" /> สร้างคำขอ
         </button>
       </PageHeader>
 
@@ -239,14 +239,16 @@ export function ExpenseRequestPage() {
       </div>
 
       <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl`}>
-        <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
-          <input className={dataListFilterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ ชื่อผู้รับ หรือธนาคาร" />
-        </label>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid items-end gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,2.2fr)]">
+          <PresetDateRangeFilter dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))} />
+          <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
+            <input className={dataListFilterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ ชื่อผู้รับ หรือธนาคาร" />
+          </label>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <DataListMultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={STATUS_FILTER_OPTIONS.map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
           <DataListMultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={types.filter(type => type.is_active).map(type => ({ value: String(type.id), label: type.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
           <DataListMultiFilterSelect label="รูปแบบคำขอ" values={filters.request_formats} allLabel="ทุกรูปแบบ" options={Object.entries(REQUEST_FORMAT_LABEL).map(([value, label]) => ({ value, label }))} onChange={request_formats => setFilters(current => ({ ...current, request_formats }))} />
-          <PresetDateRangeFilter dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))} />
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
           <span className="text-xs font-bold text-muted-foreground">ตัวกรองทำงานอัตโนมัติเมื่อเลือกหรือกรอกข้อมูล</span>
@@ -291,9 +293,17 @@ type PayerCompanyOption = {
   name_en?: string;
 };
 
-type ItemForm = { description: string; quantity: string; unit: string; unit_price: string };
+type ItemForm = {
+  description: string;
+  quantity: string;
+  unit: string;
+  unit_price: string;
+  withholding_rate: string;
+};
 
-const blankItem = (): ItemForm => ({ description: "", quantity: "1", unit: "รายการ", unit_price: "" });
+const blankItem = (): ItemForm => ({
+  description: "", quantity: "1", unit: "รายการ", unit_price: "", withholding_rate: "",
+});
 
 function WizardSteps({ step, requestId, editable }: { step: number; requestId?: string; editable: boolean }) {
   const labels = ["คำขอ", "รายการ+ภาษี", "เอกสาร", "ตรวจสอบ"];
@@ -379,12 +389,16 @@ export function ExpenseRequestWizardPage() {
     setHeader(hydratedHeader);
     setBankPicker(THAI_BANK_OPTIONS.includes(hydratedHeader.bank_name) ? hydratedHeader.bank_name : hydratedHeader.bank_name ? "__other__" : "");
     lastSavedHeader.current = JSON.stringify(hydratedHeader);
-    setItems(detail.items.length ? detail.items.map((item) => ({ description: item.description, quantity: String(item.quantity), unit: item.unit, unit_price: String(item.unit_price) })) : [blankItem()]);
+    setItems(detail.items.length ? detail.items.map((item) => ({
+      description: item.description, quantity: String(item.quantity), unit: item.unit,
+      unit_price: String(item.unit_price),
+      withholding_rate: item.withholding_rate != null ? String(item.withholding_rate) : "",
+    })) : [blankItem()]);
     setTax({
-      vat_mode: detail.vat_mode || "none", vat_rate: String(detail.vat_rate || 7), vat_amount: String(detail.vat_amount || 0),
+      vat_mode: detail.vat_mode || "none", vat_rate: detail.vat_rate != null ? String(detail.vat_rate) : "7", vat_amount: String(detail.vat_amount || 0),
       vat_actual_total: detail.vat_mode === "amount" ? String(Number(detail.price_before_vat || 0) + Number(detail.vat_amount || 0)) : "",
       withholding_required: detail.withholding_required, withholding_mode: detail.withholding_mode || "none",
-      withholding_rate: String(detail.withholding_rate || 3), withholding_amount: String(detail.withholding_amount || 0),
+      withholding_rate: detail.withholding_rate != null ? String(detail.withholding_rate) : "3", withholding_amount: String(detail.withholding_amount || 0),
       taxpayer_name: detail.taxpayer_name || "", taxpayer_id: detail.taxpayer_id || "", taxpayer_address: detail.taxpayer_address || "",
       taxpayer_type: detail.taxpayer_type || "individual", taxpayer_branch: detail.taxpayer_branch || "",
       service_description: detail.service_description || "",
@@ -470,12 +484,74 @@ export function ExpenseRequestWizardPage() {
     ? (Number(tax.installment_payment_amount) || 0)
     : Math.max(0, subtotal - (Number(tax.discount_amount) || 0));
   const actualVatAmount = tax.vat_mode === "amount" ? Math.max(0, (Number(tax.vat_actual_total) || 0) - afterDiscount) : 0;
-  const priceBeforeVat = tax.vat_mode === "rate" && tax.price_mode === "include_vat"
-    ? afterDiscount / (1 + (Number(tax.vat_rate) || 0) / 100)
-    : afterDiscount;
-  const vatAmount = tax.vat_mode === "rate" ? (tax.price_mode === "include_vat" ? afterDiscount - priceBeforeVat : priceBeforeVat * (Number(tax.vat_rate) || 0) / 100) : actualVatAmount;
+  // VAT ใช้อัตรารวมของคำขอ ส่วนหัก ณ ที่จ่ายยังคำนวณแยกตามฐานของแต่ละรายการ
+  // ส่วนลด/ยอดงวดเป็นค่าระดับคำขอ จึงกระจายตามสัดส่วนของแต่ละแถวก่อนคำนวณภาษี
+  const itemScale = subtotal > 0 ? afterDiscount / subtotal : 0;
+  const perItemVat = useMemo(() => {
+    if (tax.vat_mode !== "rate") {
+      return {
+        rows: items.map(() => ({ rate: 0, priceBeforeVat: 0, vatAmount: 0 })),
+        groups: [] as Array<{ rate: number; priceBeforeVat: number; vatAmount: number }>,
+        priceBeforeVat: 0,
+        vatAmount: 0,
+      };
+    }
+    const rows = items.map((item) => {
+      const itemBase = ((Number(item.quantity) || 0) * (Number(item.unit_price) || 0)) * itemScale;
+      const rate = Number(tax.vat_rate) || 0;
+      if (tax.price_mode === "include_vat") {
+        const before = itemBase / (1 + rate / 100);
+        return { rate, priceBeforeVat: before, vatAmount: itemBase - before };
+      }
+      return { rate, priceBeforeVat: itemBase, vatAmount: itemBase * rate / 100 };
+    });
+    const groups = Array.from(rows.reduce((result, row) => {
+      const key = String(row.rate);
+      const current = result.get(key) || { rate: row.rate, priceBeforeVat: 0, vatAmount: 0 };
+      current.priceBeforeVat += row.priceBeforeVat;
+      current.vatAmount += row.vatAmount;
+      result.set(key, current);
+      return result;
+    }, new Map<string, { rate: number; priceBeforeVat: number; vatAmount: number }>()).values())
+      .sort((a, b) => b.rate - a.rate);
+    return {
+      rows,
+      groups,
+      priceBeforeVat: rows.reduce((sum, row) => sum + row.priceBeforeVat, 0),
+      vatAmount: rows.reduce((sum, row) => sum + row.vatAmount, 0),
+    };
+  }, [items, itemScale, tax.vat_mode, tax.price_mode, tax.vat_rate]);
+  const priceBeforeVat = tax.vat_mode === "rate" ? perItemVat.priceBeforeVat : afterDiscount;
+  const vatAmount = tax.vat_mode === "rate" ? perItemVat.vatAmount : actualVatAmount;
   const totalWithVat = tax.price_mode === "include_vat" ? afterDiscount : afterDiscount + vatAmount;
-  const withholdingAmount = !wantsWithholding ? 0 : tax.withholding_mode === "rate" ? priceBeforeVat * (Number(tax.withholding_rate) || 0) / 100 : Number(tax.withholding_amount) || 0;
+  const hasExplicitItemWithholding = items.some((item) => item.withholding_rate !== "");
+  const missingItemWithholdingCount = items.filter((item) => item.withholding_rate === "").length;
+  const perItemWithholding = useMemo(() => {
+    const defaultRate = Number(tax.withholding_rate) || 0;
+    const rows = items.map((item, index) => {
+      const rawLineTotal = (Number(item.quantity) || 0) * (Number(item.unit_price) || 0);
+      const base = tax.vat_mode === "rate" ? (perItemVat.rows[index]?.priceBeforeVat || 0) : rawLineTotal * itemScale;
+      const rate = item.withholding_rate !== ""
+        ? (Number(item.withholding_rate) || 0)
+        : (hasExplicitItemWithholding ? 0 : defaultRate);
+      return { rate, base, amount: Math.round((base * rate / 100 + Number.EPSILON) * 100) / 100 };
+    });
+    if (!hasExplicitItemWithholding && rows.length > 0) {
+      const legacyTotal = Math.round((priceBeforeVat * defaultRate / 100 + Number.EPSILON) * 100) / 100;
+      const rowTotal = rows.reduce((sum, row) => sum + row.amount, 0);
+      rows[rows.length - 1].amount = Math.round((rows[rows.length - 1].amount + legacyTotal - rowTotal + Number.EPSILON) * 100) / 100;
+    }
+    const groups = Array.from(rows.reduce((result, row) => {
+      const key = String(row.rate);
+      const current = result.get(key) || { rate: row.rate, base: 0, amount: 0 };
+      current.base += row.base;
+      current.amount += row.amount;
+      result.set(key, current);
+      return result;
+    }, new Map<string, { rate: number; base: number; amount: number }>()).values()).sort((a, b) => b.rate - a.rate);
+    return { rows, groups, amount: rows.reduce((sum, row) => sum + row.amount, 0) };
+  }, [items, itemScale, perItemVat.rows, priceBeforeVat, tax.vat_mode, tax.withholding_rate, hasExplicitItemWithholding]);
+  const withholdingAmount = !wantsWithholding ? 0 : tax.withholding_mode === "rate" ? perItemWithholding.amount : Number(tax.withholding_amount) || 0;
   const netAfterWithholding = tax.gross_up_enabled && Number(tax.requested_net_amount) > 0
     ? Number(tax.requested_net_amount) : Math.max(0, totalWithVat - withholdingAmount);
 
@@ -565,14 +641,44 @@ export function ExpenseRequestWizardPage() {
   }, [header, headerReady, editable, step, requestId]);
 
   const saveItems = async (advance: boolean) => {
-    const normalized: ExpenseRequestItem[] = items.map((item) => ({ description: item.description.trim(), quantity: Number(item.quantity), unit: item.unit.trim(), unit_price: Number(item.unit_price) }));
+    const normalized: ExpenseRequestItem[] = items.map((item) => ({
+      description: item.description.trim(), quantity: Number(item.quantity), unit: item.unit.trim(), unit_price: Number(item.unit_price),
+      vat_rate: null,
+      withholding_rate: item.withholding_rate !== "" ? Number(item.withholding_rate) : null,
+    }));
     if (!requestId || normalized.some((item) => !item.description || item.quantity <= 0 || !item.unit || item.unit_price < 0) || subtotal <= 0) {
       setError("กรุณากรอกรายการ รายละเอียด จำนวน หน่วย และราคาให้ถูกต้อง"); return;
     }
+    if (normalized.some((item) => item.withholding_rate != null && (item.withholding_rate < 0 || item.withholding_rate >= 100))) {
+      setError("อัตราหัก ณ ที่จ่ายต่อรายการต้องอยู่ระหว่าง 0% แต่น้อยกว่า 100%"); return;
+    }
+    if (tax.vat_mode === "rate" && (tax.vat_rate === "" || Number(tax.vat_rate) < 0 || Number(tax.vat_rate) > 100)) {
+      setError("กรุณาระบุอัตรา VAT รวมระหว่าง 0-100%"); return;
+    }
+    if (tax.vat_mode === "amount" && Number(tax.vat_actual_total) <= afterDiscount) {
+      setError("กรุณากรอกยอดรวมพร้อม VAT ตามใบกำกับภาษีจริงให้มากกว่ายอดก่อน VAT"); return;
+    }
     if (typeMayRequireWithholding && !tax.requester_withholding_status) { setError("กรุณาเลือกสถานะการหัก ณ ที่จ่าย"); return; }
-    if (wantsWithholding && (!tax.withholding_mode || tax.withholding_mode === "none" || Number(tax.withholding_rate) <= 0 || Number(tax.withholding_rate) >= 100)) { setError("กรุณาระบุอัตราหัก ณ ที่จ่ายมากกว่า 0% แต่น้อยกว่า 100%"); return; }
+    if (wantsWithholding && (!tax.withholding_mode || tax.withholding_mode === "none")) { setError("กรุณาระบุวิธีหัก ณ ที่จ่าย"); return; }
+    if (wantsWithholding && missingItemWithholdingCount > 0) { setError("กรุณากรอกอัตราหัก ณ ที่จ่ายให้ครบทุกรายการ (ใส่ 0% สำหรับรายการที่ไม่ต้องหัก)"); return; }
+    if (wantsWithholding && perItemWithholding.rows.every((row) => row.rate <= 0)) { setError("กรุณาระบุอัตราหัก ณ ที่จ่ายมากกว่า 0% อย่างน้อยหนึ่งรายการ"); return; }
+    if (wantsWithholding && tax.gross_up_enabled && hasExplicitItemWithholding) { setError("Gross-up ใช้ได้เฉพาะการหัก ณ ที่จ่ายอัตราเดียวทั้งคำขอ"); return; }
     if (wantsWithholding && !tax.gross_up_enabled && priceBeforeVat < 1000) { setError("ยอดก่อน VAT ต่ำกว่า 1,000 บาท กรุณาเลือก “ไม่ต้องหัก” แทน"); return; }
-    if (wantsWithholding && (!tax.taxpayer_type || !tax.taxpayer_id.trim() || !tax.taxpayer_address.trim())) { setError("กรุณากรอกข้อมูลผู้เสียภาษีให้ครบ"); return; }
+    if (wantsWithholding && (!tax.taxpayer_type || !tax.taxpayer_id.trim() || !tax.taxpayer_address.trim())) {
+      const missingFields = [
+        !tax.taxpayer_type && "ประเภทผู้เสียภาษี",
+        !tax.taxpayer_id.trim() && "เลขประจำตัวผู้เสียภาษี",
+        !tax.taxpayer_address.trim() && "ที่อยู่ผู้เสียภาษี",
+      ].filter(Boolean);
+      setError(`กรุณากรอกข้อมูลผู้เสียภาษีให้ครบ: ${missingFields.join(", ")}`);
+      window.setTimeout(() => {
+        const targetId = !tax.taxpayer_type ? "taxpayer-type" : !tax.taxpayer_id.trim() ? "taxpayer-id" : "taxpayer-address";
+        const target = document.getElementById(targetId);
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+        target?.focus();
+      }, 0);
+      return;
+    }
     if (wantsWithholding && tax.gross_up_enabled && (!Number(tax.requested_net_amount) || Number(tax.requested_net_amount) > totalWithVat - withholdingAmount)) { setError("ยอดที่ผู้รับเงินต้องได้สุทธิต้องมากกว่า 0 และไม่เกินยอดสุทธิสูงสุดที่วงเงินนี้รองรับ"); return; }
     if (installmentOverrideActive && Number(tax.installment_payment_amount) > subtotal) { setError("ยอดงวดนี้ต้องไม่เกินยอดรวมรายการทั้งหมด"); return; }
     setSaving(true); setError(""); setNotice("");
@@ -700,14 +806,18 @@ export function ExpenseRequestWizardPage() {
       <fieldset disabled={!editable} className="space-y-5 disabled:opacity-75">
         <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-muted/30 px-4 py-3"><span className="text-sm font-semibold text-muted-foreground">ราคาที่กรอกในตารางเป็นราคา:</span><div className="inline-flex overflow-hidden rounded-lg border"><button type="button" onClick={() => setTax((f) => ({ ...f, price_mode: "exclude_vat" }))} className={`min-h-10 px-3 text-sm font-semibold ${tax.price_mode === "exclude_vat" ? "bg-primary text-primary-foreground" : "bg-background"}`}>ก่อน VAT</button><button type="button" onClick={() => setTax((f) => ({ ...f, price_mode: "include_vat" }))} className={`min-h-10 px-3 text-sm font-semibold ${tax.price_mode === "include_vat" ? "bg-primary text-primary-foreground" : "bg-background"}`}>หลัง VAT</button></div></div>
         {tax.price_mode === "include_vat" && <p className="text-xs text-muted-foreground">ราคาที่กรอกคือราคารวม VAT แล้ว ระบบจะหารด้วยอัตรา VAT ที่เลือกไว้ให้เองก่อนบันทึกยอดจริง</p>}
-        <div className="overflow-x-auto rounded-2xl border"><table className="w-full min-w-[720px] text-sm"><thead className="border-b bg-muted/40"><tr>{["รายละเอียด", "จำนวน", "หน่วย", `ราคาต่อหน่วย (${tax.price_mode === "include_vat" ? "หลัง" : "ก่อน"} VAT)`, `รวม (${tax.price_mode === "include_vat" ? "หลัง" : "ก่อน"} VAT)`, ""].map((h) => <th key={h} className={`px-3 py-3 text-xs font-semibold text-muted-foreground ${h.startsWith("ราคา") || h.startsWith("รวม") ? "text-right" : "text-left"}`}>{h}</th>)}</tr></thead><tbody className="divide-y">{items.map((item, index) => <tr key={index}>
+        <div className={`${dataListTableScrollClass} rounded-2xl border`}><table className="w-full min-w-[980px] text-sm"><thead className="border-b bg-muted/40"><tr>{["รายละเอียด", "จำนวน", "หน่วย", `ราคาต่อหน่วย (${tax.price_mode === "include_vat" ? "หลัง" : "ก่อน"} VAT)`, "หัก ณ ที่จ่าย %", "ยอดหัก (บาท)", `รวม (${tax.price_mode === "include_vat" ? "หลัง" : "ก่อน"} VAT)`, ""].map((h) => <th key={h} className={`${dataListTableHeaderCellClass} px-3 py-3 text-xs font-semibold text-muted-foreground ${h.startsWith("ราคา") || h.startsWith("รวม") || h.startsWith("หัก") || h.startsWith("ยอดหัก") || h === "จำนวน" ? "text-right" : "text-left"}`}>{h}</th>)}</tr></thead><tbody className="divide-y">{items.map((item, index) => <tr key={index}>
           <td className="min-w-[260px] p-2"><input maxLength={200} className={inputCls} value={item.description} placeholder="เช่น ค่าทางด่วน (ไม่เกิน 200 ตัวอักษร ถ้ามีรายละเอียดยาวให้แนบไฟล์)" onChange={(e) => setItems((rows) => rows.map((row, i) => i === index ? { ...row, description: e.target.value } : row))} /></td>
           <td className="w-28 p-2"><input type="number" min="0.001" step="0.001" className={`${inputCls} text-right`} value={item.quantity} onChange={(e) => setItems((rows) => rows.map((row, i) => i === index ? { ...row, quantity: e.target.value } : row))} /></td>
           <td className="w-32 p-2"><input className={inputCls} value={item.unit} onChange={(e) => setItems((rows) => rows.map((row, i) => i === index ? { ...row, unit: e.target.value } : row))} /></td>
           <td className="w-44 p-2"><input type="number" min="0.0000000001" max="999999999999.99" step="0.0000000001" className={`${inputCls} text-right`} value={item.unit_price} onChange={(e) => setItems((rows) => rows.map((row, i) => i === index ? { ...row, unit_price: e.target.value } : row))} /></td>
+          <td className="w-28 p-2"><input type="number" min="0" max="99.99" step="0.01" disabled={!typeMayRequireWithholding} className={`${inputCls} text-right disabled:cursor-not-allowed disabled:bg-muted`} title="เว้นว่างไว้เพื่อใช้อัตราหัก ณ ที่จ่ายเริ่มต้น หรือกรอก 0% เมื่อรายการนี้ไม่ต้องหัก" value={item.withholding_rate} onChange={(e) => { const value = e.target.value; setItems((rows) => rows.map((row, i) => i === index ? { ...row, withholding_rate: value } : row)); if (value !== "" && Number(value) > 0) setTax((f) => ({ ...f, requester_withholding_status: "deduct", withholding_mode: "rate", gross_up_enabled: false })); }} placeholder={typeMayRequireWithholding ? tax.withholding_rate || "ค่าเริ่มต้น" : "—"} /></td>
+          <td className="w-32 px-3 py-2 text-right font-medium text-rose-700">{wantsWithholding ? formatCurrency(perItemWithholding.rows[index]?.amount || 0) : "—"}</td>
           <td className="w-36 px-3 py-2 text-right font-semibold">{formatCurrency((Number(item.quantity) || 0) * (Number(item.unit_price) || 0))}</td>
           <td className="w-20 p-2 text-center"><button type="button" disabled={items.length === 1} onClick={() => setItems((rows) => rows.filter((_, i) => i !== index))} className="rounded-md p-2 text-muted-foreground hover:bg-rose-50 hover:text-rose-600 disabled:opacity-30"><Trash2 className="h-4 w-4" /></button></td>
-        </tr>)}</tbody></table></div>
+        </tr>)}</tbody><tfoot className="border-t bg-muted/20"><tr><td colSpan={5} className="px-3 py-3 text-right font-semibold">รวมรายการ</td><td className="px-3 py-3 text-right font-bold text-rose-700">{wantsWithholding ? formatCurrency(withholdingAmount) : "—"}</td><td className="px-3 py-3 text-right font-bold">{formatCurrency(subtotal)}</td><td /></tr></tfoot></table></div>
+        {typeMayRequireWithholding && <p className="text-xs text-muted-foreground">หัก ณ ที่จ่ายกำหนดแยกรายการได้ — เช่น ค่าโฆษณา 2%, ค่าบริการ 3% และกรอก 0% เมื่อรายการนั้นไม่ต้องหัก</p>}
+        {tax.vat_mode === "amount" && <p className="text-xs text-muted-foreground">ระบบจะคำนวณ VAT รวมจากยอดใบกำกับภาษีจริงที่กรอกไว้ด้านล่าง</p>}
         <button type="button" onClick={() => setItems((rows) => [...rows, blankItem()])} className="inline-flex min-h-11 items-center gap-2 rounded-lg px-2 text-sm font-semibold text-primary hover:bg-primary/5"><Plus className="h-4 w-4" /> เพิ่มรายการ</button>
         <div className="flex justify-end"><div className="w-full max-w-sm space-y-3 rounded-2xl border p-4">
           <div className="flex justify-between text-sm"><span className="text-muted-foreground">ยอดรวมรายการ</span><b>{formatCurrency(subtotal)}</b></div>
@@ -721,16 +831,15 @@ export function ExpenseRequestWizardPage() {
           {!installmentOverrideActive && <div><label className="mb-1.5 block text-sm text-muted-foreground">ส่วนลดรวม (บาท)</label><input type="number" min="0" max={subtotal} step="0.01" className={`${inputCls} text-right`} value={tax.discount_amount} onChange={(e) => setTax((f) => ({ ...f, discount_amount: e.target.value }))} /></div>}
           {!installmentOverrideActive && Number(tax.discount_amount) > 0 && <div className="flex justify-between text-sm text-rose-600"><span>ส่วนลด</span><b>−{formatCurrency(Number(tax.discount_amount))}</b></div>}
           <div className="flex justify-between border-t pt-3 text-sm"><span className="text-muted-foreground">ยอดรวมก่อนภาษี</span><b className="text-lg text-emerald-600">{formatCurrency(priceBeforeVat)}</b></div>
-          <div><label className="mb-1.5 block text-sm text-muted-foreground">ภาษีมูลค่าเพิ่ม VAT</label><select className={inputCls} value={tax.vat_mode === "none" ? "0" : tax.vat_mode === "amount" ? "actual" : (tax.vat_rate === "7" ? "7" : "custom")} onChange={(e) => { const value = e.target.value; setTax((f) => ({ ...f, vat_mode: value === "0" ? "none" : value === "actual" ? "amount" : "rate", vat_rate: value === "7" ? "7" : value === "custom" ? "" : f.vat_rate, price_mode: value === "actual" ? "exclude_vat" : f.price_mode })); }}><option value="0">ไม่มี</option><option value="7">7% (มาตรฐาน)</option><option value="custom">ระบุอัตราเอง</option><option value="actual">กรอกยอดตามใบกำกับภาษีจริง</option></select></div>
-          {tax.vat_mode === "rate" && tax.vat_rate !== "7" && <input type="number" min="0" max="100" step="0.01" className={`${inputCls} text-right`} placeholder="ระบุอัตรา VAT (%)" value={tax.vat_rate} onChange={(e) => setTax((f) => ({ ...f, vat_rate: e.target.value }))} />}
-          {tax.vat_mode === "amount" && <><input type="number" min={afterDiscount} step="0.01" className={`${inputCls} text-right`} placeholder="ยอดรวมหลังบวก VAT" value={tax.vat_actual_total} onChange={(e) => setTax((f) => ({ ...f, vat_actual_total: e.target.value }))} /><p className="text-xs text-muted-foreground">กรอกยอดรวมทั้งหมดที่บวก VAT แล้วจากใบกำกับภาษีจริง (ไม่ใช่แค่ยอด VAT) ระบบจะคำนวณ VAT จากส่วนต่างให้เอง</p></>}
-          {vatAmount > 0 && <div className="flex justify-between text-sm text-emerald-600"><span>VAT {tax.vat_mode === "amount" ? "ตามใบกำกับภาษีจริง" : "โดยประมาณ"}</span><b>+{formatCurrency(vatAmount)}</b></div>}
+          <div><label className="mb-1.5 block text-sm font-medium">วิธีคำนวณภาษีมูลค่าเพิ่ม (VAT)</label><select className={inputCls} value={tax.vat_mode} onChange={(e) => { const vatMode = e.target.value as typeof tax.vat_mode; setTax((f) => ({ ...f, vat_mode: vatMode, vat_rate: vatMode === "rate" && f.vat_rate === "" ? "7" : f.vat_rate, price_mode: vatMode === "amount" ? "exclude_vat" : f.price_mode })); }}><option value="none">ไม่คิด VAT ทั้งคำขอ</option><option value="rate">คำนวณ VAT จากยอดรวม</option><option value="amount">ใช้ยอดรวมตามใบกำกับภาษีจริง</option></select></div>
+          {tax.vat_mode === "rate" && <div><label className="mb-1.5 block text-sm text-muted-foreground">อัตรา VAT ของคำขอ</label><select className={inputCls} value={tax.vat_rate === "0" ? "0" : tax.vat_rate === "7" ? "7" : "custom"} onChange={(e) => setTax((f) => ({ ...f, vat_rate: e.target.value === "custom" ? "" : e.target.value }))}><option value="0">0% (ไม่มี VAT)</option><option value="7">7% (มาตรฐาน)</option><option value="custom">กำหนดเอง</option></select>{!["0", "7"].includes(tax.vat_rate) && <input type="number" min="0" max="100" step="0.01" className={`${inputCls} mt-2 text-right`} placeholder="ระบุอัตรา VAT (%)" value={tax.vat_rate} onChange={(e) => setTax((f) => ({ ...f, vat_rate: e.target.value }))} />}</div>}
+          {tax.vat_mode === "rate" && <div className="flex items-center justify-between text-sm text-emerald-700"><span>VAT รวม</span><b>+{formatCurrency(vatAmount)}</b></div>}
+          {tax.vat_mode === "amount" && <div className="rounded-xl border border-sky-200 bg-sky-50/60 p-3"><label className="mb-1.5 block text-sm font-medium text-sky-900">ยอดรวมพร้อม VAT ตามใบกำกับภาษี (บาท)</label><input type="number" min={afterDiscount} step="0.01" className={`${inputCls} text-right`} placeholder="เช่น 40,800.00" value={tax.vat_actual_total} onChange={(e) => setTax((f) => ({ ...f, vat_actual_total: e.target.value }))} /><p className="mt-2 text-xs text-sky-800">กรอกยอดรวมทั้งใบกำกับหลังบวก VAT ไม่ใช่กรอกเฉพาะยอด VAT; อัตรา VAT รายรายการในตารางจะไม่ถูกนำมาคำนวณ</p>{vatAmount > 0 && <div className="mt-2 flex justify-between border-t border-sky-200 pt-2 text-sm"><span>VAT รวมจากส่วนต่าง</span><b>+{formatCurrency(vatAmount)}</b></div>}</div>}
           <div className="flex justify-between border-t pt-3"><span className="text-sm font-semibold">ยอดรวมพร้อม VAT โดยประมาณ</span><b className="text-lg text-primary">{formatCurrency(totalWithVat)}</b></div>
-          <div className="border-t pt-3">{typeMayRequireWithholding ? <><p className="text-xs text-muted-foreground">ประเภทการเบิกนี้อาจต้องหัก ณ ที่จ่าย — ระบุสถานะและอัตราที่ใช้กับรายการนี้ด้วยตนเอง</p><label className="mt-2 block text-sm text-muted-foreground">รายการนี้ต้องหัก ณ ที่จ่ายไหม *</label><select className={`${inputCls} mt-1.5`} value={tax.requester_withholding_status} onChange={(e) => setTax((f) => ({ ...f, requester_withholding_status: e.target.value as typeof f.requester_withholding_status, withholding_mode: e.target.value === "deduct" ? "rate" : "none", gross_up_enabled: e.target.value === "deduct" ? f.gross_up_enabled : false }))}><option value="not_withheld">ไม่ต้องหัก</option><option value="deduct">ต้องหัก</option><option value="already_withheld">หักและนำส่งเองแล้ว</option></select>{wantsWithholding && <div className="mt-3"><label className="text-sm text-muted-foreground">อัตราที่ใช้</label><select className={`${inputCls} mt-1`} value={["1", "2", "3", "5"].includes(tax.withholding_rate) ? tax.withholding_rate : "custom"} onChange={(e) => setTax((f) => ({ ...f, withholding_rate: e.target.value === "custom" ? "" : e.target.value }))}><option value="">เลือกอัตรา</option><option value="1">1%</option><option value="2">2%</option><option value="3">3%</option><option value="5">5%</option><option value="custom">ระบุเอง</option></select>{!["1", "2", "3", "5"].includes(tax.withholding_rate) && <input type="number" min="0.01" max="99.99" step="0.01" className={`${inputCls} mt-2 text-right`} placeholder="%" value={tax.withholding_rate} onChange={(e) => setTax((f) => ({ ...f, withholding_rate: e.target.value }))} />}</div>}<p className="mt-2 text-xs text-muted-foreground">ข้อมูลนี้ใช้คำนวณยอดหักและยอดโอนสุทธิ บัญชีจะตรวจหลักฐานและบันทึกการจ่ายตามข้อมูลที่ผู้ขอระบุ</p></> : <p className="text-xs text-muted-foreground"><CheckCircle2 className="mr-1 inline h-4 w-4 text-emerald-600" />ประเภทการเบิกที่เลือกไม่เข้าเงื่อนไขหัก ณ ที่จ่าย</p>}</div>
+          <div className="border-t pt-3">{typeMayRequireWithholding ? <><label className="block text-sm text-muted-foreground">คำขอนี้ต้องหัก ณ ที่จ่ายไหม *</label><select className={`${inputCls} mt-1.5`} value={tax.requester_withholding_status} onChange={(e) => setTax((f) => ({ ...f, requester_withholding_status: e.target.value as typeof f.requester_withholding_status, withholding_mode: e.target.value === "deduct" ? "rate" : "none", gross_up_enabled: e.target.value === "deduct" ? f.gross_up_enabled : false }))}><option value="not_withheld">ไม่ต้องหัก</option><option value="deduct">ต้องหัก</option><option value="already_withheld">หักและนำส่งเองแล้ว</option></select>{wantsWithholding && <div className="mt-2">{missingItemWithholdingCount > 0 ? <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">ยังไม่ได้กรอกอัตรา {missingItemWithholdingCount} รายการ — ใส่ 0% สำหรับรายการที่ไม่ต้องหัก</p> : <div className="group relative inline-block"><button type="button" aria-label="ดูรายละเอียดการหัก ณ ที่จ่าย" className="inline-flex items-center gap-1.5 rounded-full border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800"><CheckCircle2 className="h-3.5 w-3.5" />กรอกอัตราครบทุกรายการแล้ว<Info className="h-3.5 w-3.5" /></button><div role="tooltip" className="pointer-events-none absolute bottom-full right-0 z-50 mb-2 hidden w-72 rounded-xl border border-slate-200 bg-white p-3 text-slate-900 opacity-100 shadow-xl ring-1 ring-black/5 group-hover:block group-focus-within:block"><p className="mb-2 text-left text-xs font-semibold">รายละเอียดหัก ณ ที่จ่าย</p><div className="space-y-1.5">{perItemWithholding.groups.map((group) => <div key={group.rate} className="flex justify-between gap-3 text-xs"><span>ฐาน {formatCurrency(group.base)} × {group.rate}%</span><b>−{formatCurrency(group.amount)}</b></div>)}</div><div className="mt-2 flex justify-between border-t pt-2 text-xs font-semibold"><span>หัก ณ ที่จ่ายรวม</span><b>−{formatCurrency(withholdingAmount)}</b></div></div></div>}</div>}</> : <p className="text-xs text-muted-foreground"><CheckCircle2 className="mr-1 inline h-4 w-4 text-emerald-600" />ประเภทการเบิกที่เลือกไม่เข้าเงื่อนไขหัก ณ ที่จ่าย</p>}</div>
           {wantsWithholding && <><div className="flex justify-between text-sm text-rose-600"><span>หัก ณ ที่จ่าย</span><b>−{formatCurrency(withholdingAmount)}</b></div><div className="flex justify-between border-t pt-3"><span className="text-sm font-semibold">ยอดที่จะได้รับสุทธิ</span><b className="text-lg text-emerald-600">{formatCurrency(netAfterWithholding)}</b></div></>}
-          <p className="text-xs text-muted-foreground">* ระบบใช้ข้อมูล VAT และหัก ณ ที่จ่ายชุดนี้คำนวณยอดโอน</p>
         </div></div>
-        <div className="border-t pt-6"><SectionHeading title="ข้อมูลภาษีสำหรับฝ่ายบัญชี" subtitle="ระบุสถานะและอัตราหัก ณ ที่จ่ายไว้ที่กล่องสรุปยอดด้านบนแล้ว — กรอกข้อมูลผู้เสียภาษีที่จำเป็นเมื่อเลือก “ต้องหัก”" />{wantsWithholding && <><div className="mt-6 grid gap-6 md:grid-cols-2 2xl:grid-cols-3"><div><label className={labelCls}>ประเภทผู้เสียภาษี *</label><select className={inputCls} value={tax.taxpayer_type} onChange={(e) => setTax((f) => ({ ...f, taxpayer_type: e.target.value as typeof f.taxpayer_type }))}><option value="individual">บุคคลธรรมดา</option><option value="juristic">นิติบุคคล</option></select></div><div><label className={labelCls}>เลขประจำตัวผู้เสียภาษี *</label><input maxLength={30} className={inputCls} value={tax.taxpayer_id} onChange={(e) => setTax((f) => ({ ...f, taxpayer_id: e.target.value }))} /></div><div><label className={labelCls}>สาขา</label><input className={inputCls} placeholder="สำนักงานใหญ่ หรือสาขา 00001" value={tax.taxpayer_branch} onChange={(e) => setTax((f) => ({ ...f, taxpayer_branch: e.target.value }))} /></div><div className="md:col-span-2 2xl:col-span-3"><label className={labelCls}>ที่อยู่ผู้เสียภาษี *</label><textarea rows={3} className={inputCls} value={tax.taxpayer_address} onChange={(e) => setTax((f) => ({ ...f, taxpayer_address: e.target.value }))} /></div><div className="md:col-span-2 2xl:col-span-3"><label className={labelCls}>รายละเอียดบริการหรือเงินได้</label><textarea rows={3} className={inputCls} value={tax.service_description} onChange={(e) => setTax((f) => ({ ...f, service_description: e.target.value }))} /></div></div><div className="mt-8 max-w-xl rounded-2xl border p-4"><label className="flex items-start gap-3"><input type="checkbox" className="mt-1 h-4 w-4" checked={tax.gross_up_enabled} onChange={(e) => setTax((f) => ({ ...f, gross_up_enabled: e.target.checked }))} /><span><span className="block text-sm font-semibold">ให้ผู้รับเงินได้สุทธิเต็มจำนวน</span><span className="mt-0.5 block text-xs text-muted-foreground">กรอกยอดสุทธิที่ตกลงจ่าย ระบบคำนวณยอดเบิกเผื่อภาษีให้อัตโนมัติ</span></span></label>{tax.gross_up_enabled && <div className="mt-4 max-w-xs"><label className={labelCls}>ยอดที่ผู้รับเงินต้องได้สุทธิ (บาท) *</label><input type="number" min="0.01" max={Math.max(0, totalWithVat - withholdingAmount)} step="0.01" className={inputCls} placeholder="เช่น 1500" value={tax.requested_net_amount} onChange={(e) => setTax((f) => ({ ...f, requested_net_amount: e.target.value }))} /><p className="mt-2 text-xs text-muted-foreground">ต้องไม่เกินยอดสุทธิสูงสุดที่วงเงินนี้รองรับ {formatCurrency(Math.max(0, totalWithVat - withholdingAmount))}</p></div>}</div></>}</div>
+        <div id="taxpayer-details" className="scroll-mt-6 border-t pt-6"><SectionHeading title="ข้อมูลภาษีสำหรับฝ่ายบัญชี" subtitle="ส่วนนี้เป็นข้อมูลสำหรับหัก ณ ที่จ่าย ไม่ใช่ข้อมูล VAT — ต้องกรอกเมื่อเลือก “ต้องหัก”" />{wantsWithholding && <><div className="mt-6 grid gap-6 md:grid-cols-2 2xl:grid-cols-3"><div><label className={labelCls}>ประเภทผู้เสียภาษี *</label><select id="taxpayer-type" className={inputCls} value={tax.taxpayer_type} onChange={(e) => setTax((f) => ({ ...f, taxpayer_type: e.target.value as typeof f.taxpayer_type }))}><option value="individual">บุคคลธรรมดา</option><option value="juristic">นิติบุคคล</option></select></div><div><label className={labelCls}>เลขประจำตัวผู้เสียภาษี *</label><input id="taxpayer-id" maxLength={30} className={inputCls} value={tax.taxpayer_id} onChange={(e) => setTax((f) => ({ ...f, taxpayer_id: e.target.value }))} /></div><div><label className={labelCls}>สาขา</label><input className={inputCls} placeholder="สำนักงานใหญ่ หรือสาขา 00001" value={tax.taxpayer_branch} onChange={(e) => setTax((f) => ({ ...f, taxpayer_branch: e.target.value }))} /></div><div className="md:col-span-2 2xl:col-span-3"><label className={labelCls}>ที่อยู่ผู้เสียภาษี *</label><textarea id="taxpayer-address" rows={3} className={inputCls} value={tax.taxpayer_address} onChange={(e) => setTax((f) => ({ ...f, taxpayer_address: e.target.value }))} /></div><div className="md:col-span-2 2xl:col-span-3"><label className={labelCls}>รายละเอียดบริการหรือเงินได้</label><textarea rows={3} className={inputCls} value={tax.service_description} onChange={(e) => setTax((f) => ({ ...f, service_description: e.target.value }))} /></div></div>{hasExplicitItemWithholding ? <div className="mt-8 max-w-xl rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">Gross-up ใช้ได้เฉพาะกรณีที่ใช้อัตราหัก ณ ที่จ่ายเดียวทั้งคำขอ หากต้องการใช้ Gross-up ให้ล้างอัตรารายแถวและใช้อัตราเริ่มต้นเดียว</div> : <div className="mt-8 max-w-xl rounded-2xl border p-4"><label className="flex items-start gap-3"><input type="checkbox" className="mt-1 h-4 w-4" checked={tax.gross_up_enabled} onChange={(e) => setTax((f) => ({ ...f, gross_up_enabled: e.target.checked }))} /><span><span className="block text-sm font-semibold">ให้ผู้รับเงินได้สุทธิเต็มจำนวน</span><span className="mt-0.5 block text-xs text-muted-foreground">กรอกยอดสุทธิที่ตกลงจ่าย ระบบคำนวณยอดเบิกเผื่อภาษีให้อัตโนมัติ</span></span></label>{tax.gross_up_enabled && <div className="mt-4 max-w-xs"><label className={labelCls}>ยอดที่ผู้รับเงินต้องได้สุทธิ (บาท) *</label><input type="number" min="0.01" max={Math.max(0, totalWithVat - withholdingAmount)} step="0.01" className={inputCls} placeholder="เช่น 1500" value={tax.requested_net_amount} onChange={(e) => setTax((f) => ({ ...f, requested_net_amount: e.target.value }))} /><p className="mt-2 text-xs text-muted-foreground">ต้องไม่เกินยอดสุทธิสูงสุดที่วงเงินนี้รองรับ {formatCurrency(Math.max(0, totalWithVat - withholdingAmount))}</p></div>}</div>}</>}</div>
       </fieldset>
       <div className="flex flex-wrap justify-between gap-3 border-t pt-4"><button onClick={() => go(0)} className="inline-flex items-center gap-1 rounded-lg border px-4 py-2 text-sm hover:bg-muted"><ChevronLeft className="h-4 w-4" /> ย้อนกลับ</button>{editable ? <div className="flex flex-wrap gap-2"><button onClick={() => saveItems(false)} disabled={saving} className="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"><Save className="h-4 w-4" /> บันทึกร่างและออก</button><button onClick={() => saveItems(true)} disabled={saving} className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">{saving && <Loader2 className="h-4 w-4 animate-spin" />} ถัดไป <ChevronRight className="h-4 w-4" /></button></div> : <button onClick={() => go(2)} className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm text-primary-foreground">ถัดไป <ChevronRight className="h-4 w-4" /></button>}</div>
     </CardContent></Card>}
@@ -760,12 +869,12 @@ export function ExpenseRequestWizardPage() {
       <SectionHeading title="ตรวจสอบก่อนบันทึก" subtitle="ตรวจผู้รับเงิน เลขบัญชี และยอดรวมให้ถูกต้อง จากนั้นส่งคำขอเพื่ออนุมัติ" />
       <div className="grid gap-5 lg:grid-cols-2">
         <div className="rounded-xl border p-5"><div className="mb-4 flex items-center justify-between"><h3 className="font-semibold">คำขอและผู้รับเงิน</h3>{editable && <button onClick={() => go(0)} className="text-sm font-medium text-primary">แก้ไข</button>}</div><dl className="grid grid-cols-[145px_1fr] gap-x-3 gap-y-3 text-sm"><dt className="text-muted-foreground">รูปแบบ / ประเภท / ตำแหน่ง</dt><dd className="font-medium">{REQUEST_FORMAT_LABEL[request.request_format]} / {request.expense_type_name} / {request.requester_position_name}</dd><dt className="text-muted-foreground">วันที่ต้องการใช้เงิน</dt><dd className="font-medium">{request.required_date ? formatDate(request.required_date) : "ไม่ระบุ"}</dd><dt className="text-muted-foreground">วัตถุประสงค์</dt><dd className="whitespace-pre-wrap font-medium">{request.title}</dd><dt className="text-muted-foreground">ผู้รับเงิน</dt><dd className="font-medium">{request.recipient_name} ({request.recipient_type === "employee" ? "พนักงาน" : "บุคคลหรือบริษัทภายนอก"})</dd><dt className="text-muted-foreground">บัญชีรับเงิน</dt><dd className="font-medium">{request.bank_name} · {request.bank_account_name} · {request.bank_account_masked}</dd></dl></div>
-        <div className="rounded-xl border p-5"><div className="mb-4 flex items-center justify-between"><h3 className="font-semibold">รายการค่าใช้จ่าย</h3>{editable && <button onClick={() => go(1)} className="text-sm font-medium text-primary">แก้ไข</button>}</div><div className="space-y-3">{request.items.map((item) => <div key={item.id} className="flex justify-between gap-3 text-sm"><span>{item.description} × {item.quantity} {item.unit} @ {formatCurrency(item.unit_price)}</span><b>{formatCurrency(item.line_total || item.quantity * item.unit_price)}</b></div>)}</div>
+        <div className="rounded-xl border p-5"><div className="mb-4 flex items-center justify-between"><h3 className="font-semibold">รายการค่าใช้จ่าย</h3>{editable && <button onClick={() => go(1)} className="text-sm font-medium text-primary">แก้ไข</button>}</div><div className="space-y-3">{request.items.map((item) => <div key={item.id} className="flex justify-between gap-3 text-sm"><span>{item.description} × {item.quantity} {item.unit} @ {formatCurrency(item.unit_price)}{item.withholding_rate != null && <span className="text-muted-foreground"> (หัก ณ ที่จ่าย {item.withholding_rate}%)</span>}</span><b>{formatCurrency(item.line_total || item.quantity * item.unit_price)}</b></div>)}</div>
         {request.installment_enabled && request.installment_payment_amount ? <div className="mt-4 space-y-2 border-t pt-3">
           <div className="flex justify-between text-sm text-muted-foreground"><span>ยอดรวมรายการทั้งหมด</span><span>{formatCurrency(request.subtotal)}</span></div>
           <div className="flex justify-between rounded-lg bg-amber-50 px-3 py-2 font-semibold text-amber-800"><span>จำนวนที่จะจ่ายงวดนี้</span><span>{formatCurrency(request.amount)}</span></div>
         </div> : <div className="mt-4 flex justify-between border-t pt-3 font-semibold"><span>ยอดรวม</span><span className="text-primary">{formatCurrency(request.amount)}</span></div>}</div>
-        <div className="rounded-xl border p-5"><div className="mb-4 flex items-center justify-between"><h3 className="font-semibold">ภาษี</h3>{editable && <button onClick={() => go(1)} className="text-sm font-medium text-primary">แก้ไข</button>}</div><p className="text-sm font-medium">สถานะที่ผู้ขอกำหนด: {request.requester_withholding_status === "deduct" ? `ต้องหัก (${request.withholding_rate}%)` : request.requester_withholding_status === "already_withheld" ? "หักและนำส่งเองแล้ว" : "ไม่ต้องหัก"}</p><div className="mt-3 space-y-2 rounded-xl bg-muted/30 p-3 text-sm">{request.vat_amount > 0 && <div className="flex justify-between text-emerald-700"><span>VAT {request.vat_mode === "amount" ? "ตามใบกำกับภาษีจริง" : `ประมาณ ${request.vat_rate}%`}</span><b>+{formatCurrency(request.vat_amount)}</b></div>}{request.withholding_required && <div className="flex justify-between border-t pt-2 text-rose-700"><span>หัก ณ ที่จ่าย ({request.withholding_rate}%)</span><b>−{formatCurrency(request.withholding_amount)}</b></div>}<div className="flex justify-between border-t pt-2"><span>{request.gross_up_enabled ? "ยอดที่ผู้รับเงินต้องได้สุทธิ (Gross-up)" : "ยอดที่จะได้รับสุทธิ"}</span><b className="text-emerald-600">{formatCurrency(request.net)}</b></div></div></div>
+        <div className="rounded-xl border p-5"><div className="mb-4 flex items-center justify-between"><h3 className="font-semibold">ภาษี</h3>{editable && <button onClick={() => go(1)} className="text-sm font-medium text-primary">แก้ไข</button>}</div><p className="text-sm font-medium">สถานะที่ผู้ขอกำหนด: {request.requester_withholding_status === "deduct" ? (request.items.some((item) => item.withholding_rate != null) ? "ต้องหัก (แยกตามรายการ)" : `ต้องหัก (${request.withholding_rate}%)`) : request.requester_withholding_status === "already_withheld" ? "หักและนำส่งเองแล้ว" : "ไม่ต้องหัก"}</p><div className="mt-3 space-y-2 rounded-xl bg-muted/30 p-3 text-sm">{request.vat_amount > 0 && <div className="flex justify-between text-emerald-700"><span>VAT {request.vat_mode === "amount" ? "ตามใบกำกับภาษีจริง" : request.items.some((item) => item.vat_rate != null) ? "แยกตามรายการ" : `ประมาณ ${request.vat_rate}%`}</span><b>+{formatCurrency(request.vat_amount)}</b></div>}{request.withholding_required && <div className="flex justify-between border-t pt-2 text-rose-700"><span>หัก ณ ที่จ่าย {request.items.some((item) => item.withholding_rate != null) ? "แยกตามรายการ" : `(${request.withholding_rate}%)`}</span><b>−{formatCurrency(request.withholding_amount)}</b></div>}<div className="flex justify-between border-t pt-2"><span>{request.gross_up_enabled ? "ยอดที่ผู้รับเงินต้องได้สุทธิ (Gross-up)" : "ยอดที่จะได้รับสุทธิ"}</span><b className="text-emerald-600">{formatCurrency(request.net)}</b></div></div></div>
         <div className={`rounded-xl border p-5 ${completeAttachments ? "border-emerald-200 bg-emerald-50/50" : "border-rose-200 bg-rose-50/50"}`}><div className="mb-4 flex items-center justify-between"><div><h3 className="font-semibold">เอกสารแนบ</h3><p className="mt-1 text-sm text-muted-foreground">ตรวจความครบถ้วนและชื่อไฟล์ก่อนบันทึก</p></div>{editable && <button onClick={() => go(2)} className="text-sm font-medium text-primary">แก้ไข</button>}</div>{completeAttachments ? <div className="flex items-center gap-3"><CheckCircle2 className="h-8 w-8 text-emerald-600" /><div><p className="font-medium text-emerald-800">เอกสารครบแล้ว</p><p className="text-sm text-emerald-700">ตรวจพบเอกสาร {request.attachments.length} ไฟล์ พร้อมส่งคำขอ</p></div></div> : <p className="text-sm text-rose-700">ยังขาดเอกสารบังคับ {missingRequirementCount > legacyUnassignedCount ? missingRequirementCount - legacyUnassignedCount : primary ? 0 : 1} รายการ</p>}<div className="mt-4 space-y-2 text-sm">{request.attachments.map((attachment) => <div key={attachment.id} className="flex items-center justify-between"><span>{attachment.file_name}</span><AttachmentLink requestId={request.id} attachment={attachment} /></div>)}</div></div>
       </div>
       {preview && <div className={`rounded-xl border p-4 ${preview.matched ? "border-blue-200 bg-blue-50" : "border-rose-200 bg-rose-50"}`}><p className="text-sm font-medium">สายอนุมัติ</p>{preview.matched ? <div className="mt-3 flex flex-wrap items-center gap-2">{preview.steps.map((approvalStep, index) => <div key={approvalStep.step_no} className="flex items-center gap-2"><div className="rounded-lg border bg-white px-3 py-2 text-xs"><b>{index + 1}. {approvalStep.approver_position_name}</b><p className="mt-0.5 text-muted-foreground">{approvalStep.resolved_approver_name || approvalStep.warning}</p></div>{index < preview.steps.length - 1 && <ChevronRight className="h-4 w-4 text-muted-foreground" />}</div>)}</div> : <p className="mt-2 text-sm text-rose-700">{preview.message}</p>}</div>}

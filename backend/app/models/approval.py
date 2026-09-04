@@ -249,6 +249,8 @@ class ExpenseRequestItem(Base):
     quantity: Mapped[Decimal] = mapped_column(Numeric(15, 3), nullable=False)
     unit: Mapped[str] = mapped_column(String(50), nullable=False, default="รายการ")
     unit_price: Mapped[Decimal] = mapped_column(Numeric(25, 10), nullable=False)
+    vat_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    withholding_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
     line_total: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
