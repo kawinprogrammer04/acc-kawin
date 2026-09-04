@@ -39,6 +39,9 @@ into `frontend/src/components/data-list/` and use it from both pages.
 3. Keep a “ล้างตัวกรอง” action. Reset must restore documented defaults.
 4. Single-choice fields use a single-select dropdown. Multiple-choice fields
    use a multi-select dropdown and show the selected count when appropriate.
+   The “เลือกทั้งหมด” action must remain enabled whenever options exist. It
+   toggles every option on when some are unselected, and clears every checkmark
+   when all options are already selected.
 5. List, KPI cards, aggregate totals, and export must receive the same normalized
    filter object. A filter must never update only the table.
 6. Loading, empty, and error states must remain visible and understandable.

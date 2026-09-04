@@ -69,7 +69,8 @@ export function DataListMultiFilterSelect({
   options: DataListFilterOption[];
   onChange: (values: string[]) => void;
 }) {
-  const selectedLabel = values.length === 0
+  const allSelected = options.length > 0 && options.every(option => values.includes(option.value));
+  const selectedLabel = values.length === 0 || allSelected
     ? allLabel
     : values.length === 1
       ? options.find(option => option.value === values[0])?.label || values[0]
@@ -79,6 +80,10 @@ export function DataListMultiFilterSelect({
     onChange(values.includes(value)
       ? values.filter(current => current !== value)
       : [...values, value]);
+  };
+
+  const selectAll = () => {
+    onChange(allSelected ? [] : options.map(option => option.value));
   };
 
   return <div className="min-w-0 text-sm font-bold">
@@ -98,7 +103,7 @@ export function DataListMultiFilterSelect({
       <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] min-w-[260px] p-2">
         <div className="flex items-center justify-between gap-3 border-b px-2 pb-2">
           <p className="text-xs font-bold text-muted-foreground">เลือก{label}ได้หลายรายการ</p>
-          <button type="button" onClick={() => onChange([])} disabled={values.length === 0} className="shrink-0 text-xs font-bold text-primary hover:underline disabled:text-muted-foreground disabled:no-underline">เลือกทั้งหมด</button>
+          <button type="button" onClick={selectAll} disabled={options.length === 0} className="shrink-0 text-xs font-bold text-primary hover:underline disabled:text-muted-foreground disabled:no-underline">เลือกทั้งหมด</button>
         </div>
         <div className="max-h-72 space-y-1 overflow-y-auto py-2">
           {options.map(option => {
@@ -116,7 +121,7 @@ export function DataListMultiFilterSelect({
             </button>;
           })}
         </div>
-        <p className="border-t px-2 pt-2 text-xs text-muted-foreground">{values.length === 0 ? allLabel : `เลือกไว้ ${values.length} รายการ`}</p>
+        <p className="border-t px-2 pt-2 text-xs text-muted-foreground">{values.length === 0 || allSelected ? allLabel : `เลือกไว้ ${values.length} รายการ`}</p>
       </PopoverContent>
     </Popover>
   </div>;
