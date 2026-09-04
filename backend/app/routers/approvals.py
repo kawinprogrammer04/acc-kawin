@@ -1374,6 +1374,8 @@ async def get_expense_request(
             .where(ExpenseRequest.installment_chain_root_id == req.installment_chain_root_id)
             .order_by(ExpenseRequest.installment_no)
         )).scalars().all()
+    item_vat_amounts = expense_request_service.per_item_vat_amounts(req, items)
+    item_withholding_amounts = expense_request_service.per_item_withholding_amounts(req, items)
     return ExpenseRequestDetailOut(
         **base.model_dump(),
         items=[
@@ -1381,9 +1383,14 @@ async def get_expense_request(
                 "id": item.id, "sort_order": item.sort_order,
                 "description": item.description, "quantity": item.quantity,
                 "unit": item.unit, "unit_price": item.unit_price,
+                "vat_rate": item.vat_rate, "vat_amount": vat_amount,
+                "withholding_rate": item.withholding_rate,
+                "withholding_amount": withholding_amount,
                 "line_total": item.line_total,
             }
-            for item in items
+            for item, vat_amount, withholding_amount in zip(
+                items, item_vat_amounts, item_withholding_amounts
+            )
         ],
         attachments=[
             {
@@ -1539,7 +1546,9 @@ async def update_expense_request_draft(
             db.add(ExpenseRequestItem(
                 expense_request_id=request_id, revision=req.current_revision, sort_order=index,
                 description=item["description"].strip(), quantity=item["quantity"],
-                unit=item["unit"].strip(), unit_price=item["unit_price"], line_total=line_total,
+                unit=item["unit"].strip(), unit_price=item["unit_price"],
+                vat_rate=item.get("vat_rate"),
+                withholding_rate=item.get("withholding_rate"), line_total=line_total,
             ))
         await db.flush()
     elif revision_created:
@@ -1552,6 +1561,7 @@ async def update_expense_request_draft(
                 expense_request_id=request_id, revision=req.current_revision,
                 sort_order=item.sort_order, description=item.description,
                 quantity=item.quantity, unit=item.unit, unit_price=item.unit_price,
+                vat_rate=item.vat_rate, withholding_rate=item.withholding_rate,
                 line_total=item.line_total,
             ))
         await db.flush()
@@ -1574,6 +1584,8 @@ async def update_expense_request_draft(
         # An installment amount overrides the taxable base directly — discount
         # doesn't apply on top of it (avoids double-counting the reduction).
         req.discount_amount = Decimal("0")
+    if req.gross_up_enabled and any(item.withholding_rate is not None for item in items):
+        raise HTTPException(400, "Gross-up ใช้ได้เฉพาะการหัก ณ ที่จ่ายอัตราเดียวทั้งคำขอ")
     totals = expense_request_service.calculate_totals(req, items)
     if req.gross_up_enabled and req.requested_net_amount is not None:
         if not req.withholding_required or req.withholding_mode != "rate" or req.withholding_rate <= 0 or req.withholding_rate >= 100:
@@ -1689,7 +1701,8 @@ async def create_next_installment(
         db.add(ExpenseRequestItem(
             expense_request_id=new_req.id, revision=1, sort_order=item.sort_order,
             description=item.description, quantity=item.quantity, unit=item.unit,
-            unit_price=item.unit_price, line_total=item.line_total,
+            unit_price=item.unit_price, vat_rate=item.vat_rate,
+            withholding_rate=item.withholding_rate, line_total=item.line_total,
         ))
     await db.flush()
 

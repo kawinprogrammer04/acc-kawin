@@ -19,12 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from weasyprint import HTML
 
 from app.core.config import settings
-from app.models.approval import ExpenseRequest, ExpenseType
+from app.models.approval import ExpenseRequest, ExpenseRequestItem, ExpenseType
 from app.models.expense_finance import (
     ExpensePayment, ExpenseRequestHistory, ExpenseSettlement, ExpenseSettlementItem,
     ExpenseWithholdingTaxCertificate, SystemNotification,
 )
-from app.services.expense_request_service import decrypt_account_number
+from app.services.expense_request_service import decrypt_account_number, per_item_withholding_breakdown
 
 MONEY = Decimal("0.01")
 
@@ -447,12 +447,43 @@ async def issue_wht_certificate(db: AsyncSession, req: ExpenseRequest, actor_use
     installment_suffix = f"-{req.installment_no}" if req.installment_no else ""
     cert_no = f"WHT-{datetime.now().strftime('%Y%m')}-{base_request_no[-6:]}{installment_suffix}"
     taxpayer_id = decrypt_account_number(req.recipient_tax_id_encrypted) or req.taxpayer_id or "-"
-    html_doc = f"""<html lang='th'><meta charset='utf-8'><style>@page{{size:A4;margin:20mm}}body{{font-family:'Noto Looped Thai';font-size:13px}}h1{{text-align:center}}table{{width:100%;border-collapse:collapse}}td{{border:1px solid #555;padding:9px}}</style><body><h1>หนังสือรับรองการหักภาษี ณ ที่จ่าย</h1><p>เลขที่ {html.escape(cert_no)}</p><table><tr><td>ผู้ถูกหักภาษี</td><td>{html.escape(req.taxpayer_name or req.recipient_name or '-')}</td></tr><tr><td>เลขประจำตัวผู้เสียภาษี</td><td>{html.escape(taxpayer_id)}</td></tr><tr><td>ฐานภาษี</td><td>{money(req.price_before_vat):,.2f} บาท</td></tr><tr><td>อัตรา</td><td>{money(req.withholding_rate)}%</td></tr><tr><td>ภาษีที่หัก</td><td>{money(req.withholding_amount):,.2f} บาท</td></tr></table></body></html>"""
+    items = (await db.execute(select(ExpenseRequestItem).where(
+        ExpenseRequestItem.expense_request_id == req.id,
+        ExpenseRequestItem.revision == req.current_revision,
+    ).order_by(ExpenseRequestItem.sort_order))).scalars().all()
+    has_item_rates = any(item.withholding_rate is not None for item in items)
+    breakdown = per_item_withholding_breakdown(req, items) if has_item_rates else []
+    taxable_rows = [
+        (item, row) for item, row in zip(items, breakdown)
+        if row["rate"] > 0
+    ]
+    certificate_base = (
+        money(sum((row["base"] for _, row in taxable_rows), Decimal("0")))
+        if has_item_rates else money(req.price_before_vat)
+    )
+    certificate_rate = (
+        money(money(req.withholding_amount) * Decimal("100") / certificate_base)
+        if has_item_rates and certificate_base > 0 else money(req.withholding_rate)
+    )
+    rate_display = "แยกตามรายการ" if has_item_rates else f"{certificate_rate}%"
+    breakdown_html = ""
+    if has_item_rates:
+        rows_html = "".join(
+            f"<tr><td>{html.escape(item.description)}</td><td class='num'>{row['base']:,.2f}</td>"
+            f"<td class='num'>{row['rate']}%</td><td class='num'>{row['amount']:,.2f}</td></tr>"
+            for item, row in taxable_rows
+        )
+        breakdown_html = (
+            "<h2>รายละเอียดการหักภาษีแยกรายการ</h2><table>"
+            "<tr><th>รายการ</th><th>ฐานภาษี (บาท)</th><th>อัตรา</th><th>ภาษีที่หัก (บาท)</th></tr>"
+            f"{rows_html}</table>"
+        )
+    html_doc = f"""<html lang='th'><meta charset='utf-8'><style>@page{{size:A4;margin:20mm}}body{{font-family:'Noto Looped Thai';font-size:13px}}h1{{text-align:center}}h2{{margin-top:22px;font-size:15px}}table{{width:100%;border-collapse:collapse}}td,th{{border:1px solid #555;padding:9px}}th{{background:#f3f4f6}}.num{{text-align:right}}</style><body><h1>หนังสือรับรองการหักภาษี ณ ที่จ่าย</h1><p>เลขที่ {html.escape(cert_no)}</p><table><tr><td>ผู้ถูกหักภาษี</td><td>{html.escape(req.taxpayer_name or req.recipient_name or '-')}</td></tr><tr><td>เลขประจำตัวผู้เสียภาษี</td><td>{html.escape(taxpayer_id)}</td></tr><tr><td>ฐานภาษี</td><td>{certificate_base:,.2f} บาท</td></tr><tr><td>อัตรา</td><td>{rate_display}</td></tr><tr><td>ภาษีที่หัก</td><td>{money(req.withholding_amount):,.2f} บาท</td></tr></table>{breakdown_html}</body></html>"""
     data = HTML(string=html_doc).write_pdf()
     path, digest = _store(req.id, "wht", f"{cert_no}.pdf", data)
     cert = ExpenseWithholdingTaxCertificate(
         company_id=req.company_id, expense_request_id=req.id, certificate_no=cert_no,
-        tax_rate=req.withholding_rate, base_amount=req.price_before_vat,
+        tax_rate=certificate_rate, base_amount=certificate_base,
         tax_amount=req.withholding_amount, file_path=path, sha256=digest, issued_by=actor_user_id,
     )
     db.add(cert)

@@ -220,6 +220,10 @@ export interface ExpenseRequestItem {
   quantity: number;
   unit: string;
   unit_price: number;
+  vat_rate?: number | null;
+  vat_amount?: number;
+  withholding_rate?: number | null;
+  withholding_amount?: number;
   line_total?: number;
 }
 

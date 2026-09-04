@@ -40,6 +40,7 @@
     .items th { height: 40.54pt; background: #eef0f2; text-align: center; font-weight: bold; }
     .items .number { width: 5%; text-align: center; }
     .items .description { width: 30%; }
+    .items .tax-detail { margin-top: 1pt; color: #6b7280; font-size: 7.5pt; line-height: .9; }
     .items .payee { width: 15%; }
     .items .quantity { width: 10%; text-align: right; }
     .items .unit { width: 8%; text-align: center; }
@@ -103,7 +104,7 @@
       {% for row in page.rows %}
         <tr>
           <td class="number">{{ row.number }}</td>
-          <td>{{ row.description }}</td>
+          <td>{{ row.description }}{% if row.tax_display %}<div class="tax-detail">{{ row.tax_display }}</div>{% endif %}</td>
           <td class="payee" style="font-size:{{ payee_font_size }}pt;line-height:{{ payee_line_height }}">{{ payee_name }}</td>
           <td class="quantity">{{ row.quantity_display }}</td>
           <td class="unit">{{ row.unit }}</td>
@@ -137,8 +138,8 @@
             {% else %}
               <tr><td class="label">{{ 'ยอดก่อน VAT' if request.price_mode == 'include_vat' else 'รวมเงิน' }}</td><td class="amount">{{ totals.price_before_vat_display }}</td></tr>
             {% endif %}
-            <tr><td class="label">VAT{% if totals.vat_amount > 0 and request.vat_mode == 'rate' %} {{ vat_rate_display }}%{% endif %}</td><td class="amount">{{ totals.vat_amount_display }}</td></tr>
-            <tr><td class="label">หัก ณ ที่จ่าย{% if totals.withholding_amount > 0 %} {{ withholding_rate_display }}%{% endif %}</td><td class="amount">{{ '-' if totals.withholding_amount > 0 else '' }}{{ totals.withholding_amount_display }}</td></tr>
+            <tr><td class="label">VAT{% if totals.vat_amount > 0 and request.vat_mode == 'rate' %} {{ vat_rate_label }}{% endif %}</td><td class="amount">{{ totals.vat_amount_display }}</td></tr>
+            <tr><td class="label">หัก ณ ที่จ่าย{% if totals.withholding_amount > 0 %} {{ withholding_rate_label }}{% endif %}</td><td class="amount">{{ '-' if totals.withholding_amount > 0 else '' }}{{ totals.withholding_amount_display }}</td></tr>
             <tr class="grand"><td>ยอดที่ต้องชำระ</td><td class="amount">{{ totals.payable_total_display }}</td></tr>
           </table></td>
         </tr></table>

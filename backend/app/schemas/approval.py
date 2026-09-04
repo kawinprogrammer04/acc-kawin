@@ -246,12 +246,16 @@ class ExpenseRequestItemIn(BaseModel):
     quantity: Decimal = Field(gt=0)
     unit: str = Field(default="รายการ", min_length=1, max_length=50)
     unit_price: Decimal = Field(ge=0)
+    vat_rate: Optional[Decimal] = Field(default=None, ge=0, le=100)
+    withholding_rate: Optional[Decimal] = Field(default=None, ge=0, lt=100)
 
 
 class ExpenseRequestItemOut(ExpenseRequestItemIn):
     id: int
     sort_order: int
     line_total: Decimal
+    vat_amount: Decimal = Decimal("0")
+    withholding_amount: Decimal = Decimal("0")
 
 
 class ExpenseRequestAttachmentOut(BaseModel):

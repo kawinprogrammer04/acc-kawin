@@ -532,12 +532,12 @@ export function ExpenseRequestDetailPage() {
     <Card><CardContent className="space-y-5 p-6">
       <SectionTitle>รายการค่าใช้จ่าย</SectionTitle>
       <div className="overflow-x-auto rounded-lg border">
-        <table className="w-full min-w-[720px] text-sm">
-          <thead className="border-b bg-muted/30"><tr>{["รายการ", "จำนวน", "หน่วย", "ราคา/หน่วย", "รวม"].map((heading) => <th key={heading} className={`px-4 py-3 text-xs font-medium text-muted-foreground ${["จำนวน", "ราคา/หน่วย", "รวม"].includes(heading) ? "text-right" : "text-left"}`}>{heading}</th>)}</tr></thead>
+        <table className="w-full min-w-[900px] text-sm">
+          <thead className="border-b bg-muted/30"><tr>{["รายการ", "จำนวน", "หน่วย", "ราคา/หน่วย", "หัก ณ ที่จ่าย %", "ยอดหัก", "รวม"].map((heading) => <th key={heading} className={`px-4 py-3 text-xs font-medium text-muted-foreground ${["จำนวน", "ราคา/หน่วย", "หัก ณ ที่จ่าย %", "ยอดหัก", "รวม"].includes(heading) ? "text-right" : "text-left"}`}>{heading}</th>)}</tr></thead>
           <tbody className="divide-y">{request.items.map((item, index) => <tr key={item.id || index}>
-            <td className="px-4 py-3 font-medium">{item.description}</td><td className="px-4 py-3 text-right">{formatNumber(item.quantity)}</td><td className="px-4 py-3">{item.unit}</td><td className="px-4 py-3 text-right">{formatNumber(item.unit_price)}</td><td className="px-4 py-3 text-right font-semibold">{formatNumber(item.line_total)}</td>
+            <td className="px-4 py-3 font-medium">{item.description}</td><td className="px-4 py-3 text-right">{formatNumber(item.quantity)}</td><td className="px-4 py-3">{item.unit}</td><td className="px-4 py-3 text-right">{formatNumber(item.unit_price)}</td><td className="px-4 py-3 text-right text-muted-foreground">{request.withholding_required ? (item.withholding_rate != null ? `${formatNumber(item.withholding_rate)}%` : `${formatNumber(request.withholding_rate)}% (ค่าเริ่มต้น)`) : "-"}</td><td className="px-4 py-3 text-right text-rose-700">{request.withholding_required ? formatNumber(item.withholding_amount || 0) : "-"}</td><td className="px-4 py-3 text-right font-semibold">{formatNumber(item.line_total)}</td>
           </tr>)}</tbody>
-          <tfoot className="border-t bg-muted/20"><tr><td colSpan={4} className="px-4 py-4 text-right font-semibold">ยอดอนุมัติรวม</td><td className="px-4 py-4 text-right text-lg font-bold">{formatCurrency(request.payable_total || request.amount)}</td></tr></tfoot>
+          <tfoot className="border-t bg-muted/20"><tr><td colSpan={6} className="px-4 py-4 text-right font-semibold">ยอดอนุมัติรวม</td><td className="px-4 py-4 text-right text-lg font-bold">{formatCurrency(request.payable_total || request.amount)}</td></tr></tfoot>
         </table>
         {request.items.length === 0 && <p className="p-6 text-center text-sm text-muted-foreground">ยังไม่มีรายการค่าใช้จ่าย</p>}
       </div>
@@ -558,7 +558,7 @@ export function ExpenseRequestDetailPage() {
         <SectionTitle>ภาษีหัก ณ ที่จ่าย</SectionTitle>
         {request.withholding_required ? <div className="space-y-4">
           <p className="font-medium text-amber-700">ผู้ขอแจ้งว่ารายการนี้ต้องหัก ณ ที่จ่าย</p>
-          <div className="grid gap-4 sm:grid-cols-2"><Field label="อัตราโดยประมาณ" value={request.withholding_mode === "rate" ? `${formatNumber(request.withholding_rate)}%` : formatCurrency(request.withholding_amount)} /><Field label="ยอดจ่ายสุทธิ" value={formatCurrency(request.payable_total)} /><Field label="ชื่อผู้เสียภาษี" value={request.taxpayer_name} /><Field label="เลขประจำตัวผู้เสียภาษี" value={request.taxpayer_id} /></div>
+          <div className="grid gap-4 sm:grid-cols-2"><Field label="อัตราที่ใช้" value={request.withholding_mode === "rate" ? (request.items.some((item) => item.withholding_rate != null) ? "แยกตามรายการ" : `${formatNumber(request.withholding_rate)}%`) : formatCurrency(request.withholding_amount)} /><Field label="ยอดหักรวม" value={formatCurrency(request.withholding_amount)} /><Field label="ยอดจ่ายสุทธิ" value={formatCurrency(request.payable_total)} /><Field label="ชื่อผู้เสียภาษี" value={request.taxpayer_name} /><Field label="เลขประจำตัวผู้เสียภาษี" value={request.taxpayer_id} /></div>
         </div> : <div><p className="font-medium">ผู้ขอยังไม่ได้หักหรือนำส่ง</p><p className="mt-2 text-sm text-muted-foreground">รอฝ่ายบัญชีพิจารณาอัตราจริง</p></div>}
       </CardContent></Card>
     </div>

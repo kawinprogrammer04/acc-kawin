@@ -50,8 +50,32 @@ def decrypt_account_number(value: str | None) -> str | None:
         return None
 
 
-def calculate_totals(request: ExpenseRequest, items: Iterable[ExpenseRequestItem]) -> dict[str, Decimal]:
-    subtotal = money(sum((money(item.line_total) for item in items), Decimal("0")))
+def item_vat_breakdown(
+    request: ExpenseRequest, item: ExpenseRequestItem, scale: Decimal, price_mode: str,
+) -> tuple[Decimal, Decimal]:
+    """Per-line-item (price_before_vat, vat_amount), scaled for discount/installment.
+
+    An item's own ``vat_rate`` wins when set; otherwise it inherits the request-level
+    ``vat_rate`` — this keeps old items (created before this field existed, where the
+    attribute is simply absent) byte-for-byte identical to the pre-per-item behaviour.
+    Only meaningful when ``request.vat_mode == "rate"`` — callers must guard that.
+    """
+    item_base = money(money(item.line_total) * scale)
+    rate = getattr(item, "vat_rate", None)
+    if rate is None:
+        rate = request.vat_rate or 0
+    if price_mode == "include_vat":
+        item_vat_amount = money(item_base - (item_base / (Decimal("1") + Decimal(rate) / Decimal("100"))))
+        item_price_before = money(item_base - item_vat_amount)
+    else:
+        item_price_before = item_base
+        item_vat_amount = money(item_base * Decimal(rate) / Decimal("100"))
+    return item_price_before, item_vat_amount
+
+
+def _taxable_scale(request: ExpenseRequest, subtotal: Decimal) -> tuple[Decimal, Decimal, Decimal]:
+    """(discount, taxable_base, scale) shared by ``calculate_totals`` and
+    ``per_item_vat_amounts`` so the two never drift apart."""
     installment_override = (
         money(request.installment_payment_amount)
         if getattr(request, "installment_payment_amount", None) is not None
@@ -67,16 +91,111 @@ def calculate_totals(request: ExpenseRequest, items: Iterable[ExpenseRequestItem
     else:
         discount = min(subtotal, money(getattr(request, "discount_amount", 0)))
         taxable_base = money(subtotal - discount)
+    scale = (taxable_base / subtotal) if subtotal > 0 else Decimal("0")
+    return discount, taxable_base, scale
+
+
+def per_item_vat_amounts(request: ExpenseRequest, items: Iterable[ExpenseRequestItem]) -> list[Decimal]:
+    """VAT amount per item, index-aligned with ``items``, for display purposes.
+
+    Returns zeros for every item when ``request.vat_mode`` isn't ``"rate"`` — a VAT
+    figure entered as a lump "amount" (from an actual invoice total) or "none" can't
+    be meaningfully split back out per line.
+    """
+    items = list(items)
+    if request.vat_mode != "rate":
+        return [Decimal("0.00") for _ in items]
+    subtotal = money(sum((money(item.line_total) for item in items), Decimal("0")))
+    _, _, scale = _taxable_scale(request, subtotal)
+    price_mode = getattr(request, "price_mode", "exclude_vat")
+    return [item_vat_breakdown(request, item, scale, price_mode)[1] for item in items]
+
+
+def _item_withholding_bases(
+    request: ExpenseRequest, items: list[ExpenseRequestItem], subtotal: Decimal, scale: Decimal,
+) -> list[Decimal]:
+    """Return the price-before-VAT base belonging to each line item."""
+    price_mode = getattr(request, "price_mode", "exclude_vat")
     if request.vat_mode == "rate":
-        if getattr(request, "price_mode", "exclude_vat") == "include_vat":
-            vat_amount = money(taxable_base - (taxable_base / (Decimal("1") + Decimal(request.vat_rate or 0) / Decimal("100"))))
-            price_before_vat = money(taxable_base - vat_amount)
-        else:
-            price_before_vat = taxable_base
-            vat_amount = money(taxable_base * Decimal(request.vat_rate or 0) / Decimal("100"))
+        return [item_vat_breakdown(request, item, scale, price_mode)[0] for item in items]
+
+    if request.vat_mode == "amount" and price_mode == "include_vat":
+        _, taxable_base, _ = _taxable_scale(request, subtotal)
+        price_before_vat = money(taxable_base - money(request.vat_amount))
+        base_scale = (price_before_vat / subtotal) if subtotal > 0 else Decimal("0")
+        return [money(money(item.line_total) * base_scale) for item in items]
+
+    return [money(money(item.line_total) * scale) for item in items]
+
+
+def per_item_withholding_breakdown(
+    request: ExpenseRequest, items: Iterable[ExpenseRequestItem],
+) -> list[dict[str, Decimal]]:
+    """Withholding base, rate, and amount per item.
+
+    Once at least one item specifies its own rate, every line is calculated using
+    its explicit rate or the request-level default.  If no item specifies a rate,
+    the legacy request-wide calculation is preserved exactly and only allocated
+    back to the rows for display (including a final rounding reconciliation).
+    """
+    items = list(items)
+    if not request.withholding_required or request.withholding_mode != "rate":
+        return [
+            {"base": Decimal("0.00"), "rate": Decimal("0"), "amount": Decimal("0.00")}
+            for _ in items
+        ]
+
+    subtotal = money(sum((money(item.line_total) for item in items), Decimal("0")))
+    _, _, scale = _taxable_scale(request, subtotal)
+    bases = _item_withholding_bases(request, items, subtotal, scale)
+    default_rate = Decimal(request.withholding_rate or 0)
+    has_item_rates = any(getattr(item, "withholding_rate", None) is not None for item in items)
+
+    rates = [
+        Decimal(getattr(item, "withholding_rate", None))
+        if getattr(item, "withholding_rate", None) is not None
+        else default_rate
+        for item in items
+    ]
+    amounts = [money(base * rate / Decimal("100")) for base, rate in zip(bases, rates)]
+    if amounts:
+        if not has_item_rates:
+            legacy_total = money(sum(bases, Decimal("0")) * default_rate / Decimal("100"))
+            amounts[-1] = money(amounts[-1] + legacy_total - sum(amounts, Decimal("0")))
+    return [
+        {"base": base, "rate": rate, "amount": amount}
+        for base, rate, amount in zip(bases, rates, amounts)
+    ]
+
+
+def per_item_withholding_amounts(
+    request: ExpenseRequest, items: Iterable[ExpenseRequestItem],
+) -> list[Decimal]:
+    """Withholding amount per item, index-aligned with ``items``."""
+    return [row["amount"] for row in per_item_withholding_breakdown(request, items)]
+
+
+def calculate_totals(request: ExpenseRequest, items: Iterable[ExpenseRequestItem]) -> dict[str, Decimal]:
+    items = list(items)
+    subtotal = money(sum((money(item.line_total) for item in items), Decimal("0")))
+    discount, taxable_base, scale = _taxable_scale(request, subtotal)
+    price_mode = getattr(request, "price_mode", "exclude_vat")
+    if request.vat_mode == "rate":
+        # Discount/installment slices are a request-level figure (not allocated to
+        # specific items), so prorate each item's share of the taxable base by its
+        # share of the raw subtotal, then apply that item's own VAT rate (or the
+        # request's rate, if the item doesn't specify one) on its scaled base.
+        price_before_vat = Decimal("0.00")
+        vat_amount = Decimal("0.00")
+        for item in items:
+            item_price_before, item_vat_amount = item_vat_breakdown(request, item, scale, price_mode)
+            price_before_vat += item_price_before
+            vat_amount += item_vat_amount
+        price_before_vat = money(price_before_vat)
+        vat_amount = money(vat_amount)
     elif request.vat_mode == "amount":
         vat_amount = money(request.vat_amount)
-        price_before_vat = money(taxable_base - vat_amount) if getattr(request, "price_mode", "exclude_vat") == "include_vat" else taxable_base
+        price_before_vat = money(taxable_base - vat_amount) if price_mode == "include_vat" else taxable_base
     else:
         vat_amount = Decimal("0.00")
         price_before_vat = taxable_base
@@ -87,12 +206,22 @@ def calculate_totals(request: ExpenseRequest, items: Iterable[ExpenseRequestItem
         withholding_base = price_before_vat
     elif request.withholding_mode == "rate":
         withholding_base = price_before_vat
-        if (getattr(request, "gross_up_enabled", False) and requested_net is not None
+        has_item_withholding_rates = any(
+            getattr(item, "withholding_rate", None) is not None for item in items
+        )
+        if has_item_withholding_rates and not getattr(request, "gross_up_enabled", False):
+            withholding_amount = money(sum(
+                per_item_withholding_amounts(request, items), Decimal("0")
+            ))
+        elif (getattr(request, "gross_up_enabled", False) and requested_net is not None
                 and requested_net > vat_amount and Decimal(request.withholding_rate or 0) < 100):
             withholding_base = money((requested_net - vat_amount) / (Decimal("1") - Decimal(request.withholding_rate or 0) / Decimal("100")))
+            withholding_amount = money(withholding_base * Decimal(request.withholding_rate or 0) / Decimal("100"))
         elif getattr(request, "gross_up_enabled", False) and Decimal(request.withholding_rate or 0) < 100:
             withholding_base = money(price_before_vat / (Decimal("1") - Decimal(request.withholding_rate or 0) / Decimal("100")))
-        withholding_amount = money(withholding_base * Decimal(request.withholding_rate or 0) / Decimal("100"))
+            withholding_amount = money(withholding_base * Decimal(request.withholding_rate or 0) / Decimal("100"))
+        else:
+            withholding_amount = money(withholding_base * Decimal(request.withholding_rate or 0) / Decimal("100"))
     elif request.withholding_mode == "amount":
         withholding_base = price_before_vat
         withholding_amount = money(request.withholding_amount)
@@ -241,14 +370,24 @@ def render_payment_approval_pdf(
             except (KeyError, OSError, zipfile.BadZipFile):
                 logo_data_uri = None
 
-    formatted_rows = [{
-        "number": index,
-        "description": item.description,
-        "quantity_display": compact_number(item.quantity),
-        "unit": item.unit,
-        "unit_price_display": number(item.unit_price),
-        "line_total_display": number(item.line_total),
-    } for index, item in enumerate(items, 1)]
+    formatted_rows = []
+    for index, item in enumerate(items, 1):
+        tax_parts = []
+        if request.withholding_required and request.withholding_mode == "rate":
+            item_withholding_rate = getattr(item, "withholding_rate", None)
+            tax_parts.append(
+                "หัก ณ ที่จ่าย "
+                f"{compact_number(item_withholding_rate if item_withholding_rate is not None else request.withholding_rate, 2)}%"
+            )
+        formatted_rows.append({
+            "number": index,
+            "description": item.description,
+            "tax_display": " · ".join(tax_parts),
+            "quantity_display": compact_number(item.quantity),
+            "unit": item.unit,
+            "unit_price_display": number(item.unit_price),
+            "line_total_display": number(item.line_total),
+        })
     # The original document served by HR attachment 241 is a twelve-line form.
     # Requests with item 13 continue on a second copy of the same form.
     rows_per_page = 12
@@ -289,6 +428,10 @@ def render_payment_approval_pdf(
         "ฝ่ายบัญชีเป็นผู้กำหนดฐานและอัตราหัก ณ ที่จ่ายจริง"
     )
     transaction_at = request.submitted_at or request.created_at
+    has_item_vat_rates = any(getattr(item, "vat_rate", None) is not None for item in items)
+    has_item_withholding_rates = any(
+        getattr(item, "withholding_rate", None) is not None for item in items
+    )
     summary = {
         **totals,
         "before_discount": number(before_discount),
@@ -319,8 +462,8 @@ def render_payment_approval_pdf(
         signature_rows=signature_rows,
         transaction_date=transaction_at.strftime("%d/%m/%Y") if transaction_at else "-",
         required_date=request.required_date.strftime("%d/%m/%Y") if request.required_date else "-",
-        vat_rate_display=compact_number(request.vat_rate, 2),
-        withholding_rate_display=compact_number(request.withholding_rate, 2),
+        vat_rate_label=("แยกตามรายการ" if has_item_vat_rates else f"{compact_number(request.vat_rate, 2)}%"),
+        withholding_rate_label=("แยกตามรายการ" if has_item_withholding_rates else f"{compact_number(request.withholding_rate, 2)}%"),
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     HTML(string=html, base_url=str(template_dir)).write_pdf(str(output_path))
