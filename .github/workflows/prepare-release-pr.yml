@@ -65,10 +65,15 @@ jobs:
             exit 0
           fi
 
-          # ดึงเฉพาะ "Closes #N" ที่ขึ้นต้นบรรทัดเท่านั้น (ตาม convention trailer ของ GitHub) —
-          # ห้ามจับ Closes/Fixes/Resolves #N ที่อยู่กลางประโยคอธิบาย เพราะ commit message
-          # อาจพูดถึง/ยกตัวอย่างข้อความ "Closes #N" เฉยๆ โดยไม่ได้ตั้งใจให้เป็น directive จริง
-          ISSUES=$(git log release-baseline..origin/$HEAD --pretty=%B | grep -oiE '^(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' | grep -oE '#[0-9]+' | sort -t'#' -k2 -n -u)
+          # ดึงเลข Issue จาก 2 pattern เท่านั้น (ทั้งคู่ปลอดภัยจากการจับผิดข้อความอธิบายกลางประโยค):
+          # 1) "Closes #N" ที่ขึ้นต้นบรรทัด (ตาม convention trailer ของ GitHub) — สแกนทั้ง commit message
+          # 2) "(#N)" ในบรรทัด subject (บรรทัดแรก) เท่านั้น — pattern ที่ GitHub squash-merge generate
+          #    เองต่อท้าย title (title + " (#PR_NUMBER)") หรือที่คนเขียน title แบบ "... (#issue)"
+          #    จำกัดแค่ subject line (ไม่ใช่ทั้ง body) เพราะ subject สั้น/มีโครงสร้างชัด ไม่เสี่ยงจับ
+          #    ข้อความอธิบายยาวๆ ในเนื้อ commit ที่อาจพูดถึงเลข issue เฉยๆ แบบที่เจอปัญหามาก่อน
+          ISSUES_CLOSES=$(git log release-baseline..origin/$HEAD --pretty=%B | grep -oiE '^(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' | grep -oE '#[0-9]+')
+          ISSUES_SQUASH=$(git log release-baseline..origin/$HEAD --pretty=%s | grep -oE '\(#[0-9]+\)' | grep -oE '#[0-9]+')
+          ISSUES=$(printf '%s\n%s\n' "$ISSUES_CLOSES" "$ISSUES_SQUASH" | grep -oE '#[0-9]+' | sort -t'#' -k2 -n -u)
 
           if [ -z "$ISSUES" ]; then
             ISSUE_LINES="(ไม่พบเลข Issue อ้างอิงใน commit — ตรวจสอบด้วยตัวเอง)"
