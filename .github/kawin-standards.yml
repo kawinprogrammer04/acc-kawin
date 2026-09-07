@@ -1,0 +1,4 @@
+# branch model ของ repo นี้ = default (GitLab Flow 2 branch)
+integration_branch: main
+production_branch: production
+deploy_detection: push-to-production-branch
