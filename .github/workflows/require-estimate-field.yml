@@ -1,0 +1,78 @@
+name: Require Estimate Field
+
+# บังคับ/แจ้งเตือนว่า Issue label 'requirement' ต้องมีฟิลด์ Estimate + Story Point กรอกไว้
+# ทำงานไม่ว่า Issue จะถูกสร้างด้วยวิธีไหน (เว็บ, gh CLI, API, AI ตัวอื่น, คนพิมพ์เอง)
+# เพราะดักที่ event ระดับ GitHub เอง — ต่างจาก Issue Form validation (required: true ใน
+# 01_requirement.yml) ที่บังคับได้แค่ตอนสร้างผ่านเว็บ UI เท่านั้น ไม่บังคับตอนสร้างผ่าน
+# gh CLI/API/AI เลย workflow นี้คือชั้นที่สองที่ครอบคลุมทุกช่องทาง
+#
+# ⚠️ ยังไม่ใช่การบังคับแบบเด็ดขาด — GitHub ไม่มีกลไกบล็อกการสร้าง Issue ตาม body content
+# ได้จริง (ต่างจาก PR ที่บล็อก merge ได้ผ่าน required status check) workflow นี้แค่เตือน
+# หลังสร้างเสร็จแล้วเท่านั้น ถ้าไม่มีใครกลับมาแก้ ข้อมูลก็ยังขาดอยู่ดี
+#
+# ถ้าไม่มีฟิลด์เหล่านี้ -> Estimation Accuracy / Throughput / Complexity Trend ใน
+# metrics/collect_metrics.py จะคำนวณไม่ได้ (N/A)
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  check-estimate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ตรวจว่า Issue มีฟิลด์ Estimate/Story Point ครบไหม
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const labels = issue.labels.map(l => l.name);
+            if (!labels.includes('requirement')) {
+              return; // เช็คเฉพาะ Issue label requirement เท่านั้น
+            }
+
+            const body = issue.body || '';
+            // Issue Form render field ว่างเป็น "_No response_" ใต้ heading ของ field นั้น —
+            // เช็คว่ามีค่าจริงไหม ไม่ใช่แค่เจอ heading (heading มีอยู่แล้วเสมอถ้าใช้ template)
+            function fieldFilled(fieldLabel) {
+              const re = new RegExp(`${fieldLabel}[\\s\\S]*?\\n+\\s*([^\\n]+)`, 'i');
+              const m = body.match(re);
+              if (!m) return false;
+              const value = m[1].trim();
+              return value !== '' && value !== '_No response_';
+            }
+
+            const missing = [];
+            if (!fieldFilled('Estimate')) missing.push('Estimate');
+            if (!fieldFilled('Story Point')) missing.push('Story Point');
+
+            const MARKER = '<!-- require-estimate-field-bot -->';
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+            });
+            const botComment = comments.data.find(c => c.body.includes(MARKER));
+
+            if (missing.length > 0) {
+              const body2 = `${MARKER}\n⚠️ **Issue นี้ยังไม่มีฟิลด์ที่ระบบ KPI ต้องใช้: ${missing.join(', ')}**\n\nถ้าไม่กรอก Estimation Accuracy/Throughput/Complexity Trend ใน dashboard จะคำนวณไม่ได้ (N/A) — แก้ไข Issue body เพิ่มฟิลด์ที่ขาดได้เลย ไม่ต้องปิด/เปิดใหม่ ถ้ายัง analysis ไม่เสร็จให้ประเมินคร่าวๆ ไปก่อนได้`;
+              if (!botComment) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body: body2,
+                });
+              }
+              core.setFailed(`Issue ยังไม่มีฟิลด์: ${missing.join(', ')}`);
+            } else if (botComment) {
+              // กรอกครบแล้ว และเคยเตือนไว้ก่อนหน้า -> ลบ comment เตือนทิ้งเพื่อความสะอาด
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+              });
+            }
