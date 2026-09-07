@@ -27,7 +27,7 @@ from app.models.expense_finance import (
 )
 from app.models.user import User
 from app.schemas.expense_finance import (
-    AccountingCancelIn, AccountingReturnIn, AccountingStatsOut,
+    AccountingCancelIn, AccountingReturnIn, AccountingStatsOut, AccountingTransferIn,
     AttachmentRequirementIn, AttachmentRequirementOut, DepartmentIn, DepartmentOut,
     HistoryOut, NotificationOut, PaymentIn, PaymentOut,
     PaymentProofReplaceIn, PaymentVoidIn, SettlementIn, SettlementOut, SettlementReviewIn,
@@ -85,7 +85,7 @@ async def _can_view(db: AsyncSession, req: ExpenseRequest, user: User, *, accoun
 
 ACCOUNTING_STATUSES = [
     "pending_approval", "pending_adjustment_approval", "accounting_review",
-    "ready_to_pay", "partially_paid", "paid", "settlement_due", "settlement_review",
+    "ready_to_pay", "awaiting_slip", "partially_paid", "paid", "settlement_due", "settlement_review",
     "completed",
 ]
 
@@ -135,7 +135,7 @@ async def expense_dashboard(
     status_groups = {
         "requested": ["draft", "returned_for_correction"],
         "pending_approval": ["pending_approval", "pending_adjustment_approval"],
-        "approved": ["approved", "ready_to_pay", "settlement_due", "settlement_review"],
+        "approved": ["approved", "ready_to_pay", "awaiting_slip", "settlement_due", "settlement_review"],
         "paid": ["completed"],
         "cancelled": ["cancelled"],
     }
@@ -279,7 +279,7 @@ def _accounting_query(
         ApprovalRequestStep.status != "approved",
     ))
     stmt = stmt.where(or_(
-        ~ExpenseRequest.status.in_(["accounting_review", "ready_to_pay"]),
+        ~ExpenseRequest.status.in_(["accounting_review", "ready_to_pay", "awaiting_slip"]),
         ~incomplete_step,
     ))
     selected_department_ids = department_ids or ([department_id] if department_id is not None else [])
@@ -351,7 +351,7 @@ def _is_adjustment_transfer(
     return bool(
         request.id in paid_request_ids and settlement
         and settlement.settlement_type == "additional"
-        and request.status in {"accounting_review", "ready_to_pay"}
+        and request.status in {"accounting_review", "ready_to_pay", "awaiting_slip"}
     )
 
 
@@ -519,6 +519,7 @@ async def accounting_stats(
             r.status in {"pending_approval", "pending_adjustment_approval"} for r in rows
         ),
         accounting_review_count=sum(r.status == "accounting_review" for r in rows),
+        awaiting_slip_count=sum(r.status == "awaiting_slip" for r in rows),
         ready_to_pay_count=len(ready), settlement_review_count=sum(r.status == "settlement_review" for r in rows),
         overdue_count=sum(r.status == "settlement_due" and r.settlement_due_date and r.settlement_due_date < today for r in rows),
         ready_to_pay_amount=sum((Decimal(r.remaining_amount or r.net_amount or 0) for r in ready), Decimal("0")),
@@ -680,6 +681,21 @@ async def void_payment(
         return await expense_finance_service.void_payment(db, payment, payload.reason, current_user.id)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+@router.put("/expense-requests/{request_id}/accounting/transfer")
+async def accounting_transfer(
+    request_id: str, payload: AccountingTransferIn,
+    db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
+    company: Company = Depends(get_current_company),
+):
+    # Same permission as recording a payment and attaching its proof.
+    req = await _request(db, request_id, company.id, lock=True)
+    try:
+        status = await expense_finance_service.set_transfer_status(db, req, payload.transferred, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"status": status}
 
 
 @router.post("/expense-requests/{request_id}/accounting/return")

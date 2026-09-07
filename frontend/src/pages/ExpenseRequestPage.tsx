@@ -33,7 +33,7 @@ import { useAuth } from "@/context/AuthContext";
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "ร่าง", pending: "รออนุมัติ", pending_approval: "รออนุมัติ", approved: "อนุมัติแล้ว",
-  ready_to_pay: "พร้อมจ่าย", partially_paid: "จ่ายบางส่วน", settlement_due: "รอเคลียร์เงิน", settlement_review: "รอตรวจเคลียร์",
+  ready_to_pay: "พร้อมจ่าย", awaiting_slip: "รอแนบสลิป", partially_paid: "จ่ายบางส่วน", settlement_due: "รอเคลียร์เงิน", settlement_review: "รอตรวจเคลียร์",
   completed: "เสร็จสิ้น", returned_for_correction: "ส่งกลับให้แก้ไข",
   pending_adjustment_approval: "รออนุมัติส่วนต่าง", rejected: "ถูกปฏิเสธ", cancelled: "ยกเลิก",
 };
@@ -42,7 +42,7 @@ const STATUS_COLOR: Record<string, string> = {
   draft: "bg-slate-100 text-slate-700", pending: "bg-amber-100 text-amber-700",
   approved: "bg-emerald-100 text-emerald-700", rejected: "bg-rose-100 text-rose-700",
   cancelled: "bg-slate-100 text-slate-500",
-  ready_to_pay: "bg-sky-100 text-sky-700", partially_paid: "bg-teal-100 text-teal-700",
+  ready_to_pay: "bg-sky-100 text-sky-700", awaiting_slip: "bg-violet-100 text-violet-700", partially_paid: "bg-teal-100 text-teal-700",
   settlement_due: "bg-orange-100 text-orange-700",
   settlement_review: "bg-violet-100 text-violet-700", completed: "bg-emerald-100 text-emerald-700",
   returned_for_correction: "bg-amber-100 text-amber-700", pending_approval: "bg-amber-100 text-amber-700",
@@ -54,6 +54,7 @@ const STATUS_FILTER_OPTIONS = [
   ["pending_approval", "รออนุมัติ"],
   ["approved", "อนุมัติแล้ว"],
   ["ready_to_pay", "พร้อมจ่าย"],
+  ["awaiting_slip", "รอแนบสลิป"],
   ["partially_paid", "จ่ายบางส่วน"],
   ["settlement_due", "รอเคลียร์เงิน"],
   ["settlement_review", "รอตรวจเคลียร์"],
