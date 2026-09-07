@@ -1,0 +1,68 @@
+name: Deploy Notify
+
+# เมื่อมี commit เข้า production branch (= deploy) → หา "#N" จาก commit message
+# แล้ว comment กลับที่ Issue นั้นว่า "deployed to production" — สร้าง timeline event
+# ที่ collect_metrics.py อ่านได้ตรงๆ ไม่ต้อง git log --grep เดา
+#
+# production ถูกแทนที่ตอนติดตั้งโดย install-github-workflows.sh
+# (อ่านจาก .github/kawin-standards.yml → default "production")
+# เปลี่ยน production branch ภายหลัง = ต้อง re-run install-github-workflows.sh
+
+on:
+  push:
+    branches: ["production"]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  notify-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment "deployed" บน Issue ที่อ้างใน commits
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const commits = context.payload.commits || [];
+            const deployDate = new Date().toISOString().slice(0, 10);
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+
+            // เก็บเลข Issue จาก "#N" / "Closes #N" / "Issue #N" ในทุก commit ของ push นี้
+            const issueNums = new Set();
+            for (const c of commits) {
+              const msg = `${c.message || ''}`;
+              for (const m of msg.matchAll(/#(\d+)/g)) issueNums.add(parseInt(m[1], 10));
+            }
+            if (issueNums.size === 0) {
+              console.log('ไม่พบ #N ใน commit ของ push นี้ — ข้าม');
+              return;
+            }
+
+            const marker = `<!-- deploy-notify:${context.sha} -->`;
+            for (const num of issueNums) {
+              try {
+                const { data: issue } = await github.rest.issues.get({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: num,
+                });
+                if (issue.pull_request) { continue; } // เป็น PR ไม่ใช่ Issue
+
+                // idempotent: ถ้า comment ของ SHA เดียวกันมีแล้ว ข้าม
+                const { data: comments } = await github.rest.issues.listComments({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: num, per_page: 100,
+                });
+                if (comments.some(c => (c.body || '').includes(marker))) {
+                  console.log(`#${num} มี deploy comment ของ SHA นี้แล้ว — ข้าม`);
+                  continue;
+                }
+
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner, repo: context.repo.repo, issue_number: num,
+                  body: `${marker}\n🚀 **deployed to production** — ${deployDate}\n\n`
+                      + `commit \`${context.sha.slice(0, 7)}\` บน \`${context.ref.replace('refs/heads/', '')}\` · [run](${runUrl})`,
+                });
+                console.log(`#${num} — comment แล้ว`);
+              } catch (e) {
+                console.log(`#${num} — ข้าม (${e.status || e.message})`);
+              }
+            }
