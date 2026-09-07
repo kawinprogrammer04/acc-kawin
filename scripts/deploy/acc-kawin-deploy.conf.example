@@ -1,0 +1,8 @@
+# Copy to /etc/acc-kawin-deploy.conf (root:root 0600) and fill actual values.
+# No credentials here: keep the existing .env and volumes on the server.
+PROJECT_DIR='/REPLACE_WITH_EXISTING_ACC_CHECKOUT'
+BACKUP_DIR='/REPLACE_WITH_BACKUP_DIRECTORY_OUTSIDE_CHECKOUT'
+# Find this on the existing deployment, do not invent a new project name:
+# docker inspect acc_backend --format '{{ index .Config.Labels "com.docker.compose.project" }}'
+COMPOSE_PROJECT_NAME='REPLACE_WITH_EXISTING_PROJECT_NAME'
+HEALTH_URL='http://127.0.0.1:18080/api/health'

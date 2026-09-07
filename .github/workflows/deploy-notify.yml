@@ -1,16 +1,8 @@
 name: Deploy Notify
 
-# เมื่อมี commit เข้า production branch (= deploy) → หา "#N" จาก commit message
-# แล้ว comment กลับที่ Issue นั้นว่า "deployed to production" — สร้าง timeline event
-# ที่ collect_metrics.py อ่านได้ตรงๆ ไม่ต้อง git log --grep เดา
-#
-# production ถูกแทนที่ตอนติดตั้งโดย install-github-workflows.sh
-# (อ่านจาก .github/kawin-standards.yml → default "production")
-# เปลี่ยน production branch ภายหลัง = ต้อง re-run install-github-workflows.sh
-
+# Called by CI only after the deploy job succeeds. A push is not proof of deployment.
 on:
-  push:
-    branches: ["production"]
+  workflow_call: {}
 
 permissions:
   contents: read

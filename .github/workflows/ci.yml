@@ -4,88 +4,57 @@ on:
   push:
     branches: [main, production]
   pull_request:
-    branches: [main]
+    branches: [main, production]
   workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
   backend-lint:
-    # template ขั้นต่ำ (py_compile ไฟล์ .py ที่แก้) — repo นี้ใช้ unittest ผ่าน
-    # docker (`make test-backend`) ไม่ใช่ pytest ในเครื่อง CI โดยตรงตอนนี้
-    # ยกระดับเป็นรัน test suite เต็มใน CI ได้ทีหลัง (ต้องตั้ง postgres service +
-    # .env ก่อน)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: หาไฟล์ .py ที่แก้
-        id: changed
-        run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            HEAD="${{ github.event.pull_request.head.sha }}"
-          else
-            BASE="${{ github.event.before }}"
-            HEAD="${{ github.sha }}"
-          fi
-          # push แรกของ branch ใหม่ หรือ force-push จาก API ref update บาง
-          # กรณี github.event.before เป็น all-zero/ไม่รู้จัก — fallback เป็น
-          # HEAD~1 ถ้าใช้ไม่ได้เลยก็ข้าม (ปลอดภัยกว่า fail ทั้ง job)
-          if ! git cat-file -e "$BASE" 2>/dev/null; then
-            BASE="$(git rev-parse HEAD~1 2>/dev/null || echo "$HEAD")"
-          fi
-          FILES="$(git diff --name-only --diff-filter=ACMR "$BASE" "$HEAD" -- 'backend/**/*.py' 2>/dev/null || true)"
-          echo "files<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$FILES" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
-
+          persist-credentials: false
       - uses: actions/setup-python@v5
-        if: steps.changed.outputs.files != ''
         with:
           python-version: '3.12'
-
-      - name: py_compile ไฟล์ที่แก้
-        if: steps.changed.outputs.files != ''
+      - name: Compile all tracked backend Python sources
         run: |
-          set -e
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            [ -f "$f" ] || continue
-            python -m py_compile "$f"
-          done <<< "${{ steps.changed.outputs.files }}"
+          python - <<'PY'
+          import py_compile
+          import subprocess
+          paths = subprocess.check_output(['git', 'ls-files', '-z', 'backend/*.py', 'backend/**/*.py'])
+          for path in paths.decode().split('\0'):
+              if path:
+                  py_compile.compile(path, doraise=True)
+          PY
 
   frontend-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: '20'
+          cache: npm
           cache-dependency-path: frontend/package-lock.json
-
       - name: Install dependencies
         working-directory: frontend
         run: npm ci
-
       - name: Type-check + build
         working-directory: frontend
         run: npm run build
 
   check-migrations:
-    # Guards against the acc-kawin migration incidents of 2026-08-13 and
-    # 2026-08-17: two Alembic revisions merged in from parallel branches both
-    # pointing at the same down_revision, giving the migration graph two
-    # heads. `alembic upgrade head` then picked one arbitrarily/errored
-    # inside the backend entrypoint, so the container never went healthy and
-    # the deploy job failed after already recreating containers. Catch it
-    # here, before the deploy step ever touches the server.
-    if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -93,41 +62,84 @@ jobs:
         working-directory: backend
         run: |
           pip install --no-cache-dir alembic==1.13.2
-          heads="$(alembic heads)"
-          echo "$heads"
-          head_count="$(grep -c '(head)' <<< "$heads")"
-          if [ "$head_count" -ne 1 ]; then
-            echo "::error::Expected exactly 1 Alembic head, found $head_count. Rebase/merge the migration branches (fix down_revision chain) before pushing to production."
-            exit 1
-          fi
+          python - <<'PY'
+          from alembic.config import Config
+          from alembic.script import ScriptDirectory
+          heads = ScriptDirectory.from_config(Config('alembic.ini')).get_heads()
+          print('Alembic heads:', heads)
+          if len(heads) != 1:
+              raise SystemExit('Expected exactly one Alembic head; resolve the migration graph before merging.')
+          PY
 
-  deploy:
-    needs: check-migrations
-    # This job intentionally lives in the same workflow file that receives the
-    # push event, instead of a separate deploy.yml triggered by `workflow_run`.
-    # `workflow_run` always reads the *default branch's* copy of the triggered
-    # workflow file, not the branch that produced the event - so a fix landed
-    # only on production could silently never take effect. See kawin-ffm's
-    # ci.yml / deploy history for the incident this avoids. Kept identical on
-    # `main` and `production` on purpose (guarded by the `if:` below) so a
-    # Release (main -> production) never silently drops this job.
-    if: github.ref == 'refs/heads/production'
+  deployment-tests:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to acc.kawinbrothers.com
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: node --test tests/deploy/*.test.cjs
+      - run: python -m unittest discover -s tests/deploy -p 'test_*.py' -v
+      - name: Shell syntax and static checks
+        run: |
+          bash -n scripts/deploy/deploy-acc-kawin.sh
+          shellcheck scripts/deploy/deploy-acc-kawin.sh
+
+  deploy:
+    needs: [backend-lint, frontend-build, check-migrations, deployment-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    concurrency:
+      group: acc-production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require SSH configuration
+        env:
+          DEPLOY_HOST: ${{ secrets.ACC_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.ACC_DEPLOY_USER }}
+          DEPLOY_KEY: ${{ secrets.ACC_DEPLOY_SSH_KEY }}
+          DEPLOY_FINGERPRINT: ${{ secrets.ACC_DEPLOY_HOST_FINGERPRINT }}
+        run: |
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KEY DEPLOY_FINGERPRINT; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing $name; complete docs/deployment.md before releasing."
+              exit 1
+            fi
+          done
+      - name: Identify reviewed server script
+        id: script
+        run: echo "sha256=$(sha256sum scripts/deploy/deploy-acc-kawin.sh | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - name: Deploy the exact commit checked by this workflow
         uses: appleboy/ssh-action@v1
+        env:
+          ACC_DEPLOY_SHA: ${{ github.sha }}
+          ACC_DEPLOY_SCRIPT_SHA256: ${{ steps.script.outputs.sha256 }}
         with:
           host: ${{ secrets.ACC_DEPLOY_HOST }}
           username: ${{ secrets.ACC_DEPLOY_USER }}
           key: ${{ secrets.ACC_DEPLOY_SSH_KEY }}
-          # Login user (gha_deploy_acc) has no shell privileges of its own -
-          # /etc/sudoers.d/gha-deploy-acc on the server allows it to run
-          # exactly one fixed, argument-less, root-owned script
-          # (/usr/local/bin/deploy-acc-kawin.sh) and nothing else. That script
-          # hardcodes the acc-kawin project path, so this grant cannot reach
-          # any other tenant/domain on the shared host. The script itself:
-          # git reset --hard origin/production, pg_dump backup, docker compose
-          # build + up (backend's entrypoint runs `alembic upgrade head`
-          # automatically before Uvicorn starts), then polls /api/health and
-          # fails the job (non-zero exit) if it never turns healthy.
-          script: sudo /usr/local/bin/deploy-acc-kawin.sh
+          fingerprint: ${{ secrets.ACC_DEPLOY_HOST_FINGERPRINT }}
+          command_timeout: 40m
+          envs: ACC_DEPLOY_SHA,ACC_DEPLOY_SCRIPT_SHA256
+          script: |
+            set -eu
+            printf '%s  %s\n' "$ACC_DEPLOY_SCRIPT_SHA256" /usr/local/bin/deploy-acc-kawin.sh | sha256sum -c -
+            printf '%s\n' "$ACC_DEPLOY_SHA" | sudo -n /usr/local/bin/deploy-acc-kawin.sh
+
+  notify:
+    needs: deploy
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
+    permissions:
+      contents: read
+      issues: write
+    uses: ./.github/workflows/deploy-notify.yml

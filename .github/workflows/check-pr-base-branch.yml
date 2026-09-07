@@ -1,19 +1,9 @@
 name: Check PR Base Branch
 
-# บังคับว่า PR ต้องเทียบกับ branch ที่ทีมใช้ทำงานจริงเท่านั้น (เช่น K.Yai-Branch,
-# Production-Deployed) ไม่ใช่ default branch ที่อาจเก่า/ไม่ตรงกับของจริง
-#
-# ปัญหาที่เจอจริง 2 ครั้ง (PR #13, #26): เปิด PR โดยไม่ระบุ --base ชัดเจน ทำให้
-# gh pr create ไปเทียบกับ default branch (main ที่เก่ากว่า 900 commits) แทน
-# K.Yai-Branch — diff โชว์ไฟล์ไม่เกี่ยวข้องเป็นร้อยไฟล์ แก้ที่ prompt (release.md)
-# ไปแล้วครั้งหนึ่งแต่ยังเกิดซ้ำ ต้องบังคับที่ระดับ platform แทน
-#
-# ตั้งค่า: สร้าง .github/valid-pr-bases.txt ระบุ branch ที่อนุญาตให้เป็น base
-# (1 ชื่อต่อบรรทัด) ถ้าไม่มีไฟล์นี้ workflow จะข้ามการเช็ค (no-op) ไม่ fail
-
+# Trusted base only: never execute/check out PR-head code with this event.
 on:
-  pull_request:
-    types: [opened, edited, synchronize, reopened]
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled, ready_for_review]
 
 permissions:
   contents: read
@@ -23,46 +13,19 @@ jobs:
   check-base-branch:
     runs-on: ubuntu-latest
     steps:
-      - name: เช็คว่า PR base branch ถูกต้องไหม
-        uses: actions/github-script@v7
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: .github
+      - uses: actions/github-script@v7
         with:
           script: |
-            let configContent;
-            try {
-              const res = await github.rest.repos.getContent({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                path: '.github/valid-pr-bases.txt',
-                ref: context.payload.pull_request.head.sha,
-              });
-              configContent = Buffer.from(res.data.content, 'base64').toString('utf-8');
-            } catch (e) {
-              console.log('ไม่มี .github/valid-pr-bases.txt ในโปรเจกต์นี้ — ข้ามการเช็ค');
-              return;
-            }
-
-            const validBases = configContent
-              .split('\n')
-              .map(l => l.trim())
-              .filter(l => l && !l.startsWith('#'));
-
-            if (validBases.length === 0) {
-              console.log('valid-pr-bases.txt ว่างเปล่า — ข้ามการเช็ค');
-              return;
-            }
-
-            const actualBase = context.payload.pull_request.base.ref;
-
-            if (!validBases.includes(actualBase)) {
-              core.setFailed(
-                `PR นี้เทียบกับ base branch "${actualBase}" ซึ่งไม่ได้รับอนุญาต\n\n` +
-                `Base branch ที่ใช้ได้: ${validBases.join(', ')}\n\n` +
-                `สาเหตุที่มักเกิด: เปิด PR โดยไม่ระบุ --base ชัดเจน ทำให้ gh pr create ` +
-                `ไปเทียบกับ default branch ของ repo เองอัตโนมัติ ซึ่งอาจไม่ตรงกับ branch ที่ทีมใช้จริง\n\n` +
-                `แก้โดยปิด PR นี้แล้วเปิดใหม่พร้อมระบุ --base ที่ถูกต้อง เช่น:\n` +
-                `gh pr create --base ${validBases[0]} ...`
-              );
-              return;
-            }
-
-            console.log(`Base branch "${actualBase}" ถูกต้อง — ผ่าน`);
+            const fs = require('node:fs');
+            const { checkRoute, readPatterns } = require('./.github/scripts/pr-policy.cjs');
+            const { data: pr } = await github.rest.pulls.get({
+              ...context.repo, pull_number: context.issue.number,
+            });
+            const bases = readPatterns(fs.readFileSync('.github/valid-pr-bases.txt', 'utf8'));
+            const error = checkRoute(pr, bases);
+            if (error) core.setFailed(error);

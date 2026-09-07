@@ -96,7 +96,7 @@ fix/<issue>-<slug>      ┘─ PR (review + CI เขียว) ─► main ─ 
 - **ห้าม branch ต่อ dev** (`<ชื่อคน>-Branch`) — ทุกคนแตก `feature/*`/`fix/*` จาก `main`
 - **งานที่ merge เข้า `main` แล้วแต่ต้องกันไม่ให้ ship รอบนี้** → ใช้ feature flag หรือ `git revert` บน `main` ก่อน Release PR — **ห้าม**ใช้วิธี "ไม่ merge Release" เพราะ `main` ต้อง deployable เสมอ
 - **hotfix**: ปกติ `fix/*` → PR → `main` → Release PR ทันที; **ฉุกเฉินจริงๆ** `fix/*` → PR → `production` ตรง แล้ว **back-merge `production` → `main` ทันที**หลัง deploy (ห้ามทิ้ง drift)
-- ถ้ามีรายงานว่า deploy ล่าสุดทำให้เกิดปัญหา → **rollback ก่อนเป็นอันดับแรก** (revert commit บน `production` + push)
+- ถ้ามีรายงานว่า deploy ล่าสุดทำให้เกิดปัญหา → **rollback ก่อนเป็นอันดับแรก** (revert บน `fix/*` ที่แตกจาก production → PR เข้า production พร้อม label `emergency-rollback` → review/CI → merge; แล้ว back-merge เข้า main ห้าม direct push)
 - **ห้ามรวมหลาย Issue เข้า PR เดียวกัน** (พิสูจน์แล้วจาก PR #26 — ดู README) — แยก PR ต่อ 1 Issue เสมอเพื่อให้ revert แยกได้ และให้ `collect_metrics.py` จับคู่ Issue↔PR ได้ถูกต้อง (ตัดสินใจรวม/แยกงานเล็กได้แค่ตอนสร้าง Issue เท่านั้น ห้ามรวมทีหลังตอน PR)
 - **มี migration/schema change เกี่ยวข้อง** → แยกขออนุมัติต่างหาก ไม่รวมกับการอนุมัติ deploy โค้ดทั่วไป
 - ถ้าไม่มี CI/CD บน `production` branch: **ห้าม deploy เองโดยไม่มีคนอนุมัติชัดเจน**
@@ -123,3 +123,18 @@ fix/<issue>-<slug>      ┘─ PR (review + CI เขียว) ─► main ─ 
 - **จบงานของ Issue หนึ่งสมบูรณ์แล้ว และ Issue ถัดไปไม่เกี่ยวข้องกันเลย** → เสนอ `/clear` ก่อนเริ่ม Issue ใหม่
 - **เซสชันยาวข้ามหลาย Issue ต่อเนื่องและ context ใกล้เต็ม** → เสนอ `/compact preserve [เลข Issue ที่ทำอยู่, decision ที่ยังไม่ปิด]` แทนเคลียร์ทิ้งหมด
 - **ห้ามเสนอ/ใช้ `/clear` กลางทางระหว่าง Issue เดียวกันที่ยังไม่จบ** — จะทำให้ลืม approval ที่เพิ่งได้รับหรือ context ที่ทำค้างอยู่
+
+
+## ACC deployment standard (ข้อกำหนดเฉพาะ repository)
+
+อ่าน `docs/deployment.md` ก่อนเปลี่ยน workflow/deploy หรือปล่อย release
+- ระบุ `gh pr create --base main` เสมอ; `--base production` สำหรับ Release หรือ emergency fix ตามกฎเท่านั้น
+- Release เป็น `main` → `production` ใน repo เดียวกันและใช้ merge commit; ห้าม cherry-pick/direct push/force push
+- งานทั่วไปแตก `feature/<issue>-<slug>` หรือ `fix/<issue>-<slug>` จาก main ไม่ใช้ branch ประจำบุคคล
+- Emergency fix ต้องมี label `emergency-hotfix` หรือ `emergency-rollback`, ผ่าน review+CI แล้ว back-merge production → main ทันที
+- หลัง release ปกติให้ back-merge production → main ผ่าน PR เช่นกัน เพื่อให้ strict checks อ้างฐานล่าสุด
+- งานที่ยังไม่ ship ใช้ feature flag หรือ revert ผ่าน PR บน main
+- Commit message เป็นภาษาไทย; ห้ามเพิ่ม backup/credential/export ชั่วคราว รวม XLS/XLSX; ห้ามลบข้อมูลเก่าโดยไม่ถาม
+- มี backend automated tests (`make test-backend`) แต่ CI ยังไม่ได้รันชุด business tests เต็ม ต้องบอกผลที่รันจริงและวิธี verify ด้วยมือเสมอ
+- เปลี่ยนโครงสร้างหรือโมดูลสำคัญต้องอัปเดต `PROJECT_OVERVIEW.md`
+- การติดตั้งบน server/ตั้ง branch protection เป็นขั้นตอนต่างหาก อย่าอ้างว่าเปิดใช้แล้วจากผล local tests อย่างเดียว

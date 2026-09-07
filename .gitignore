@@ -42,3 +42,14 @@ output/
 outputs/
 tmp/
 .ops/
+
+# Deployment policy: prevent accidental addition; tracked legacy files remain.
+*.xlsx
+*.xls
+*.dump
+*.backup
+*.bak
+*.pem
+*.key
+backups/
+exports/

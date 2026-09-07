@@ -1,2 +1,31 @@
-# ไฟล์/pattern ที่ห้ามแตะใน PR ปกติ
+# Glob '*' supported. Protect additions, modifications, removals and renames.
 .env
+.env.*
+*.env
+*.env.*
+!.env.example
+!.env.*.example
+!*.env.example
+*.xlsx
+*.xls
+*.dump
+*.backup
+*.bak
+*.pem
+*.key
+id_rsa
+id_ed25519
+credentials.json
+service-account*.json
+*_backup_*.sql
+*backup*.sql
+*dump*.sql
+backups/*
+*/backups/*
+exports/*
+*/exports/*
+output/*
+outputs/*
+tmp/*
+# The existing XLSX template stays tracked. A deliberate template change needs
+# a separate reviewed policy change first; never delete it to pass this check.
