@@ -1,0 +1,85 @@
+name: "🐞 Bug Report"
+description: "ใช้รายงาน Bug ที่พบ — ต้อง reference กลับไป Issue/PR ต้นทางเสมอ เพื่อให้ KPI คุณภาพงานคำนวณได้"
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ★ ช่อง "Related Issue/PR" สำคัญมาก — ถ้าไม่กรอก ระบบจะไม่สามารถโยง bug นี้กลับไปหางานต้นทางได้
+        และจะไม่ถูกนับใน Quality KPI ของผู้พัฒนา (กลายเป็น N/A แทน)
+
+        ⚠️ **เปิด Bug Report นี้เฉพาะบั๊กที่หลุดขึ้น production แล้วเท่านั้น**
+        - บั๊กที่เจอตอน PR ยังไม่ merge → แก้ใน PR เดิมของ Issue ต้นทาง **ไม่ต้องเปิด Bug Report**
+        - บั๊กที่เจอหลัง merge เข้า integration branch แต่ยังไม่ขึ้น production → **reopen Issue ต้นทาง** ไม่ต้องเปิดใหม่
+
+  - type: input
+    id: related-issue
+    attributes:
+      label: "★ Related Issue / PR"
+      description: "ใส่เลข Issue หรือ PR ต้นทางที่ทำให้เกิด bug นี้ (ถ้าทราบ)"
+      placeholder: "#123"
+    validations:
+      required: false
+
+  - type: input
+    id: date-found
+    attributes:
+      label: "★ วันที่พบ Bug"
+      placeholder: "2026-07-06"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: "★ Severity"
+      description: "ใช้สำหรับคำนวณ Escaped Defect Severity (ถ่วงน้ำหนัก)"
+      options:
+        - "Critical (ระบบล่ม/ข้อมูลเสียหาย)"
+        - "Major (ฟังก์ชันหลักใช้งานไม่ได้)"
+        - "Minor (บั๊กเล็กน้อย/UI)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: "★ พบที่ Environment ไหน"
+      description: >-
+        เฉพาะ "Production" เท่านั้นที่นับเป็น Escaped Defect ใน KPI —
+        "Pre-production" = เจอบน integration branch ก่อน deploy (ปกติควร reopen Issue เดิมมากกว่าเปิด Bug ใหม่)
+      options:
+        - "Production (ขึ้น production จริงแล้ว)"
+        - "Pre-production (merge เข้า integration branch แล้ว ยังไม่ deploy)"
+        - "Local (เครื่อง dev / ยังไม่ merge)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "★ รายละเอียด Bug"
+      placeholder: "อธิบายอาการที่เจอ"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "ขั้นตอนการทำซ้ำ (Steps to Reproduce)"
+      placeholder: |
+        1. เข้าไปที่หน้า...
+        2. กดปุ่ม...
+        3. พบว่า...
+    validations:
+      required: false
+
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: "Root Cause (กรอกภายหลังเมื่อวิเคราะห์เสร็จ)"
+      description: "ระบุ commit/PR ที่เป็นต้นเหตุ ถ้าทราบ — ใช้สำหรับ Incident Contribution KPI"
+      placeholder: "เกิดจาก PR #118 ที่แก้ไข..."
+    validations:
+      required: false
