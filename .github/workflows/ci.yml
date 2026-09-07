@@ -4,7 +4,7 @@ on:
   push:
     branches: [main, production]
   pull_request:
-    branches: [main]
+    branches: [main, production]
   workflow_dispatch: {}
 
 jobs:
@@ -82,7 +82,6 @@ jobs:
     # inside the backend entrypoint, so the container never went healthy and
     # the deploy job failed after already recreating containers. Catch it
     # here, before the deploy step ever touches the server.
-    if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
