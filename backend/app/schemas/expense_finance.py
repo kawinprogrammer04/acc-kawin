@@ -98,6 +98,10 @@ class PaymentVoidIn(BaseModel):
     reason: str = Field(min_length=3, max_length=2000)
 
 
+class AccountingTransferIn(BaseModel):
+    transferred: bool
+
+
 class AccountingReturnIn(BaseModel):
     reason: str = Field(min_length=3, max_length=2000)
 
@@ -183,6 +187,7 @@ class FinanceSummaryOut(BaseModel):
 
 
 class AccountingStatsOut(BaseModel):
+    awaiting_slip_count: int = 0
     pending_approval_count: int = 0
     accounting_review_count: int
     ready_to_pay_count: int

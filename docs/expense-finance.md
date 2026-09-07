@@ -2,6 +2,14 @@
 
 The module is isolated from `expense_entries` and cash-flow transactions. Recording a payment never creates a journal or cash-flow row.
 
+On the accounting list, “ทำรายการโอนแล้ว” changes `ready_to_pay` or
+`partially_paid` to `awaiting_slip` (“รอแนบสลิป”). This records an audit event
+without changing payment amounts. Unchecking restores the status recorded in
+that event. Recording payment with its required slip then follows the existing
+partial-payment, advance-settlement, or completion flow. Lists, status filters,
+summary counts, and exports include `awaiting_slip`. This action uses the same
+accounting permission as recording payments.
+
 ## Deployment order
 
 1. Back up PostgreSQL and the `backend_uploads` volume.

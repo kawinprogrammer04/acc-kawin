@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from weasyprint import HTML
 
 from app.core.config import settings
-from app.models.approval import ExpenseRequest, ExpenseRequestItem, ExpenseType
+from app.models.approval import ApprovalRequestStep, ExpenseRequest, ExpenseRequestItem, ExpenseType
 from app.models.expense_finance import (
     ExpensePayment, ExpenseRequestHistory, ExpenseSettlement, ExpenseSettlementItem,
     ExpenseWithholdingTaxCertificate, SystemNotification,
@@ -27,6 +27,19 @@ from app.models.expense_finance import (
 from app.services.expense_request_service import decrypt_account_number, per_item_withholding_breakdown
 
 MONEY = Decimal("0.01")
+
+ACCOUNTING_STATUS_LABELS = {
+    "pending_approval": "กำลังอนุมัติ",
+    "pending_adjustment_approval": "กำลังอนุมัติส่วนต่าง",
+    "accounting_review": "รายการเก่ารอส่งต่อ",
+    "ready_to_pay": "พร้อมจ่าย",
+    "awaiting_slip": "รอแนบสลิป",
+    "partially_paid": "จ่ายบางส่วน",
+    "paid": "จ่ายแล้ว",
+    "settlement_due": "รอเคลียร์",
+    "settlement_review": "ตรวจเคลียร์",
+    "completed": "เสร็จสิ้น",
+}
 
 
 def money(value) -> Decimal:
@@ -112,6 +125,43 @@ async def _refresh_installment_chain_status(db: AsyncSession, locked: ExpenseReq
             locked.installment_chain_status = new_status
 
 
+async def set_transfer_status(db: AsyncSession, req: ExpenseRequest, transferred: bool,
+                              actor_user_id: int) -> str:
+    """Mark a bank transfer without booking payment; caller holds the request lock."""
+    payable_statuses = {"ready_to_pay", "partially_paid"}
+    if req.status not in payable_statuses | {"awaiting_slip"}:
+        raise ValueError("ทำรายการโอนได้เฉพาะสถานะพร้อมจ่ายหรือจ่ายบางส่วน")
+    if transferred == (req.status == "awaiting_slip"):
+        return req.status
+    previous = req.status
+    if transferred:
+        incomplete = (await db.execute(select(ApprovalRequestStep.id).where(
+            ApprovalRequestStep.expense_request_id == req.id,
+            ApprovalRequestStep.revision == req.current_revision,
+            ApprovalRequestStep.status != "approved",
+        ).limit(1))).scalar_one_or_none()
+        if incomplete is not None:
+            raise ValueError("รายการอนุมัติหรือลายเซ็นยังไม่ครบ บัญชียังไม่สามารถดำเนินการได้")
+        req.status = "awaiting_slip"
+    else:
+        original_status = (await db.execute(select(ExpenseRequestHistory.from_status).where(
+            ExpenseRequestHistory.company_id == req.company_id,
+            ExpenseRequestHistory.expense_request_id == req.id,
+            ExpenseRequestHistory.revision == req.current_revision,
+            ExpenseRequestHistory.event == "transfer_marked",
+        ).order_by(ExpenseRequestHistory.id.desc()).limit(1))).scalar_one_or_none()
+        if original_status not in payable_statuses:
+            raise ValueError("ไม่พบสถานะก่อนทำรายการโอน กรุณาตรวจสอบประวัติรายการ")
+        req.status = original_status
+    req.version += 1
+    req.updated_at = datetime.now(timezone.utc)
+    add_history(db, req, "transfer_marked" if transferred else "transfer_unmarked",
+                actor_user_id, previous,
+                "ทำรายการโอนแล้ว รอแนบสลิป" if transferred else "ยกเลิกเครื่องหมายทำรายการโอนแล้ว")
+    await db.commit()
+    return req.status
+
+
 async def record_payment(db: AsyncSession, req: ExpenseRequest, payload, actor_user_id: int) -> ExpensePayment:
     existing = (await db.execute(select(ExpensePayment).where(
         ExpensePayment.idempotency_key == payload.idempotency_key
@@ -121,8 +171,8 @@ async def record_payment(db: AsyncSession, req: ExpenseRequest, payload, actor_u
     locked = (await db.execute(select(ExpenseRequest).where(
         ExpenseRequest.id == req.id, ExpenseRequest.company_id == req.company_id
     ).with_for_update())).scalar_one()
-    if locked.status not in {"ready_to_pay", "partially_paid"}:
-        raise ValueError(f"บันทึกจ่ายได้เฉพาะสถานะพร้อมจ่ายหรือจ่ายบางส่วน (ปัจจุบัน: {locked.status})")
+    if locked.status not in {"ready_to_pay", "partially_paid", "awaiting_slip"}:
+        raise ValueError(f"บันทึกจ่ายได้เฉพาะสถานะพร้อมจ่าย จ่ายบางส่วน หรือรอแนบสลิป (ปัจจุบัน: {locked.status})")
     amount = money(payload.amount)
     remaining = money(locked.net_amount or locked.amount) - money(locked.paid_amount)
     if amount > remaining:
@@ -411,7 +461,7 @@ def excel_bytes(
             float(money(settlement.difference_amount)) if additional_payment else 0,
             float(money(r.paid_amount)),
             float(money(r.remaining_amount)),
-            safe(r.status),
+            safe(ACCOUNTING_STATUS_LABELS.get(r.status, r.status)),
             local_datetime(latest_payment.paid_at) if latest_payment else None,
             safe(latest_payment.reference_no) if latest_payment else None,
         ])
