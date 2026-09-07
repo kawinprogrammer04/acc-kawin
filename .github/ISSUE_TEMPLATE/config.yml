@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "❓ คำถามทั่วไป / ไม่แน่ใจจะใช้ template ไหน"
+    url: "https://github.com/orgs/kawinprogrammer04/discussions"
+    about: "ถามในทีมก่อนเปิด Issue เพื่อเลือก template ให้ถูกต้อง"
