@@ -1,0 +1,94 @@
+name: Prepare Release PR
+
+# สร้าง/อัปเดต Release PR (integration branch -> production branch) ให้อัตโนมัติทุกครั้งที่มี
+# commit ใหม่เข้า integration branch — ไม่ต้องเปิด Release PR เองทุกรอบ ไม่ต้องพิมพ์เลข Issue
+# ใส่ body เอง (ไม่งั้นติด require-issue-reference.yml) ดึงเลข Issue จาก commit message ของ
+# commit ที่ยังไม่ถูก deploy จริงมาใส่ body ให้อัตโนมัติ
+#
+# เทียบ "อะไรยัง deploy จริง" จาก git tag `release-baseline` (ดูแลโดย mark-release-baseline.yml
+# คู่กัน — ขยับ tag นี้ทุกครั้งที่ Release PR merge เข้า production branch สำเร็จ) แทนการเทียบกับ
+# production branch ตรงๆ ด้วย git log/git cherry เพราะถ้า repo merge Release PR แบบ squash
+# (รวมหลาย Issue เป็น commit เดียว) ทั้ง commit ancestry และ patch-id จะเทียบกับ production
+# ไม่แม่นยำอีกต่อไป — tag นี้จึงเป็นแหล่งความจริงเดียวว่า integration branch เคย release ไปถึง
+# จุดไหนแล้ว
+#
+# ก่อนใช้งานครั้งแรก ต้องสร้าง tag release-baseline เองที่ integration branch HEAD ปัจจุบัน
+# (ดู README.md หัวข้อ Release PR automation) ไม่งั้น workflow จะข้ามทุกรอบเงียบๆ
+#
+# ต้องเปิด repo setting ก่อนใช้งานได้จริง: Settings → Actions → General → Workflow
+# permissions → "Allow GitHub Actions to create and approve pull requests" (ต้องมีสิทธิ์ Admin)
+# ไม่งั้น step สุดท้ายจะ fail ด้วย "GitHub Actions is not permitted to create or approve pull
+# requests"
+#
+# ไม่ auto-merge — ยังต้องมีคน review แล้วกด merge PR นี้เองตอนพร้อม deploy จริง
+#
+# main / production ถูกแทนที่ตอนติดตั้งโดย
+# install-github-workflows.sh (อ่านจาก .github/kawin-standards.yml → default main/production)
+# เปลี่ยน branch model ภายหลัง = ต้อง re-run install-github-workflows.sh
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  prepare-release-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: สร้าง/อัปเดต Release PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          HEAD=main
+          BASE=production
+          git fetch origin "$HEAD" "$BASE" --tags
+
+          if ! git rev-parse -q --verify refs/tags/release-baseline >/dev/null; then
+            echo "ไม่พบ tag release-baseline — ต้องสร้าง baseline ก่อน (ดู README.md หัวข้อ Release PR automation) ข้ามรอบนี้ไปก่อน"
+            exit 0
+          fi
+
+          # เทียบกับ tag release-baseline (ขยับโดย mark-release-baseline.yml เท่านั้น)
+          # ไม่ใช้ production branch ตรงๆ เพราะ squash merge ทำให้เทียบ ancestry/patch-id ไม่ได้แม่นยำ
+          NEW_COMMITS=$(git log release-baseline..origin/$HEAD --oneline)
+          if [ -z "$NEW_COMMITS" ]; then
+            echo "ไม่มี commit ใหม่กว่า release-baseline — ข้าม"
+            exit 0
+          fi
+
+          # ดึงเฉพาะ "Closes #N" ที่ขึ้นต้นบรรทัดเท่านั้น (ตาม convention trailer ของ GitHub) —
+          # ห้ามจับ Closes/Fixes/Resolves #N ที่อยู่กลางประโยคอธิบาย เพราะ commit message
+          # อาจพูดถึง/ยกตัวอย่างข้อความ "Closes #N" เฉยๆ โดยไม่ได้ตั้งใจให้เป็น directive จริง
+          ISSUES=$(git log release-baseline..origin/$HEAD --pretty=%B | grep -oiE '^(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' | grep -oE '#[0-9]+' | sort -t'#' -k2 -n -u)
+
+          if [ -z "$ISSUES" ]; then
+            ISSUE_LINES="(ไม่พบเลข Issue อ้างอิงใน commit — ตรวจสอบด้วยตัวเอง)"
+          else
+            ISSUE_LINES=$(echo "$ISSUES" | sed 's/^/- Closes /')
+          fi
+
+          BODY="Release: $HEAD → $BASE
+
+          รวมงานที่ merge เข้า $HEAD และพร้อม deploy ขึ้น $BASE
+          (body นี้อัปเดตอัตโนมัติโดย workflow \`prepare-release-pr.yml\` ทุกครั้งที่มี commit ใหม่เข้า $HEAD)
+
+          $ISSUE_LINES"
+
+          EXISTING_PR=$(gh pr list --base "$BASE" --head "$HEAD" --state open --json number -q '.[0].number')
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "อัปเดต Release PR #$EXISTING_PR"
+            gh pr edit "$EXISTING_PR" --body "$BODY"
+          else
+            echo "สร้าง Release PR ใหม่"
+            gh pr create --base "$BASE" --head "$HEAD" --title "Release" --body "$BODY"
+          fi
