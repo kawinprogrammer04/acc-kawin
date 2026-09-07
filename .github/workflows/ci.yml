@@ -2,10 +2,78 @@ name: CI
 
 on:
   push:
-    branches: [Production]
+    branches: [main, production]
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 
 jobs:
+  backend-lint:
+    # template ขั้นต่ำ (py_compile ไฟล์ .py ที่แก้) — repo นี้ใช้ unittest ผ่าน
+    # docker (`make test-backend`) ไม่ใช่ pytest ในเครื่อง CI โดยตรงตอนนี้
+    # ยกระดับเป็นรัน test suite เต็มใน CI ได้ทีหลัง (ต้องตั้ง postgres service +
+    # .env ก่อน)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: หาไฟล์ .py ที่แก้
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+          fi
+          # push แรกของ branch ใหม่ หรือ force-push จาก API ref update บาง
+          # กรณี github.event.before เป็น all-zero/ไม่รู้จัก — fallback เป็น
+          # HEAD~1 ถ้าใช้ไม่ได้เลยก็ข้าม (ปลอดภัยกว่า fail ทั้ง job)
+          if ! git cat-file -e "$BASE" 2>/dev/null; then
+            BASE="$(git rev-parse HEAD~1 2>/dev/null || echo "$HEAD")"
+          fi
+          FILES="$(git diff --name-only --diff-filter=ACMR "$BASE" "$HEAD" -- 'backend/**/*.py' 2>/dev/null || true)"
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$FILES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.changed.outputs.files != ''
+        with:
+          python-version: '3.12'
+
+      - name: py_compile ไฟล์ที่แก้
+        if: steps.changed.outputs.files != ''
+        run: |
+          set -e
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            [ -f "$f" ] || continue
+            python -m py_compile "$f"
+          done <<< "${{ steps.changed.outputs.files }}"
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Type-check + build
+        working-directory: frontend
+        run: npm run build
+
   check-migrations:
     # Guards against the acc-kawin migration incidents of 2026-08-13 and
     # 2026-08-17: two Alembic revisions merged in from parallel branches both
@@ -14,7 +82,7 @@ jobs:
     # inside the backend entrypoint, so the container never went healthy and
     # the deploy job failed after already recreating containers. Catch it
     # here, before the deploy step ever touches the server.
-    if: github.ref == 'refs/heads/Production'
+    if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +97,7 @@ jobs:
           echo "$heads"
           head_count="$(grep -c '(head)' <<< "$heads")"
           if [ "$head_count" -ne 1 ]; then
-            echo "::error::Expected exactly 1 Alembic head, found $head_count. Rebase/merge the migration branches (fix down_revision chain) before pushing to Production."
+            echo "::error::Expected exactly 1 Alembic head, found $head_count. Rebase/merge the migration branches (fix down_revision chain) before pushing to production."
             exit 1
           fi
 
@@ -39,9 +107,11 @@ jobs:
     # push event, instead of a separate deploy.yml triggered by `workflow_run`.
     # `workflow_run` always reads the *default branch's* copy of the triggered
     # workflow file, not the branch that produced the event - so a fix landed
-    # only on Production could silently never take effect. See kawin-ffm's
-    # ci.yml / deploy history for the incident this avoids.
-    if: github.ref == 'refs/heads/Production'
+    # only on production could silently never take effect. See kawin-ffm's
+    # ci.yml / deploy history for the incident this avoids. Kept identical on
+    # `main` and `production` on purpose (guarded by the `if:` below) so a
+    # Release (main -> production) never silently drops this job.
+    if: github.ref == 'refs/heads/production'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to acc.kawinbrothers.com
@@ -56,7 +126,7 @@ jobs:
           # (/usr/local/bin/deploy-acc-kawin.sh) and nothing else. That script
           # hardcodes the acc-kawin project path, so this grant cannot reach
           # any other tenant/domain on the shared host. The script itself:
-          # git reset --hard origin/Production, pg_dump backup, docker compose
+          # git reset --hard origin/production, pg_dump backup, docker compose
           # build + up (backend's entrypoint runs `alembic upgrade head`
           # automatically before Uvicorn starts), then polls /api/health and
           # fails the job (non-zero exit) if it never turns healthy.
