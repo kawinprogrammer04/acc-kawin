@@ -1,0 +1,35 @@
+name: Require Issue Reference
+
+# บังคับกฎ "ทุก PR ต้องอ้างอิงเลข Issue" (เช่น "fix: ... (#123)")
+# ไม่งั้นข้อมูล KPI (lead time, bug escape rate) จะเชื่อม PR กลับไปหา Issue ไม่ได้
+#
+# หมายเหตุ: workflow นี้แค่ "แจ้งเตือน/fail check" เท่านั้น ยังไม่บังคับห้าม merge
+# ถ้าต้องการบังคับจริง เจ้าของ repo ต้องไปตั้งที่ Settings → Branches → Branch protection rules
+# → เพิ่ม "Require Issue Reference" เป็น required status check (ต้องมีสิทธิ์ admin ของ repo)
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  check-issue-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ตรวจว่า PR อ้างอิงเลข Issue หรือไม่
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const text = `${pr.title}\n${pr.body || ''}`;
+            const match = text.match(/#\d+/);
+
+            if (!match) {
+              core.setFailed(
+                'PR นี้ไม่ได้อ้างอิงเลข Issue เลย — กรุณาใส่ในหัวข้อหรือรายละเอียด PR เช่น "fix: แก้ปัญหา X (#123)" ' +
+                'ไม่งั้นข้อมูล KPI (lead time, bug escape rate) จะเชื่อม PR นี้กลับไปหา Issue ต้นทางไม่ได้ ' +
+                'และจะถูกนับเป็น N/A แทนการวัดผลจริง'
+              );
+              return;
+            }
+
+            console.log(`✔ พบการอ้างอิง Issue: ${match[0]}`);

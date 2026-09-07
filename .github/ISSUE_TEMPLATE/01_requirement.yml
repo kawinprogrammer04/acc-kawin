@@ -1,0 +1,100 @@
+name: "📋 Requirement / Feature Request"
+description: "ใช้สำหรับรับ Requirement ใหม่เข้าสู่ workflow (ตั้งแต่รับงานจนถึง estimate)"
+title: "[REQ] "
+labels: ["requirement", "needs-analysis"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        กรอกข้อมูลให้ครบทุกช่องที่มี ★ เพราะข้อมูลเหล่านี้จะถูกใช้คำนวณ KPI (Delivery, Planning Accuracy)
+        ถ้าช่องไหนยังไม่มีข้อมูล ให้เว้นว่างไว้ **ห้ามเดา**
+
+        **Estimate / Story Point เพิ่งเปลี่ยนเป็นบังคับกรอก** (เดิม optional) — ถ้ายัง analysis
+        ไม่เสร็จให้ประเมินคร่าวๆ ไปก่อน แล้วกลับมาแก้ตัวเลขให้แม่นทีหลังได้ (แก้ Issue body ได้เสมอ
+        ไม่ต้องปิด/เปิดใหม่)
+
+  - type: input
+    id: requester
+    attributes:
+      label: "★ ผู้ร้องขอ (Requester)"
+      description: "ชื่อคนหรือทีมที่ร้องของานนี้"
+      placeholder: "เช่น คุณสมชาย (ฝ่ายขาย) / ทีม Marketing"
+    validations:
+      required: true
+
+  - type: input
+    id: date-received
+    attributes:
+      label: "★ วันที่รับ Requirement"
+      description: "รูปแบบ YYYY-MM-DD"
+      placeholder: "2026-07-06"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: "★ รายละเอียด Requirement"
+      description: "อธิบายสิ่งที่ต้องการให้ชัดเจนที่สุด"
+      placeholder: "ต้องการให้ระบบ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: "★ Acceptance Criteria"
+      description: "เงื่อนไขที่ถือว่างานนี้ 'เสร็จสมบูรณ์' — เขียนเป็นข้อๆ"
+      placeholder: |
+        - [ ] ผู้ใช้สามารถ...
+        - [ ] ระบบต้องแสดง...
+    validations:
+      required: false
+
+  - type: input
+    id: estimate
+    attributes:
+      label: "★ Estimate (หน่วยเป็นวันเท่านั้น)"
+      description: "จำนวนวันที่คาดว่าจะใช้ (ตัวเลขล้วนๆ พอ ไม่ต้องมีหน่วย) — ใช้คำนวณ Estimation Accuracy เทียบกับ lead time จริง บังคับกรอกตอนสร้าง Issue ถ้ายัง analysis ไม่เสร็จ ให้ประเมินคร่าวๆ ไปก่อนแล้วแก้ตัวเลขทีหลังได้"
+      placeholder: "3"
+    validations:
+      required: true
+
+  - type: input
+    id: story-point
+    attributes:
+      label: "★ Story Point / ความซับซ้อน"
+      description: "ตัวเลขที่ทีมตกลงร่วมกันตอน planning (เช่น Fibonacci 1,2,3,5,8) ใช้คำนวณ Throughput/Complexity Trend — ไม่ใช่ตัวเลขที่กรอกเองคนเดียว"
+      placeholder: "5"
+    validations:
+      required: true
+
+  - type: input
+    id: due-date
+    attributes:
+      label: "Due Date"
+      description: "วันที่ตกลงกันว่าจะส่งมอบ (รูปแบบ YYYY-MM-DD)"
+      placeholder: "2026-07-20"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: "★ Priority"
+      description: "ระดับความสำคัญของงานนี้"
+      options:
+        - "P0 - Critical (ต้องทำทันที)"
+        - "P1 - High"
+        - "P2 - Medium"
+        - "P3 - Low"
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: "ความเสี่ยง/ข้อสงสัยที่พบระหว่าง Analysis"
+      placeholder: "เช่น ต้องรอ API จากทีม X, ยังไม่แน่ใจเรื่อง edge case Y"
+    validations:
+      required: false

@@ -1,0 +1,82 @@
+name: Flag Migration PR
+
+# แจ้งเตือนอัตโนมัติถ้า PR แตะไฟล์ migration (db/migrations/**)
+# ทำงานไม่ว่าใคร/เครื่องมือไหนเปิด PR — กันเคส "migration หลุดไปกับ PR ปกติ
+# โดยไม่มีใครสังเกตว่าต้องขออนุมัติแยกต่างหาก" ตามกฎใน planner.md/release.md
+#
+# ปรับ path pattern ("db/migrations/**") ให้ตรงกับ convention ของแต่ละ repo ก่อนใช้งานจริง
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  flag-migration:
+    runs-on: ubuntu-latest
+    steps:
+      # ไม่ใช้ actions/checkout — repo นี้มีไฟล์เก่าชื่อยาวเกิน filesystem limit
+      # (ดู CLAUDE.md: legacy upload files) ทำให้ checkout ทั้ง repo ล้มเหลวเสมอ
+      # ดึงรายชื่อไฟล์ที่เปลี่ยนผ่าน GitHub API แทน ไม่ต้องแตะ working tree เลย
+      - name: เช็คว่า PR แตะไฟล์ migration ไหม
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const migrationFiles = files
+              .map(f => f.filename)
+              .filter(f => f.startsWith('db/migrations/'));
+
+            core.setOutput('has_migration', migrationFiles.length > 0 ? 'true' : 'false');
+            core.setOutput('files', migrationFiles.join('\n'));
+
+      - name: ติด label + comment เตือน
+        if: steps.check.outputs.has_migration == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const files = `${{ steps.check.outputs.files }}`;
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['needs-migration-approval'],
+            });
+
+            const MARKER = '<!-- flag-migration-pr-bot -->';
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            if (!comments.data.some(c => c.body.includes(MARKER))) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: `${MARKER}\n⚠️ **PR นี้แก้ไฟล์ migration:**\n\`\`\`\n${files}\n\`\`\`\n\nการ apply migration ต้อง**ขออนุมัติแยกต่างหาก**จากการ merge โค้ดปกติเสมอ (ดูกฎใน kawinbrothers/kawin-dev-standards) — ห้าม apply บน production จนกว่าจะมีคนยืนยันชัดเจน ไม่ว่า PR นี้จะ merge แล้วหรือไม่ก็ตาม`,
+              });
+            }
+
+      - name: ลบ label ถ้าไม่มี migration แล้ว (เผื่อแก้ PR ทีหลัง)
+        if: steps.check.outputs.has_migration == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                name: 'needs-migration-approval',
+              });
+            } catch (e) { /* label อาจไม่มีอยู่แล้ว ไม่เป็นไร */ }

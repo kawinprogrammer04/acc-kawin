@@ -1,18 +1,3 @@
-# Kawin project instructions
-
-For every list, report, dashboard-with-table, or administration page, follow
-`docs/ui/kawin-data-list-standard.md` and reuse its shared components.
-
-“Kawin Data List Standard” and “same as `/expense-requests/accounting`” mean:
-auto-apply filters, the shared Thai preset date-range picker, filtered KPI and
-aggregate values, aligned table summary rows, and the standard page-size and
-pagination controls. Do not introduce an alternative pattern unless the user
-explicitly requests one.
-
----
-## กฎเพิ่มเติมจาก kawin-dev-standards (Issue/PR/KPI discipline)
-<!-- ต่อท้ายอัตโนมัติ — เนื้อหาด้านบนเส้นคั่นนี้คือของเดิมที่มีอยู่ก่อน -->
-
 # Dev workflow — GitHub Issue + KPI discipline (pipeline-agnostic)
 
 **หลักการ**: ระบบนี้ไม่ผูกกับ AI dev pipeline ตัวใดตัวหนึ่ง — จะใช้ subagent เขียนเอง, ใช้ GSD (`gsd-*` skills), ใช้ AI ตัวอื่น, หรือเขียนโค้ดเองล้วนๆ ก็ได้ สิ่งที่ **บังคับเหมือนกันทุกกรณี** คือวินัยเรื่อง GitHub Issue/PR ด้านล่างนี้ เพราะ `metrics/collect_metrics.py` คำนวณ KPI (evidence-based, ไม่กรอกมือ) จาก **GitHub Issue/PR เท่านั้น** — งานที่ไม่ผ่าน Issue หรือไม่อ้างอิงกันถูกฟิลด์ จะไม่ถูกนับ ไม่ว่าจะทำงานจริงมากแค่ไหนก็ตาม

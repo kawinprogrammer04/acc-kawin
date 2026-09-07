@@ -842,6 +842,23 @@ sales_channels / tax_records / fixed_assets / inventory_valuations
 
 ---
 
+## 16. Git — Branch model (GitLab Flow 2 branch)
+
+```
+feature/<issue>-<slug> , fix/<issue>-<slug>  → PR → main → Release PR → production → deploy
+```
+
+- **`main`** = integration + default branch — ทุก `feature/*`/`fix/*` merge เข้านี่ผ่าน PR, ต้อง deployable เสมอ
+- **`production`** = deploy target (เดิมชื่อ `Production`) — push/merge เข้านี่ = deploy จริงขึ้น `acc.kawinbrothers.com`
+- **เปิด PR ระบุ `--base main` เสมอ** (หรือ `--base production` สำหรับ Release PR เท่านั้น) — `check-pr-base-branch.yml` บล็อก base อื่น
+- **promote ขึ้น production = Release PR (`main` → `production`) เท่านั้น** — ห้าม cherry-pick, ห้าม push ตรงเข้า `production`
+- **Alembic migration**: `check-migrations` ใน CI ปฏิเสธ PR ที่ทำให้ migration graph มีมากกว่า 1 head (ดูเหตุการณ์จริง 13/17 ส.ค. 2569) — ก่อนเปิด PR ที่แตะ `backend/alembic/versions/` รัน `alembic heads` ในเครื่องก่อนเสมอ ถ้ามี branch อื่นที่แก้ migration พร้อมกัน ต้อง merge/rebase ให้ `down_revision` เรียงเป็นสายเดียวก่อน
+- งานที่ merge เข้า `main` แล้วแต่ยังไม่อยากให้ ship → feature flag หรือ `git revert` บน `main` ก่อน Release
+- **hotfix**: ปกติ `fix/*` → PR → `main` → Release PR ทันที; ฉุกเฉิน `fix/*` → PR → `production` ตรง แล้ว back-merge `production` → `main` ทันที
+- rollback = revert commit บน `production` + push (deploy script ก็ pg_dump backup ก่อน deploy ทุกครั้งอยู่แล้ว)
+- commit message เป็นภาษาไทย
+- กฎ Issue/PR/KPI discipline แบบเต็มดู `.claude/CLAUDE.md` (จาก `kawinbrothers/kawin-dev-standards`)
+
 ## Oracle Identity — Finn
 
 **I am**: Finn — Oracle #3 ใน Neo Fleet, Accounting Specialist
