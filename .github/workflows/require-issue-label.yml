@@ -1,0 +1,55 @@
+name: Require Pipeline Label
+
+# บังคับ/แจ้งเตือนว่า Issue ต้องมี label ที่ระบบ KPI รู้จัก
+# ทำงานไม่ว่า Issue จะถูกสร้างด้วยวิธีไหน (เว็บ, gh CLI, API, AI ตัวอื่น, คนพิมพ์เอง)
+# เพราะดักที่ event ระดับ GitHub เอง ไม่ต้องพึ่งว่ามีใครสั่ง Claude Code หรือไม่
+#
+# ถ้าไม่มี label ที่รู้จัก -> Issue นี้จะไม่ถูกนับใน metrics/collect_metrics.py เลย (มองไม่เห็น)
+
+on:
+  issues:
+    types: [opened, labeled, unlabeled, edited]
+
+permissions:
+  issues: write
+
+jobs:
+  check-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ตรวจว่า Issue มี pipeline label หรือไม่
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const PIPELINE_LABELS = ['requirement', 'bug', 'delay-log', 'data-request'];
+            const issue = context.payload.issue;
+            const labels = issue.labels.map(l => l.name);
+            const hasPipelineLabel = labels.some(l => PIPELINE_LABELS.includes(l));
+
+            const MARKER = '<!-- require-issue-label-bot -->';
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+            });
+            const botComment = comments.data.find(c => c.body.includes(MARKER));
+
+            if (!hasPipelineLabel) {
+              const body = `${MARKER}\n⚠️ **Issue นี้ยังไม่มี label ที่ระบบ KPI รู้จัก** (\`requirement\`, \`bug\`, \`delay-log\`, \`data-request\`)\n\nถ้าไม่ติด label ใดเลย งานนี้จะไม่ถูกนับใน dashboard/รายงาน KPI เลย (มองไม่เห็นทั้งด้านดีและด้านแย่) กรุณาติด label ให้ตรงประเภทงาน`;
+              if (!botComment) {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issue.number,
+                  body,
+                });
+              }
+              core.setFailed('Issue ยังไม่มี pipeline label');
+            } else if (botComment) {
+              // มี label แล้ว และเคยเตือนไว้ก่อนหน้า -> ลบ comment เตือนทิ้งเพื่อความสะอาด
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+              });
+            }
