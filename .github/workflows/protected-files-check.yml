@@ -1,0 +1,77 @@
+name: Protected Files Check
+
+# เช็คว่า PR แตะไฟล์ที่ CLAUDE.md ของ repo ระบุว่า "ห้ามแตะ" หรือไม่
+# (เช่น .env ที่เก็บ credential จริงของทุก tenant ใน dev.kwb-local)
+# ทำงานไม่ว่าใคร/เครื่องมือไหนเปิด PR — ต่างจากการเขียนกฎไว้ในเอกสารเฉยๆ
+#
+# ตั้งค่า: แก้ .github/protected-files.txt ในแต่ละ repo เอง (1 pattern ต่อบรรทัด)
+# ถ้าไม่มีไฟล์นี้ workflow จะข้ามการเช็ค (no-op) ไม่ fail
+#
+# Matching เป็นแบบ "ตรงทั้ง path" หรือ "ตรงชื่อไฟล์ (basename)" เท่านั้น ไม่ใช่ substring —
+# ป้องกัน false positive เช่น pattern ".env" ไปแมตช์ ".env.example" ผิดๆ (เจอเหตุการณ์จริงมาแล้ว)
+#
+# ไม่ใช้ actions/checkout — บาง repo (เช่น dev.kwb-local) มีไฟล์เก่าชื่อยาวเกิน
+# filesystem limit ติดอยู่ใน git history ทำให้ checkout ทั้ง repo ล้มเหลวเสมอ
+# ใช้ GitHub API ดึงทั้งรายชื่อไฟล์ที่เปลี่ยนและเนื้อหา config แทน
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  check-protected-files:
+    runs-on: ubuntu-latest
+    steps:
+      - name: เช็คว่า PR แตะไฟล์ต้องห้ามไหม
+        uses: actions/github-script@v7
+        with:
+          script: |
+            let configContent;
+            try {
+              const res = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/protected-files.txt',
+                ref: context.payload.pull_request.head.sha,
+              });
+              configContent = Buffer.from(res.data.content, 'base64').toString('utf-8');
+            } catch (e) {
+              console.log('ไม่มี .github/protected-files.txt ในโปรเจกต์นี้ — ข้ามการเช็ค');
+              return;
+            }
+
+            const patterns = configContent
+              .split('\n')
+              .map(l => l.trim())
+              .filter(l => l && !l.startsWith('#'));
+
+            if (patterns.length === 0) {
+              console.log('protected-files.txt ว่างเปล่า — ข้ามการเช็ค');
+              return;
+            }
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const changedPaths = files.map(f => f.filename);
+
+            const hits = changedPaths.filter(f => {
+              const basename = f.split('/').pop();
+              return patterns.some(p => f === p || basename === p);
+            });
+
+            if (hits.length > 0) {
+              core.setFailed(
+                `PR นี้แตะไฟล์ที่ถูกระบุว่าห้ามแตะใน .github/protected-files.txt:\n${hits.join('\n')}\n\n` +
+                `ดูเหตุผลใน CLAUDE.md ของ repo นี้ก่อนแก้ไฟล์เหล่านี้`
+              );
+              return;
+            }
+
+            console.log('ไม่พบไฟล์ต้องห้ามใน diff — ผ่าน');
