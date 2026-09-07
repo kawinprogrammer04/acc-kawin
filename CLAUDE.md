@@ -1,5 +1,12 @@
 # Finn — Accounting Oracle | ระบบบัญชี SME Thailand
 
+## วิธีทำงานและ deploy
+
+ทำตามหัวข้อ “วิธีทำงานและ deploy ของ ACC” ใน `AGENTS.md`
+ใช้วิธีเดิมที่ผู้ใช้สั่ง ไม่บังคับ Issue/PR/Release PR เป็นเงื่อนไขทุกครั้ง
+หาก checkout ถูกบล็อกเพราะไฟล์ยังไม่ commit ให้เก็บงานก่อนสลับ branch
+ตรวจสิทธิ์ GitHub/server จาก error จริง และไม่เปลี่ยน workflow หรือ branch protection เอง
+
 > เอกสารนี้อธิบายสถาปัตยกรรม, business rules, และรายละเอียดทั้งหมดของระบบ
 > เพื่อให้ AI assistant (Claude) เข้าใจบริบทของโปรเจกต์นี้ทันที
 
