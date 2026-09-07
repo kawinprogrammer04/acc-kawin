@@ -1,0 +1,44 @@
+name: Mark Release Baseline
+
+# ขยับ tag `release-baseline` มาชี้ที่ commit ของ integration branch ที่ถูก deploy ไปแล้วจริง
+# ทุกครั้งที่ Release PR (integration branch -> production branch) merge สำเร็จ — เป็นคู่กับ
+# prepare-release-pr.yml
+#
+# ทำไมต้องมี tag นี้: เทียบ "อะไร deploy ไปแล้ว" ด้วย commit ancestry (git log
+# production..integration) หรือ patch-id (git cherry) ไม่ทนต่อการ merge Release PR แบบ squash
+# (squash รวมหลาย Issue เป็น commit เดียว ทำให้จับคู่กับ commit เดี่ยวใน integration branch
+# ไม่ได้) tag นี้จึงเป็นแหล่งความจริงเดียวว่า integration branch เคย release ไปถึง commit ไหน
+# แล้ว — ห้ามขยับ tag นี้ด้วยมือ ปล่อยให้ workflow นี้จัดการเท่านั้น
+#
+# ก่อนใช้งานครั้งแรก ต้องสร้าง tag release-baseline เองที่ integration branch HEAD ปัจจุบัน
+# (ดู README.md หัวข้อ Release PR automation)
+#
+# main / production ถูกแทนที่ตอนติดตั้งโดย
+# install-github-workflows.sh (อ่านจาก .github/kawin-standards.yml → default main/production)
+# เปลี่ยน branch model ภายหลัง = ต้อง re-run install-github-workflows.sh
+
+on:
+  pull_request:
+    types: [closed]
+    branches: ["production"]
+
+permissions:
+  contents: write
+
+jobs:
+  mark-release-baseline:
+    if: github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ขยับ tag release-baseline ไปที่ commit ของ integration branch ที่เพิ่ง release
+        run: |
+          set -e
+          SHA="${{ github.event.pull_request.head.sha }}"
+          git tag -f release-baseline "$SHA"
+          git push origin refs/tags/release-baseline --force
+          echo "ขยับ release-baseline ไปที่ $SHA (จาก PR #${{ github.event.pull_request.number }})"
