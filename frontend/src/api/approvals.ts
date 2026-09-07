@@ -119,7 +119,7 @@ export interface RoutePreview {
 }
 
 export type ExpenseRequestStatus = "draft" | "pending" | "approved" | "pending_approval" | "ready_to_pay" |
-  "partially_paid" | "settlement_due" | "settlement_review" | "completed" | "returned_for_correction" |
+  "partially_paid" | "awaiting_slip" | "settlement_due" | "settlement_review" | "completed" | "returned_for_correction" |
   "rejected" | "pending_adjustment_approval" | "cancelled" | "accounting_review" | "paid";
 
 export interface ExpenseRequest {
@@ -654,6 +654,8 @@ export const expenseNotificationsApi = {
 };
 
 export const expenseAccountingApi = {
+  setTransferred: (id: string, transferred: boolean): Promise<{ status: ExpenseRequestStatus }> =>
+    api.put(`/expense-requests/${id}/accounting/transfer`, { transferred }).then(r => r.data),
   list: (params?: AccountingFilters, page = 1, limit = 25): Promise<AccountingListResponse> =>
     api.get("/expense-requests/accounting/list", {
       params: { ...params, limit, offset: (page - 1) * limit },

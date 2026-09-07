@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Building2, Clipboard, Eraser, FileSignature, FileSpreadsheet,
+  Building2, Clipboard, Eraser, FileSignature, FileSpreadsheet, FileText,
   Landmark, Loader2, RotateCcw, Settings2, Wallet, WalletCards,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -76,7 +76,7 @@ function readStoredFilters(): FilterForm {
 
 const statusLabel: Record<string, string> = {
   pending_approval: "กำลังอนุมัติ", pending_adjustment_approval: "กำลังอนุมัติส่วนต่าง",
-  accounting_review: "รายการเก่ารอส่งต่อ", ready_to_pay: "พร้อมจ่าย", partially_paid: "จ่ายบางส่วน",
+  accounting_review: "รายการเก่ารอส่งต่อ", ready_to_pay: "พร้อมจ่าย", awaiting_slip: "รอแนบสลิป", partially_paid: "จ่ายบางส่วน",
   paid: "จ่ายแล้ว", settlement_due: "รอเคลียร์", settlement_review: "ตรวจเคลียร์",
   completed: "เสร็จสิ้น",
 };
@@ -86,6 +86,7 @@ const statusColor: Record<string, string> = {
   pending_adjustment_approval: "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-200",
   accounting_review: "bg-cyan-100 text-cyan-800 dark:bg-cyan-950/60 dark:text-cyan-200",
   ready_to_pay: "bg-orange-700 text-white dark:bg-orange-800",
+  awaiting_slip: "bg-violet-100 text-violet-800 dark:bg-violet-950/60 dark:text-violet-200",
   partially_paid: "bg-teal-100 text-teal-800 dark:bg-teal-950/60 dark:text-teal-200",
   paid: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-200",
   settlement_due: "bg-yellow-200 text-yellow-900 dark:bg-yellow-800 dark:text-yellow-50",
@@ -131,6 +132,7 @@ function toApiFilters(filters: FilterForm): AccountingFilters {
 // }
 
 export function ExpenseAccountingPage() {
+  const { can } = useAuth();
   const { companies, currentCompany, setCurrentCompany } = useCompany();
   const [rows, setRows] = useState<AccountingRequest[]>([]);
   const [total, setTotal] = useState(0);
@@ -145,6 +147,7 @@ export function ExpenseAccountingPage() {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [updatingTransferId, setUpdatingTransferId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!currentCompany) return;
@@ -191,6 +194,17 @@ export function ExpenseAccountingPage() {
     sessionStorage.removeItem(FILTER_STORAGE_KEY); setFilters(cleared); setApplied(cleared);
   };
 
+  const setTransferred = async (row: AccountingRequest, transferred: boolean) => {
+    setUpdatingTransferId(row.id); setError(""); setNotice("");
+    try {
+      const result = await expenseAccountingApi.setTransferred(row.id, transferred);
+      setRows(current => current.map(item => item.id === row.id ? { ...item, status: result.status } : item));
+      setNotice(`${row.request_no}: ${statusLabel[result.status] || result.status}`);
+      await load();
+    } catch (e) { setError(getApiErrorMessage(e, "บันทึกสถานะการโอนไม่สำเร็จ")); }
+    finally { setUpdatingTransferId(null); }
+  };
+
   const exportExcel = async () => {
     setExporting(true); setError("");
     try { await expenseAccountingApi.exportUrl(toApiFilters(applied)); }
@@ -214,10 +228,11 @@ export function ExpenseAccountingPage() {
       <button type="button" onClick={exportExcel} disabled={exporting} aria-busy={exporting} className="group relative flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-emerald-500/50 disabled:cursor-wait disabled:opacity-60 md:w-auto">{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4 transition-transform group-hover:scale-110" />}ส่งออก Excel</button>
     </div>
 
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
       <DataListKpiCard label="กำลังอนุมัติ" value={stats.pending_approval_count || 0} tone="bg-violet-100 text-violet-700 dark:bg-violet-950" icon={FileSignature} />
       <DataListKpiCard label="รายการเก่ารอส่งต่อ" value={stats.accounting_review_count || 0} tone="bg-cyan-100 text-cyan-700 dark:bg-cyan-950" icon={RotateCcw} />
       <DataListKpiCard label="พร้อมจ่าย" value={stats.ready_to_pay_count || 0} tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-950" icon={WalletCards} />
+      <DataListKpiCard label="รอแนบสลิป" value={stats.awaiting_slip_count || 0} tone="bg-violet-100 text-violet-700 dark:bg-violet-950" icon={FileText} />
       <DataListKpiCard label="จ่ายบางส่วน" value={stats.partially_paid_count || 0} tone="bg-teal-100 text-teal-700 dark:bg-teal-950" icon={WalletCards} />
       <DataListKpiCard label="รอตรวจเคลียร์" value={stats.settlement_review_count || 0} tone="bg-amber-100 text-amber-700 dark:bg-amber-950" icon={Landmark} />
       <DataListKpiCard label="ยอดโอนรวม" value={Number(stats.transfer_amount_total || 0)} currency tone="bg-emerald-100 text-emerald-700 dark:bg-emerald-950" icon={Wallet} />
@@ -261,6 +276,13 @@ export function ExpenseAccountingPage() {
         <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><p className="font-bold">{row.expense_type_name || "-"}</p></td>
         <td className="px-4 py-4">
           <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${statusColor[row.status] || "bg-muted"}`}>{statusLabel[row.status] || row.status}</span>
+          {["ready_to_pay", "partially_paid", "awaiting_slip"].includes(row.status) && can("expense_accounting") && <label className="mt-2 flex min-h-10 cursor-pointer items-center gap-2 whitespace-nowrap text-xs font-bold">
+            <input type="checkbox" checked={row.status === "awaiting_slip"} disabled={loading || Boolean(updatingTransferId)}
+              onChange={event => setTransferred(row, event.target.checked)} aria-label={`ทำรายการโอนแล้ว ${row.request_no}`}
+              className="h-4 w-4 shrink-0 rounded border-input text-primary disabled:cursor-wait" />
+            ทำรายการโอนแล้ว
+            {updatingTransferId === row.id && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          </label>}
           {row.installment_no && <span className="ml-1.5 inline-flex rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">งวด {row.installment_no}</span>}
           {row.installment_chain_status === "in_progress" && <p className="mt-1 text-xs font-bold text-orange-600">แบ่งจ่ายยังไม่ครบ</p>}
         </td>
