@@ -1,0 +1,57 @@
+name: "⏱️ Delay / Scope Change Log"
+description: "ใช้บันทึกเมื่องานเกิน Due Date หรือ Requirement เปลี่ยนระหว่างทาง — เพื่อแยกสาเหตุก่อนคิด KPI"
+title: "[DELAY] "
+labels: ["delay-log"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        เอกสารนี้ใช้แยกสาเหตุความล่าช้า **ก่อน**ให้คะแนน Delivery KPI ตามหลัก elimination
+        (เช็คสาเหตุภายนอกก่อนเสมอ ก่อนสรุปว่าเป็นเรื่อง performance)
+
+  - type: input
+    id: related-issue
+    attributes:
+      label: "★ Related Issue"
+      description: "เลข Issue ที่ล่าช้าหรือมีการเปลี่ยน scope"
+      placeholder: "#123"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: cause
+    attributes:
+      label: "★ สาเหตุหลัก"
+      options:
+        - "Requirement เปลี่ยนระหว่างทาง"
+        - "รอข้อมูล/dependency จากทีมอื่น"
+        - "ปัญหาทางเทคนิคที่ไม่คาดคิด"
+        - "ประเมินเวลาผิด (Estimate ผิดพลาด)"
+        - "ประสิทธิภาพผู้พัฒนา"
+    validations:
+      required: true
+
+  - type: input
+    id: tagged-by
+    attributes:
+      label: "★ ผู้ติด Tag สาเหตุนี้"
+      description: "ชื่อผู้ที่ยืนยันสาเหตุ (PM สำหรับ requirement เปลี่ยน, โปรแกรมเมอร์+reviewer สำหรับปัญหาเทคนิค)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: "★ หลักฐานอ้างอิง"
+      description: "เช่น comment ที่ถามแล้วรอตอบกี่วัน, link การเปลี่ยน requirement"
+      placeholder: "ถามทีม Backend วันที่ 3 ก.ค. รอตอบถึงวันที่ 8 ก.ค. (5 วัน) ดู comment ที่ #45"
+    validations:
+      required: true
+
+  - type: input
+    id: delay-days
+    attributes:
+      label: "จำนวนวันที่ล่าช้า"
+      placeholder: "5"
+    validations:
+      required: false
