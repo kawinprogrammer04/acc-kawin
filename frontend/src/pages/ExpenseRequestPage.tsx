@@ -9,7 +9,7 @@ import { BankLogo } from "@/components/ui/bank-logo";
 import { DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
 import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
-import { PresetDateRangeFilter } from "@/components/data-list/PresetDateRangeFilter";
+import { DataListDateFilterRow } from "@/components/data-list/DataListDateFilterRow";
 import {
   dataListFilterControlClass,
   dataListFilterPanelClass,
@@ -240,12 +240,11 @@ export function ExpenseRequestPage() {
       </div>
 
       <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl`}>
-        <div className="grid items-end gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,2.2fr)]">
-          <PresetDateRangeFilter dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))} />
+        <DataListDateFilterRow dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))}>
           <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
             <input className={dataListFilterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ ชื่อผู้รับ หรือธนาคาร" />
           </label>
-        </div>
+        </DataListDateFilterRow>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           <DataListMultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={STATUS_FILTER_OPTIONS.map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
           <DataListMultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={types.filter(type => type.is_active).map(type => ({ value: String(type.id), label: type.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
