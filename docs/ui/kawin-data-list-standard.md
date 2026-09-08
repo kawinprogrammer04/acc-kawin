@@ -21,6 +21,7 @@ Apply this standard to pages containing one or more of these elements:
 Do not copy or independently recreate an existing pattern.
 
 - Thai preset date range: `frontend/src/components/data-list/PresetDateRangeFilter.tsx`
+- Date followed by search: `frontend/src/components/data-list/DataListDateFilterRow.tsx`
 - Single/multi-select filters: `frontend/src/components/data-list/DataListFilterSelect.tsx`
 - KPI cards: `frontend/src/components/data-list/DataListKpiCard.tsx`
 - Pagination and page size: `frontend/src/components/data-list/DataListPagination.tsx`
@@ -51,6 +52,11 @@ into `frontend/src/components/data-list/` and use it from both pages.
 8. When a date-range filter exists, it must be the first filter in visual and
    keyboard order. On desktop, place it immediately before the text-search
    field; on small screens, place it directly above the text-search field.
+   Use `DataListDateFilterRow` for the shared preset-date/search row. Keep
+   status, company, department, and other filters after this row. Arrange the
+   JSX in that order; do not use CSS `order` or positive `tabIndex` to simulate it.
+   Single-date, month, year, and accounting-period filters also precede other
+   filters. This ordering rule applies to filters, not dates in entry/edit forms.
 
 ## Date Range Picker with Presets
 
@@ -71,6 +77,9 @@ Required presets, in this order:
 Behavior:
 
 - Default to the current day unless the page specification says otherwise.
+- `/crm-cashflow/invoices` defaults and resets to “ไม่กรองวันที่” so older
+  invoices awaiting review remain visible. It uses the same preset picker and
+  date-before-search layout as the reference page.
 - Display selected dates in Thai with Buddhist Era year (พ.ศ.).
 - Choosing “กำหนดเอง” displays one calendar to the right of the preset list on
   desktop and below it on small screens.
