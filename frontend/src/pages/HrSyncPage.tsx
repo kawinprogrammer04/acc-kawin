@@ -2,9 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, Link } from "react-router-dom";
 import {
   AlertTriangle, CheckCircle2, Clock3, DatabaseBackup, FileCheck2,
-  Loader2, Play, RefreshCcw, ShieldCheck, XCircle,
+  Loader2, Play, RefreshCcw, ShieldCheck, Upload, XCircle,
 } from "lucide-react";
-import { hrSyncApi, type HrSyncConfiguration, type HrSyncJob } from "@/api/hrSync";
+import {
+  hrSyncApi, type HrBundleApplyResult, type HrBundlePreflight,
+  type HrSyncConfiguration, type HrSyncJob,
+} from "@/api/hrSync";
 import { getApiErrorMessage } from "@/api/client";
 import { useAuth } from "@/context/AuthContext";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -101,6 +104,11 @@ export function HrSyncPage() {
   const [starting, setStarting] = useState<"preflight" | "apply" | null>(null);
   const [error, setError] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [bundleFile, setBundleFile] = useState<File | null>(null);
+  const [bundlePreflight, setBundlePreflight] = useState<HrBundlePreflight | null>(null);
+  const [bundleResult, setBundleResult] = useState<HrBundleApplyResult | null>(null);
+  const [bundleStarting, setBundleStarting] = useState<"preflight" | "apply" | null>(null);
+  const [bundleConfirmOpen, setBundleConfirmOpen] = useState(false);
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -156,6 +164,31 @@ export function HrSyncPage() {
     } finally { setStarting(null); }
   }
 
+  async function startBundlePreflight() {
+    if (!bundleFile) return;
+    setBundleStarting("preflight"); setError(""); setBundleResult(null);
+    try {
+      setBundlePreflight(await hrSyncApi.bundlePreflight(bundleFile));
+    } catch (requestError) {
+      setBundlePreflight(null);
+      setError(getApiErrorMessage(requestError, "ตรวจสอบ bundle ไม่สำเร็จ"));
+    } finally { setBundleStarting(null); }
+  }
+
+  async function startBundleApply() {
+    if (!bundlePreflight) return;
+    setBundleStarting("apply"); setError("");
+    try {
+      const result = await hrSyncApi.bundleApply(bundlePreflight.staging_token);
+      setBundleResult(result);
+      setBundlePreflight(null);
+      setBundleFile(null);
+      setBundleConfirmOpen(false);
+    } catch (requestError) {
+      setError(getApiErrorMessage(requestError, "นำเข้า bundle ไม่สำเร็จ"));
+    } finally { setBundleStarting(null); }
+  }
+
   return (
     <div className="space-y-5 p-6">
       <PageHeader
@@ -197,6 +230,65 @@ export function HrSyncPage() {
               </p>
             </div>
           ) : null}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Upload className="h-5 w-5 text-primary" /> นำเข้าเฉพาะรายการจาก Local
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            ใช้เมื่อเตรียมข้อมูลและไฟล์ครบใน Local แล้ว ระบบจะตรวจ checksum และความขัดแย้งก่อน
+            โดยยังไม่แก้ ACC จากนั้นจึงสำรองฐานข้อมูลและนำเข้าแพ็กเกจเดิมที่ผ่านการตรวจ
+          </p>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <label className="block flex-1 text-sm font-medium">
+              ไฟล์ ZIP bundle
+              <input
+                className="mt-1 block w-full rounded-md border bg-background px-3 py-2 text-sm"
+                type="file"
+                accept=".zip,application/zip"
+                onChange={(event) => {
+                  setBundleFile(event.target.files?.[0] || null);
+                  setBundlePreflight(null);
+                  setBundleResult(null);
+                }}
+                disabled={Boolean(bundleStarting)}
+              />
+            </label>
+            <Button
+              variant="outline"
+              onClick={startBundlePreflight}
+              disabled={!bundleFile || Boolean(bundleStarting)}
+            >
+              {bundleStarting === "preflight"
+                ? <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                : <FileCheck2 className="mr-2 h-4 w-4" />}
+              ตรวจสอบแพ็กเกจ
+            </Button>
+          </div>
+          {bundlePreflight && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              <p className="font-medium">ตรวจสอบผ่าน — ยังไม่มีข้อมูลถูกเปลี่ยน</p>
+              <p className="mt-1">
+                รายการเบิก {bundlePreflight.counts.requests ?? 0} รายการ ·
+                ไฟล์แนบ {bundlePreflight.counts.attachments ?? 0} รายการ ·
+                การจ่าย {bundlePreflight.counts.payments ?? 0} รายการ
+              </p>
+              <Button className="mt-3" onClick={() => setBundleConfirmOpen(true)}>
+                <DatabaseBackup className="mr-2 h-4 w-4" /> ยืนยันสำรองและนำเข้า
+              </Button>
+            </div>
+          )}
+          {bundleResult && (
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              <p className="font-medium">นำเข้าแพ็กเกจสำเร็จ</p>
+              <p className="mt-1">Backup: {bundleResult.backup_file_name}</p>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -347,6 +439,32 @@ export function HrSyncPage() {
             <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={Boolean(starting)}>ยกเลิก</Button>
             <Button onClick={startApply} disabled={Boolean(starting) || hasConflicts}>
               {starting === "apply" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              สำรองและนำเข้า
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bundleConfirmOpen} onOpenChange={(open) => !bundleStarting && setBundleConfirmOpen(open)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-600" /> ยืนยันนำเข้าแพ็กเกจ Local
+            </DialogTitle>
+            <DialogDescription>
+              ระบบจะตรวจแพ็กเกจเดิมซ้ำ สร้าง backup ACC แล้วนำเข้าด้วย transaction เดียว
+            </DialogDescription>
+          </DialogHeader>
+          {bundlePreflight && (
+            <div className="mx-6 rounded-lg border bg-slate-50 p-3 text-sm">
+              รายการเบิก {bundlePreflight.counts.requests ?? 0} รายการ ·
+              ไฟล์แนบ {bundlePreflight.counts.attachments ?? 0} รายการ
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBundleConfirmOpen(false)} disabled={Boolean(bundleStarting)}>ยกเลิก</Button>
+            <Button onClick={startBundleApply} disabled={Boolean(bundleStarting) || !bundlePreflight}>
+              {bundleStarting === "apply" && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               สำรองและนำเข้า
             </Button>
           </DialogFooter>

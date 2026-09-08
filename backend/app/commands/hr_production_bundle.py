@@ -137,7 +137,11 @@ def _attach_username(approvers: list[dict[str, Any]], usernames: dict[int, str])
     return output
 
 
-async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
+async def export_bundle(
+    bundle_path: Path,
+    include_sensitive: bool,
+    hr_request_ids: set[int] | None = None,
+) -> None:
     if not include_sensitive:
         raise ValueError(
             "export contains bank accounts; rerun with --include-sensitive and keep the bundle private"
@@ -154,10 +158,12 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
 
         users = await _rows(db, """
             SELECT jsonb_build_object(
-                'hr_user_id', u.id, 'username', u.username, 'email', u.email,
+                'hr_user_id', COALESCE(hr_map.hr_user_id, u.id),
+                'username', u.username, 'email', u.email,
                 'full_name', u.full_name, 'is_active', u.is_active
             )
             FROM users u
+            LEFT JOIN hr_user_import_map hr_map ON hr_map.user_id=u.id
             WHERE u.username <> 'admin'
             ORDER BY u.id
         """)
@@ -233,6 +239,26 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             LEFT JOIN users cancelled ON cancelled.id=r.cancelled_by
             ORDER BY m.hr_expense_request_id
         """)
+        if hr_request_ids:
+            available = {int(row["hr_expense_request_id"]) for row in requests}
+            missing = hr_request_ids - available
+            if missing:
+                raise ValueError(
+                    "local ACC has no HR import for request ids: "
+                    + ", ".join(str(value) for value in sorted(missing))
+                )
+            requests = [
+                row for row in requests
+                if int(row["hr_expense_request_id"]) in hr_request_ids
+            ]
+        selected_request_ids = {str(row["id"]) for row in requests}
+        selected_expense_type_codes = {
+            str(row["expense_type_code"]) for row in requests
+        }
+        expense_types = [
+            row for row in expense_types
+            if str(row["code"]) in selected_expense_type_codes
+        ]
         encrypted = (await db.execute(text("""
             SELECT m.hr_expense_request_id, r.bank_account_number_encrypted,
                    r.recipient_tax_id_encrypted
@@ -240,6 +266,8 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             JOIN expense_requests r ON r.id=m.expense_request_id
         """))).mappings().all()
         for row in encrypted:
+            if hr_request_ids and int(row["hr_expense_request_id"]) not in hr_request_ids:
+                continue
             bank_cipher = row["bank_account_number_encrypted"]
             tax_cipher = row["recipient_tax_id_encrypted"]
             bank = decrypt_account_number(bank_cipher)
@@ -259,6 +287,7 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             JOIN hr_expense_request_import_map m ON m.expense_request_id=i.expense_request_id
             ORDER BY i.expense_request_id, i.revision, i.sort_order, i.id
         """)
+        items = [row for row in items if str(row["request_id"]) in selected_request_ids]
         attachments = await _rows(db, """
             SELECT (to_jsonb(a) - 'company_id' - 'requirement_id' - 'uploaded_by'
                     - 'file_path' - 'signed_file_path')
@@ -268,6 +297,10 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             JOIN users u ON u.id=a.uploaded_by
             ORDER BY a.expense_request_id, a.revision, a.created_at, a.id
         """)
+        attachments = [
+            row for row in attachments
+            if str(row["expense_request_id"]) in selected_request_ids
+        ]
         attachment_paths = (await db.execute(text("""
             SELECT a.id, a.file_path, a.signed_file_path
             FROM expense_request_attachments a
@@ -296,6 +329,10 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             JOIN hr_expense_request_import_map m ON m.expense_request_id=s.expense_request_id
             ORDER BY s.expense_request_id, s.revision, s.step_no
         """)
+        legacy_steps = [
+            row for row in legacy_steps
+            if str(row["expense_request_id"]) in selected_request_ids
+        ]
         for row in legacy_steps:
             row["approvers"] = _attach_username(list(row.get("approvers") or []), usernames)
 
@@ -311,6 +348,10 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             LEFT JOIN users voider ON voider.id=p.voided_by
             ORDER BY p.created_at, p.id
         """)
+        payments = [
+            row for row in payments
+            if str(row["expense_request_id"]) in selected_request_ids
+        ]
         payment_paths = (await db.execute(text("""
             SELECT p.id, p.proof_file_path FROM expense_payments p
             JOIN hr_expense_request_import_map m ON m.expense_request_id=p.expense_request_id
@@ -331,6 +372,10 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             LEFT JOIN users reviewer ON reviewer.id=s.reviewed_by
             ORDER BY s.created_at, s.id
         """)
+        settlements = [
+            row for row in settlements
+            if str(row["expense_request_id"]) in selected_request_ids
+        ]
         settlement_paths = (await db.execute(text("""
             SELECT s.id, s.refund_proof_path FROM expense_settlements s
             JOIN hr_expense_request_import_map m ON m.expense_request_id=s.expense_request_id
@@ -345,6 +390,11 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             JOIN hr_expense_request_import_map m ON m.expense_request_id=s.expense_request_id
             ORDER BY i.settlement_id, i.sort_order, i.id
         """)
+        selected_settlement_ids = {str(row["id"]) for row in settlements}
+        settlement_items = [
+            row for row in settlement_items
+            if str(row["settlement_id"]) in selected_settlement_ids
+        ]
         histories = await _rows(db, """
             SELECT (to_jsonb(h) - 'id' - 'company_id' - 'actor_user_id')
                 || jsonb_build_object(
@@ -356,6 +406,75 @@ async def export_bundle(bundle_path: Path, include_sensitive: bool) -> None:
             LEFT JOIN users actor ON actor.id=h.actor_user_id
             ORDER BY h.expense_request_id, h.created_at, h.id
         """)
+        histories = [
+            row for row in histories
+            if str(row["expense_request_id"]) in selected_request_ids
+        ]
+
+        if hr_request_ids:
+            selected_usernames = {
+                str(value)
+                for row in requests
+                for value in (
+                    row.get("requester_username"), row.get("cancelled_by_username"),
+                )
+                if value
+            }
+            for row in attachments:
+                if row.get("uploaded_by_username"):
+                    selected_usernames.add(str(row["uploaded_by_username"]))
+            for row in legacy_steps:
+                selected_usernames.update(
+                    str(approver["username"])
+                    for approver in row.get("approvers") or []
+                    if approver.get("username")
+                )
+            for row in payments:
+                selected_usernames.update(
+                    str(value) for value in (
+                        row.get("recorded_by_username"), row.get("voided_by_username"),
+                    ) if value
+                )
+            for row in settlements:
+                selected_usernames.update(
+                    str(value) for value in (
+                        row.get("submitted_by_username"), row.get("reviewed_by_username"),
+                    ) if value
+                )
+            for row in histories:
+                if row.get("actor_username"):
+                    selected_usernames.add(str(row["actor_username"]))
+
+            users = [row for row in users if str(row["username"]) in selected_usernames]
+            memberships = [
+                row for row in memberships
+                if str(row["username"]) in selected_usernames
+            ]
+            user_positions = [
+                row for row in user_positions
+                if str(row["username"]) in selected_usernames
+            ]
+            selected_position_names = {
+                str(row["requester_position_name"]) for row in requests
+            } | {str(row["position_name"]) for row in user_positions}
+            positions = [
+                row for row in positions
+                if str(row["name"]) in selected_position_names
+            ]
+            selected_department_names = {
+                str(value)
+                for row in requests
+                for value in (row.get("department_name"),)
+                if value
+            } | {
+                str(row["department_name"])
+                for row in memberships + positions
+                if row.get("department_name")
+            }
+            departments = [
+                row for row in departments
+                if str(row["name"]) in selected_department_names
+            ]
 
     data = {
         "users": users,
@@ -1120,13 +1239,21 @@ def main() -> None:
     export_parser = subparsers.add_parser("export", help="export HR data from local ACC")
     export_parser.add_argument("bundle_path", type=Path)
     export_parser.add_argument("--include-sensitive", action="store_true")
+    export_parser.add_argument(
+        "--hr-request-id", type=int, action="append", default=[],
+        help="export only the selected HR request id; may be repeated",
+    )
     import_parser = subparsers.add_parser("import", help="preflight or apply a bundle")
     import_parser.add_argument("bundle_path", type=Path)
     import_parser.add_argument("--apply", action="store_true", help="commit changes; omitted means read-only preflight")
     import_parser.add_argument("--rollback-after-verify", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.command == "export":
-        asyncio.run(export_bundle(args.bundle_path, args.include_sensitive))
+        asyncio.run(export_bundle(
+            args.bundle_path,
+            args.include_sensitive,
+            set(args.hr_request_id) or None,
+        ))
     else:
         asyncio.run(import_bundle(args.bundle_path, args.apply, args.rollback_after_verify))
 
