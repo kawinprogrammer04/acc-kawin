@@ -298,6 +298,7 @@ export function ExpenseRequestDetailPage() {
 
   const pendingStep = useMemo(() => request?.steps.find((step) => {
     if (step.status !== "pending") return false;
+    if (user?.is_platform_admin) return true;
     if (step.approvers?.length) {
       return step.approvers.some((approver) => approver.user_id === user?.id && approver.status === "pending");
     }
