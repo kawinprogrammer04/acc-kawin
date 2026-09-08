@@ -42,6 +42,13 @@ const hrExpenseRequestsNav: NavLeaf = {
   external: true,
 };
 
+const signatureSettingsNav: NavLeaf = {
+  key: "signature_settings",
+  label: "จัดการลายเซ็น",
+  href: "/settings/signature",
+  icon: PenSquare,
+};
+
 const cashflowNav: NavItem[] = [
   { key: "dashboard", label: "แดชบอร์ด", href: "/", icon: LayoutDashboard },
   { key: "income", label: "รายรับ", href: "/income", icon: ArrowUpCircle },
@@ -66,6 +73,7 @@ const cashflowNav: NavItem[] = [
   },
   hrExpenseRequestsNav,
   { key: "approvals_inbox", label: "รออนุมัติของฉัน", href: "/approvals/inbox", icon: Inbox },
+  signatureSettingsNav,
   { key: "activity_logs", label: "Activity Log", href: "/activity-logs", icon: ClipboardList },
 ];
 
@@ -275,7 +283,7 @@ function filterNavItems(items: NavItem[], canView: (key: string) => boolean): Na
         const children = item.children.filter(child => canView(child.key));
         return children.length ? { ...item, children } : null;
       }
-      return item.external || canView(item.key) ? item : null;
+      return item.external || item.key === signatureSettingsNav.key || canView(item.key) ? item : null;
     })
     .filter(Boolean) as NavItem[];
 }
@@ -350,6 +358,19 @@ function DynamicNav({
     return acc;
   }, {});
 
+  // Signature management belongs to the user's finance workflow, but it is a
+  // personal setting and therefore is not governed by company menu permissions.
+  const financeGroup = groups.finance ?? { label: "การเงิน", items: [] };
+  if (!financeGroup.items.some(item => item.href === signatureSettingsNav.href)) {
+    const approvalIndex = financeGroup.items.findIndex(item => item.key === "approvals_inbox");
+    financeGroup.items.splice(
+      approvalIndex >= 0 ? approvalIndex + 1 : financeGroup.items.length,
+      0,
+      signatureSettingsNav,
+    );
+  }
+  groups.finance = financeGroup;
+
   const cashflow = [...(groups.cashflow?.items ?? [])];
   const hasReconciliation = cashflow.some(item => item.href === "/bank-reconciliation");
   const walletIndex = cashflow.findIndex(item => item.key === "wallet_accounts");
@@ -363,6 +384,7 @@ function DynamicNav({
   }
   const otherGroups = Object.entries(groups).filter(([key]) => key !== "cashflow");
   const groupIcon: Record<string, React.ComponentType<any>> = {
+    finance: Wallet,
     statement: FileSearch,
     accounting: BookOpen,
     admin: Settings,
@@ -619,16 +641,6 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
             </p>
           </div>
         </div>
-        <NavLink
-          to="/settings/signature"
-          className={({ isActive }) => cn(
-            "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-            isActive ? activeCls : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
-        >
-          <PenSquare className="h-4 w-4" />
-          จัดการลายเซ็น
-        </NavLink>
         <button
           onClick={logout}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
