@@ -73,6 +73,7 @@ class UserMeOut(BaseModel):
     allowed_permissions: list[str] = []
     permission_sets: list[dict] = []
     has_saved_signature: bool = False
+    signature_prompt_dismissed: bool = False
     model_config = {"from_attributes": True}
 
 
@@ -402,6 +403,7 @@ async def get_me(
         "allowed_permissions": allowed_permissions,
         "permission_sets": permission_sets,
         "has_saved_signature": bool(current_user.signature_path),
+        "signature_prompt_dismissed": bool(current_user.signature_prompt_dismissed),
     }
 
 
@@ -431,6 +433,17 @@ async def save_my_signature(
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"has_saved_signature": True}
+
+
+@router.post("/me/signature-prompt/dismiss")
+async def dismiss_my_signature_prompt(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Permanently stop prompting this user to save a reusable signature."""
+    current_user.signature_prompt_dismissed = True
+    await db.commit()
+    return {"signature_prompt_dismissed": True}
 
 
 @router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
