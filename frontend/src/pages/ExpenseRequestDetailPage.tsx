@@ -559,7 +559,7 @@ export function ExpenseRequestDetailPage() {
 
   return <div className="mx-auto max-w-6xl space-y-5 p-6">
     <SavedSignatureSetupDialog
-      open={Boolean(pendingStep) && user?.has_saved_signature === false && !signaturePromptSkipped}
+      open={Boolean(pendingStep && user && user.has_saved_signature !== true && !signaturePromptSkipped)}
       onSkip={() => setSignaturePromptSkipped(true)}
       onSaved={refreshUser}
     />

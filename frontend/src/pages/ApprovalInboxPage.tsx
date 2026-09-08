@@ -32,7 +32,7 @@ const inboxStatusStyle: Record<InboxStatus, string> = {
 };
 
 export function ApprovalInboxPage() {
-  const { user, can, refreshUser } = useAuth();
+  const { user, refreshUser } = useAuth();
   const { currentCompany } = useCompany();
   const [items, setItems] = useState<InboxItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,6 +73,7 @@ export function ApprovalInboxPage() {
   const statusLabel = statuses.length === 0
     ? "ทุกสถานะ"
     : statuses.map(status => inboxStatusOptions.find(option => option.value === status)?.label || status).join(", ");
+  const hasPendingApproval = items.some(item => item.status === "pending");
 
   const changeStatuses = (nextStatuses: string[]) => {
     setPage(1);
@@ -82,7 +83,7 @@ export function ApprovalInboxPage() {
   return (
     <div className="space-y-4 p-6">
       <SavedSignatureSetupDialog
-        open={can("approvals_inbox", "approve") && user?.has_saved_signature === false && !signaturePromptSkipped}
+        open={Boolean(!loading && hasPendingApproval && user && user.has_saved_signature !== true && !signaturePromptSkipped)}
         onSkip={() => setSignaturePromptSkipped(true)}
         onSaved={refreshUser}
       />
