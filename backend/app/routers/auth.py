@@ -76,6 +76,10 @@ class UserMeOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class SavedSignatureIn(BaseModel):
+    signature_data_url: str
+
+
 def _menu_payload(menu: AppMenu) -> dict:
     return {
         "id": menu.id,
@@ -410,6 +414,23 @@ async def get_my_saved_signature(current_user: User = Depends(get_current_user))
     except ValueError:
         raise HTTPException(404, "ยังไม่มีลายเซ็นที่บันทึกไว้")
     return {"signature_data_url": data_url}
+
+
+@router.put("/me/signature")
+async def save_my_signature(
+    payload: SavedSignatureIn,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Save the caller's reusable signature before they approve a request."""
+    try:
+        current_user.signature_path = expense_signature_service.save_user_signature(
+            current_user.id, payload.signature_data_url
+        )
+        await db.commit()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"has_saved_signature": True}
 
 
 @router.post("/users", response_model=UserOut, status_code=status.HTTP_201_CREATED)
