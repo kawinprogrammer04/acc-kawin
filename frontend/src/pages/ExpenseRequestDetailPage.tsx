@@ -14,6 +14,7 @@ import type {
   ExpenseRequestAttachment, ExpenseSettlement, ExpenseWithholdingCertificate,
 } from "@/api/approvals";
 import { SignaturePad } from "@/components/expense/SignaturePad";
+import { SavedSignatureSetupDialog } from "@/components/expense/SavedSignatureSetupDialog";
 import { PdfSignatureWorkspace, initialPlacement } from "@/components/expense/PdfSignatureWorkspace";
 import type { SignaturePlacement } from "@/components/expense/PdfSignatureWorkspace";
 import { useAuth } from "@/context/AuthContext";
@@ -186,6 +187,7 @@ export function ExpenseRequestDetailPage() {
   const [useSavedSignature, setUseSavedSignature] = useState(false);
   const [saveSignature, setSaveSignature] = useState(false);
   const [signatureDecisionOpen, setSignatureDecisionOpen] = useState(false);
+  const [signaturePromptSkipped, setSignaturePromptSkipped] = useState(false);
   const [placements, setPlacements] = useState<SignaturePlacement[]>([]);
   const [histories, setHistories] = useState<ExpenseHistory[]>([]);
   const [settlements, setSettlements] = useState<ExpenseSettlement[]>([]);
@@ -303,7 +305,10 @@ export function ExpenseRequestDetailPage() {
       return step.approvers.some((approver) => approver.user_id === user?.id && approver.status === "pending");
     }
     return step.resolved_approver_user_id === user?.id;
-  }), [request, user?.id]);
+  }), [request, user?.id, user?.is_platform_admin]);
+
+  useEffect(() => { setSignaturePromptSkipped(false); }, [requestId, pendingStep?.id, user?.id]);
+
   const signableDocuments = useMemo(
     () => request?.attachments.filter((attachment) =>
       attachment.attachment_type === "primary" || attachment.requires_signature,
@@ -553,6 +558,11 @@ export function ExpenseRequestDetailPage() {
   const backToAccounting = (location.state as { from?: string } | null)?.from === "accounting";
 
   return <div className="mx-auto max-w-6xl space-y-5 p-6">
+    <SavedSignatureSetupDialog
+      open={Boolean(pendingStep) && user?.has_saved_signature === false && !signaturePromptSkipped}
+      onSkip={() => setSignaturePromptSkipped(true)}
+      onSaved={refreshUser}
+    />
     <Link to={backToAccounting ? "/expense-requests/accounting" : "/expense-requests"} className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">
       <ArrowLeft className="h-4 w-4" /> {backToAccounting ? "กลับไปหน้าบัญชีจ่ายเงิน" : "กลับไปแสดงรายการที่ขอเบิกทั้งหมด"}
     </Link>
