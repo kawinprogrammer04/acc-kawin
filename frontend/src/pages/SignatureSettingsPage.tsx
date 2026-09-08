@@ -1,21 +1,38 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Loader2, Save } from "lucide-react";
+import { Briefcase, Building2, CheckCircle2, Loader2, Save, UserCircle } from "lucide-react";
 import { authApi, getApiErrorMessage } from "@/api/client";
+import { positionsApi, type Position } from "@/api/approvals";
 import { SignaturePad } from "@/components/expense/SignaturePad";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useAuth } from "@/context/AuthContext";
+import { useCompany } from "@/context/CompanyContext";
 
 export function SignatureSettingsPage() {
   const { user, refreshUser } = useAuth();
+  const { currentCompany } = useCompany();
   const [currentSignature, setCurrentSignature] = useState<string>();
   const [newSignature, setNewSignature] = useState<string>();
+  const [positionNames, setPositionNames] = useState<string[]>([]);
+  const [positionsLoading, setPositionsLoading] = useState(true);
   const [padVersion, setPadVersion] = useState(0);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setPositionsLoading(true);
+    positionsApi.mine()
+      .then((positions: Position[]) => {
+        if (!cancelled) setPositionNames(positions.map((position) => position.name));
+      })
+      .catch(() => { if (!cancelled) setPositionNames([]); })
+      .finally(() => { if (!cancelled) setPositionsLoading(false); });
+    return () => { cancelled = true; };
+  }, [currentCompany?.id]);
 
   useEffect(() => {
     if (!user?.has_saved_signature) {
@@ -62,6 +79,25 @@ export function SignatureSettingsPage() {
 
       {error && <div role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div>}
       {notice && <div role="status" className="flex items-start gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700"><CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />{notice}</div>}
+
+      <Card>
+        <CardContent className="grid gap-3 p-6 sm:grid-cols-3">
+          <div className="rounded-xl border bg-muted/20 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><UserCircle className="h-4 w-4" />ชื่อผู้ลงลายเซ็น</div>
+            <p className="mt-2 text-sm font-semibold text-foreground">{user?.full_name || user?.username || "ยังไม่ได้ระบุ"}</p>
+          </div>
+          <div className="rounded-xl border bg-muted/20 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><Briefcase className="h-4 w-4" />ตำแหน่ง</div>
+            <p className="mt-2 text-sm font-semibold text-foreground">
+              {positionsLoading ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : positionNames.join(", ") || "ยังไม่ได้ระบุ"}
+            </p>
+          </div>
+          <div className="rounded-xl border bg-muted/20 p-4">
+            <div className="flex items-center gap-2 text-xs font-semibold text-muted-foreground"><Building2 className="h-4 w-4" />แผนก</div>
+            <p className="mt-2 text-sm font-semibold text-foreground">{currentCompany?.department_name || "ยังไม่ได้ระบุ"}</p>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardContent className="space-y-4 p-6">
