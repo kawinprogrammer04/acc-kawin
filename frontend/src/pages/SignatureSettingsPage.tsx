@@ -23,6 +23,11 @@ export function SignatureSettingsPage() {
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
+    if (!currentCompany?.id) {
+      setPositionNames([]);
+      setPositionsLoading(false);
+      return;
+    }
     let cancelled = false;
     setPositionsLoading(true);
     positionsApi.mine()
