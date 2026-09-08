@@ -74,13 +74,6 @@ export function CashflowReportsPage() {
         <CardContent className="p-4">
           <div className="flex flex-wrap gap-4 items-end">
             <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1">ประเภทรายงาน</p>
-              <select value={reportType} onChange={e => setReportType(e.target.value)}
-                className="rounded-md border px-3 py-1.5 text-sm">
-                {REPORT_TYPES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-              </select>
-            </div>
-            <div>
               <p className="text-xs font-medium text-muted-foreground mb-1">วันเริ่มต้น</p>
               <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)}
                 className="rounded-md border px-3 py-1.5 text-sm" />
@@ -89,6 +82,13 @@ export function CashflowReportsPage() {
               <p className="text-xs font-medium text-muted-foreground mb-1">วันสิ้นสุด</p>
               <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)}
                 className="rounded-md border px-3 py-1.5 text-sm" />
+            </div>
+            <div>
+              <p className="text-xs font-medium text-muted-foreground mb-1">ประเภทรายงาน</p>
+              <select value={reportType} onChange={e => setReportType(e.target.value)}
+                className="rounded-md border px-3 py-1.5 text-sm">
+                {REPORT_TYPES.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </select>
             </div>
             <button onClick={generate} disabled={loading}
               className="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90 disabled:opacity-50">

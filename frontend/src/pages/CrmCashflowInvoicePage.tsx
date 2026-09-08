@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Eye, Paperclip, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { Camera, Eye, Paperclip, Eraser, Trash2, Upload, X } from "lucide-react";
 
 import {
   crmCashflowApi,
@@ -18,10 +18,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { DatePicker } from "@/components/ui/date-picker";
+import { DataListDateFilterRow } from "@/components/data-list/DataListDateFilterRow";
+import { DataListFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { dataListFilterControlClass, dataListFilterPanelClass } from "@/components/data-list/styles";
 import { Input } from "@/components/ui/input";
 import { InvoiceStatusBadge } from "@/components/ui/invoice-status-badge";
-import { formatDate, localDateInput } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 
 const MENU_KEY = "crm_cashflow_invoice";
 const money = (value: number) => new Intl.NumberFormat("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
@@ -44,16 +46,6 @@ const INVOICE_STATUS_OPTIONS: { value: CrmCashflowInvoiceStatus; label: string }
   { value: "cash_bill", label: "บิลเงินสด" },
   { value: "other", label: "อื่นๆ" },
 ];
-type DatePreset = "custom" | "today" | "yesterday" | "last7" | "last30" | "this_month" | "last_month";
-const DATE_PRESETS: { value: DatePreset; label: string }[] = [
-  { value: "custom", label: "กำหนดเอง" },
-  { value: "today", label: "วันนี้" },
-  { value: "yesterday", label: "เมื่อวาน" },
-  { value: "last7", label: "7 วันล่าสุด" },
-  { value: "last30", label: "30 วันล่าสุด" },
-  { value: "this_month", label: "เดือนนี้" },
-  { value: "last_month", label: "เดือนที่แล้ว" },
-];
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
 const emptyInvoiceDashboard: CrmCashflowInvoiceDashboardSummary = {
   total_count: 0,
@@ -75,11 +67,6 @@ const invoiceDashboardFromItems = (
     pending_amount: pendingItems.reduce((sum, row) => sum + (row.cfstate_amount < 0 ? Math.abs(row.cfstate_amount) : 0), 0),
   };
 };
-const addDays = (base: Date, delta: number) => {
-  const next = new Date(base);
-  next.setDate(next.getDate() + delta);
-  return next;
-};
 function effectiveInvoiceStatus(row: CrmCashflowStatement): CrmCashflowInvoiceStatus {
   if (row.cfstate_document_type) return row.cfstate_document_type;
   if (row.cfstate_invoice == null) return "none";
@@ -94,7 +81,6 @@ export function CrmCashflowInvoicePage() {
   const [dashboard, setDashboard] = useState(emptyInvoiceDashboard);
   const [dateStart, setDateStart] = useState("");
   const [dateEnd, setDateEnd] = useState("");
-  const [datePreset, setDatePreset] = useState<DatePreset>("custom");
   const [categoryId, setCategoryId] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [noteQuery, setNoteQuery] = useState("");
@@ -103,6 +89,15 @@ export function CrmCashflowInvoicePage() {
   const [incomeMax, setIncomeMax] = useState("");
   const [expenseMin, setExpenseMin] = useState("");
   const [expenseMax, setExpenseMax] = useState("");
+  const [appliedTextFilters, setAppliedTextFilters] = useState({
+    searchQuery: "", noteQuery: "", detailQuery: "", incomeMin: "", incomeMax: "", expenseMin: "", expenseMax: "",
+  });
+  useEffect(() => {
+    const timer = setTimeout(() => setAppliedTextFilters({
+      searchQuery, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax,
+    }), 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax]);
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<"" | CrmCashflowInvoiceStatus>("");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
@@ -185,29 +180,11 @@ export function CrmCashflowInvoicePage() {
   useEffect(() => { loadRows(); }, [loadRows]);
 
   // ── Filters & pagination ─────────────────────────────────────────────────
-  const changeDateStart = (value: string) => { setDateStart(value); setDatePreset("custom"); };
-  const changeDateEnd = (value: string) => { setDateEnd(value); setDatePreset("custom"); };
-
-  const applyDatePreset = (preset: DatePreset) => {
-    setDatePreset(preset);
-    if (preset === "custom") return;
-    const now = new Date();
-    let start = now;
-    let end = now;
-    if (preset === "yesterday") { start = addDays(now, -1); end = start; }
-    else if (preset === "last7") { start = addDays(now, -6); end = now; }
-    else if (preset === "last30") { start = addDays(now, -29); end = now; }
-    else if (preset === "this_month") { start = new Date(now.getFullYear(), now.getMonth(), 1); end = now; }
-    else if (preset === "last_month") {
-      start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      end = new Date(now.getFullYear(), now.getMonth(), 0);
-    }
-    setDateStart(localDateInput(start));
-    setDateEnd(localDateInput(end));
+  const changeDateRange = (from: string, to: string) => {
+    setDateStart(from); setDateEnd(to); setPage(1);
   };
 
   const resetFilters = () => {
-    setDatePreset("custom");
     setDateStart(""); setDateEnd("");
     setCategoryId("");
     setSearchQuery("");
@@ -215,9 +192,12 @@ export function CrmCashflowInvoicePage() {
     setIncomeMin(""); setIncomeMax("");
     setExpenseMin(""); setExpenseMax("");
     setInvoiceStatusFilter("");
+    setAppliedTextFilters({ searchQuery: "", noteQuery: "", detailQuery: "", incomeMin: "", incomeMax: "", expenseMin: "", expenseMax: "" });
+    setPage(1);
   };
 
   const filteredRows = useMemo(() => {
+    const { searchQuery, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax } = appliedTextFilters;
     const search = searchQuery.trim().toLowerCase();
     const note = noteQuery.trim().toLowerCase();
     const detail = detailQuery.trim().toLowerCase();
@@ -259,11 +239,11 @@ export function CrmCashflowInvoicePage() {
       if (invoiceStatusFilter && effectiveInvoiceStatus(row) !== invoiceStatusFilter) return false;
       return true;
     });
-  }, [rows, searchQuery, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter]);
+  }, [rows, appliedTextFilters, invoiceStatusFilter]);
 
   useEffect(() => {
     setPage(1);
-  }, [rows, searchQuery, noteQuery, detailQuery, incomeMin, incomeMax, expenseMin, expenseMax, invoiceStatusFilter, pageSize]);
+  }, [rows, appliedTextFilters, invoiceStatusFilter, dateStart, dateEnd, categoryId, pageSize]);
 
   const totalPages = pageSize > 0 ? Math.max(1, Math.ceil(filteredRows.length / pageSize)) : 1;
   const currentPage = Math.min(page, totalPages);
@@ -567,39 +547,35 @@ export function CrmCashflowInvoicePage() {
           </div>
         </CardContent>
       </Card>
-      <Card><CardContent className="flex flex-wrap items-end gap-3 pt-6">
-        <label className="min-w-36 space-y-1 text-xs">ช่วงวันที่
-          <select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={datePreset} onChange={(event) => applyDatePreset(event.target.value as DatePreset)}>
-            {DATE_PRESETS.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}
-          </select>
-        </label>
-        <div className="space-y-1 text-xs">วันที่เริ่มต้น<DatePicker value={dateStart} onChange={changeDateStart} /></div>
-        <div className="space-y-1 text-xs">วันที่สิ้นสุด<DatePicker value={dateEnd} onChange={changeDateEnd} /></div>
-        <label className="min-w-56 space-y-1 text-xs">หัวข้อ<select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">ทั้งหมด</option>{categories.map((item) => <option key={item.cfcat_id} value={item.cfcat_id}>{item.cfcat_name}</option>)}</select></label>
-        <label className="min-w-56 space-y-1 text-xs">ค้นหาทั้งหมด<Input className="h-9" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="ค้นหาทุกคอลัมน์ ทุกหน้า" /></label>
-        <label className="min-w-48 space-y-1 text-xs">note<Input className="h-9" value={noteQuery} onChange={(event) => setNoteQuery(event.target.value)} placeholder="ค้นหา note" /></label>
-        <label className="min-w-48 space-y-1 text-xs">Description<Input className="h-9" value={detailQuery} onChange={(event) => setDetailQuery(event.target.value)} placeholder="ค้นหา Description" /></label>
-        <div className="space-y-1 text-xs hidden">ยอดรับ (ต่ำสุด–สูงสุด)
-          <div className="flex gap-1">
-            <Input className="h-9 w-24" type="number" value={incomeMin} onChange={(event) => setIncomeMin(event.target.value)} placeholder="ต่ำสุด" />
-            <Input className="h-9 w-24" type="number" value={incomeMax} onChange={(event) => setIncomeMax(event.target.value)} placeholder="สูงสุด" />
-          </div>
+      <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl`}>
+        <DataListDateFilterRow dateFrom={dateStart} dateTo={dateEnd} onChange={changeDateRange}>
+          <label className="block min-w-0 text-sm font-bold">ค้นหาทั้งหมด
+            <input className={dataListFilterControlClass} value={searchQuery} onChange={event => setSearchQuery(event.target.value)} placeholder="ค้นหาทุกคอลัมน์ ทุกหน้า" />
+          </label>
+        </DataListDateFilterRow>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <DataListFilterSelect label="หัวข้อ" value={categoryId} allLabel="ทุกหัวข้อ" options={categories.map(item => ({ value: String(item.cfcat_id), label: item.cfcat_name }))} onChange={setCategoryId} />
+          <DataListFilterSelect label="ใบกำกับภาษี" value={invoiceStatusFilter} allLabel="ทุกสถานะ" options={INVOICE_STATUS_OPTIONS} onChange={value => setInvoiceStatusFilter(value as "" | CrmCashflowInvoiceStatus)} />
+          <label className="block min-w-0 text-sm font-bold">note
+            <input className={dataListFilterControlClass} value={noteQuery} onChange={event => setNoteQuery(event.target.value)} placeholder="ค้นหา note" />
+          </label>
+          <label className="block min-w-0 text-sm font-bold">Description
+            <input className={dataListFilterControlClass} value={detailQuery} onChange={event => setDetailQuery(event.target.value)} placeholder="ค้นหา Description" />
+          </label>
         </div>
-        <div className="space-y-1 text-xs">ยอดจ่าย (ต่ำสุด–สูงสุด)
-          <div className="flex gap-1">
-            <Input className="h-9 w-24" type="number" value={expenseMin} onChange={(event) => setExpenseMin(event.target.value)} placeholder="ต่ำสุด" />
-            <Input className="h-9 w-24" type="number" value={expenseMax} onChange={(event) => setExpenseMax(event.target.value)} placeholder="สูงสุด" />
-          </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="block min-w-0 text-sm font-bold">ยอดจ่ายต่ำสุด
+            <input className={dataListFilterControlClass} type="number" min="0" step="any" value={expenseMin} onChange={event => setExpenseMin(event.target.value)} placeholder="ไม่จำกัด" />
+          </label>
+          <label className="block min-w-0 text-sm font-bold">ยอดจ่ายสูงสุด
+            <input className={dataListFilterControlClass} type="number" min="0" step="any" value={expenseMax} onChange={event => setExpenseMax(event.target.value)} placeholder="ไม่จำกัด" />
+          </label>
         </div>
-        <label className="min-w-48 space-y-1 text-xs">ใบกำกับภาษี
-          <select className="h-9 w-full rounded-md border bg-white px-3 text-sm" value={invoiceStatusFilter} onChange={(event) => setInvoiceStatusFilter(event.target.value as "" | CrmCashflowInvoiceStatus)}>
-            <option value="">ทั้งหมด</option>
-            {INVOICE_STATUS_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-          </select>
-        </label>
-        <Button variant="outline" onClick={loadRows}><RefreshCw className="h-4 w-4" />ดูรายงาน</Button>
-        <Button variant="ghost" onClick={resetFilters}>ล้างตัวกรอง</Button>
-      </CardContent></Card>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
+          <span className="text-xs font-bold text-muted-foreground">ตัวกรองทำงานอัตโนมัติเมื่อเลือกหรือกรอกข้อมูล</span>
+          <button type="button" onClick={resetFilters} className="inline-flex h-11 items-center gap-2 rounded-md border border-input bg-background px-8 text-sm font-bold text-muted-foreground transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-950/30"><Eraser className="h-4 w-4" />ล้างตัวกรอง</button>
+        </div>
+      </form>
       <Card><CardContent className="max-h-[70vh] overflow-auto"><table className="w-full min-w-[1280px] table-fixed border-separate border-spacing-0 text-sm">
         <thead><tr className="text-left text-xs">{[
           ['#', 50], ['วันที่', 90], ['หัวข้อ', 110], ['Description', 220], ['note', 140], ['หมายเหตุ', 140],

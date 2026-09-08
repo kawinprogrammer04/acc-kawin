@@ -9,7 +9,7 @@ import { BankLogo } from "@/components/ui/bank-logo";
 import { DataListFilterSelect, DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
 import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
-import { PresetDateRangeFilter } from "@/components/data-list/PresetDateRangeFilter";
+import { DataListDateFilterRow } from "@/components/data-list/DataListDateFilterRow";
 import {
   dataListFilterControlClass,
   dataListFilterPanelClass,
@@ -239,9 +239,11 @@ export function ExpenseAccountingPage() {
     </div>
 
     <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} space-y-5 rounded-2xl border bg-card/80 p-6 shadow-lg backdrop-blur-xl`}>
-      <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
-        <input className={dataListFilterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ หรือชื่อผู้รับ" />
-      </label>
+      <DataListDateFilterRow dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))}>
+        <label className="block min-w-0 text-sm font-bold">ค้นหาคำขอ
+          <input className={dataListFilterControlClass} value={filters.query} onChange={event => setFilters(current => ({ ...current, query: event.target.value }))} placeholder="เลขที่คำขอ รายการ หรือชื่อผู้รับ" />
+        </label>
+      </DataListDateFilterRow>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <DataListMultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
@@ -250,10 +252,7 @@ export function ExpenseAccountingPage() {
         <DataListMultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={visibleTypes.map(item => ({ value: String(item.id), label: item.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-end">
-        <PresetDateRangeFilter dateFrom={filters.date_from} dateTo={filters.date_to} onChange={(date_from, date_to) => setFilters(current => ({ ...current, date_from, date_to }))} />
-        <label className="flex min-h-12 items-center gap-3 px-1 text-sm font-bold sm:col-span-1 lg:col-span-3"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>
-      </div>
+      <label className="flex min-h-12 items-center gap-3 px-1 text-sm font-bold"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
         <span className="text-xs font-bold text-muted-foreground">ตัวกรองทำงานอัตโนมัติเมื่อเลือกหรือกรอกข้อมูล</span>

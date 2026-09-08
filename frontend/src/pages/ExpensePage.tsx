@@ -282,6 +282,12 @@ export function ExpensePage() {
         <input type="date" value={filters.end_date}
           onChange={e => setFilters(f => ({ ...f, end_date: e.target.value }))}
           className="rounded-md border px-3 py-1.5 text-sm" />
+        <div className="flex items-center gap-2 rounded-md border px-3 py-1.5">
+          <Search className="h-3.5 w-3.5 text-muted-foreground" />
+          <input placeholder="ค้นหา..." value={filters.keyword}
+            onChange={e => setFilters(f => ({ ...f, keyword: e.target.value }))}
+            className="outline-none text-sm bg-transparent w-32" />
+        </div>
         <select value={filters.status}
           onChange={e => setFilters(f => ({ ...f, status: e.target.value }))}
           className="rounded-md border px-3 py-1.5 text-sm">
@@ -290,12 +296,6 @@ export function ExpensePage() {
           <option value="completed">จ่ายแล้ว</option>
           <option value="cancelled">ยกเลิก</option>
         </select>
-        <div className="flex items-center gap-2 rounded-md border px-3 py-1.5">
-          <Search className="h-3.5 w-3.5 text-muted-foreground" />
-          <input placeholder="ค้นหา..." value={filters.keyword}
-            onChange={e => setFilters(f => ({ ...f, keyword: e.target.value }))}
-            className="outline-none text-sm bg-transparent w-32" />
-        </div>
       </div>
 
       {(showForm || editing) && (
