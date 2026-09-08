@@ -2247,7 +2247,9 @@ async def decide_approval_step(
             ExpenseApprovalCandidate.user_id == current_user.id,
             ExpenseApprovalCandidate.status == "pending",
         ).limit(1))).scalar_one_or_none()
-        if step_row.resolved_approver_user_id != current_user.id and not is_candidate:
+        if (not current_user.is_platform_admin
+                and step_row.resolved_approver_user_id != current_user.id
+                and not is_candidate):
             raise HTTPException(403, "คุณไม่ใช่ผู้อนุมัติของขั้นตอนนี้")
         try:
             await expense_signature_service.stamp_required_documents(
@@ -2264,6 +2266,7 @@ async def decide_approval_step(
             db, step_id, current_user.id, payload.action, payload.comment, payload.idempotency_key,
             http_request.client.host if http_request.client else None,
             http_request.headers.get("user-agent"),
+            allow_admin_override=current_user.is_platform_admin,
         )
     except PermissionError as exc:
         raise HTTPException(403, str(exc))

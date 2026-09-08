@@ -7,6 +7,7 @@ import { useAuth } from "@/context/AuthContext";
 export function AppLayout() {
   const { user, loading } = useAuth();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
   if (loading) return <div className="flex h-screen items-center justify-center text-muted-foreground text-sm">กำลังโหลด...</div>;
   if (!user) return <Navigate to="/login" replace />;
 

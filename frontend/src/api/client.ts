@@ -119,6 +119,9 @@ export const authApi = {
     api.post("/auth/sso/hr-login", { token }).then((r) => r.data),
   me: () => api.get("/auth/me").then((r) => r.data),
   mySignature: () => api.get("/auth/me/signature").then((r) => r.data as { signature_data_url: string }),
+  saveMySignature: (signatureDataUrl: string) =>
+    api.put("/auth/me/signature", { signature_data_url: signatureDataUrl })
+      .then((r) => r.data as { has_saved_signature: boolean }),
 };
 // ── Accounts ─────────────────────────────────────────────────────────────────
 export const accountsApi = {
