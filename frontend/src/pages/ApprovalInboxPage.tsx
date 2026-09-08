@@ -40,9 +40,9 @@ export function ApprovalInboxPage() {
   const [statuses, setStatuses] = useState<InboxStatus[]>(["pending"]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
-  const [signaturePromptSkipped, setSignaturePromptSkipped] = useState(false);
+  const [signaturePromptClosed, setSignaturePromptClosed] = useState(false);
 
-  useEffect(() => { setSignaturePromptSkipped(false); }, [user?.id]);
+  useEffect(() => { setSignaturePromptClosed(false); }, [user?.id]);
 
   // super_admin ต้องเห็นรายการรออนุมัติของทุกคนในบริษัทเสมอ (ไม่ใช่แค่ของตัวเอง)
   // เพราะต้องใช้ตรวจสอบ/แก้ไขปัญหาที่พนักงานคนอื่นแจ้งมาได้
@@ -82,8 +82,8 @@ export function ApprovalInboxPage() {
   return (
     <div className="space-y-4 p-6">
       <SavedSignatureSetupDialog
-        open={Boolean(user && user.has_saved_signature !== true && !signaturePromptSkipped)}
-        onSkip={() => setSignaturePromptSkipped(true)}
+        open={Boolean(user && user.has_saved_signature !== true && user.signature_prompt_dismissed !== true && !signaturePromptClosed)}
+        onClose={() => setSignaturePromptClosed(true)}
         onSaved={refreshUser}
       />
       <PageHeader

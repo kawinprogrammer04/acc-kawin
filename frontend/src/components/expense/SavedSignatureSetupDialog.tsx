@@ -9,15 +9,16 @@ import { SignaturePad } from "@/components/expense/SignaturePad";
 
 export function SavedSignatureSetupDialog({
   open,
-  onSkip,
+  onClose,
   onSaved,
 }: {
   open: boolean;
-  onSkip: () => void;
+  onClose: () => void;
   onSaved: () => Promise<void>;
 }) {
   const [signature, setSignature] = useState<string>();
   const [saving, setSaving] = useState(false);
+  const [skipping, setSkipping] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -42,8 +43,24 @@ export function SavedSignatureSetupDialog({
     }
   };
 
+  const skipPermanently = async () => {
+    setSkipping(true);
+    setError("");
+    try {
+      await authApi.dismissSignaturePrompt();
+      await onSaved().catch(() => undefined);
+      onClose();
+    } catch (skipError) {
+      setError(getApiErrorMessage(skipError, "บันทึกการข้ามไม่สำเร็จ"));
+    } finally {
+      setSkipping(false);
+    }
+  };
+
+  const busy = saving || skipping;
+
   return (
-    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen && !saving) onSkip(); }}>
+    <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen && !busy) onClose(); }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>บันทึกลายเซ็นของคุณ</DialogTitle>
@@ -59,8 +76,11 @@ export function SavedSignatureSetupDialog({
           {error && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
         </div>
         <DialogFooter className="gap-2 sm:gap-0">
-          <Button type="button" variant="outline" disabled={saving} onClick={onSkip}>ข้ามก่อน</Button>
-          <Button type="button" disabled={saving || !signature} onClick={save}>
+          <Button type="button" variant="outline" disabled={busy} onClick={skipPermanently}>
+            {skipping && <Loader2 className="h-4 w-4 animate-spin" />}
+            {skipping ? "กำลังบันทึก..." : "ข้ามก่อน"}
+          </Button>
+          <Button type="button" disabled={busy || !signature} onClick={save}>
             {saving && <Loader2 className="h-4 w-4 animate-spin" />}
             {saving ? "กำลังบันทึก..." : "บันทึกลายเซ็น"}
           </Button>

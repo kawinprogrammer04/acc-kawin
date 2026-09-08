@@ -18,6 +18,7 @@ class User(Base):
     is_platform_admin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     signature_path: Mapped[str | None] = mapped_column(Text)
+    signature_prompt_dismissed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Optional HR employee id retained for account administration and legacy
     # data. Current HR SSO resolves the active user by username == employee_id.
     hr_employee_id: Mapped[str | None] = mapped_column(String(30), unique=True)

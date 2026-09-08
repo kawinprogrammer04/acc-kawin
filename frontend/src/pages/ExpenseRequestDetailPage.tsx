@@ -187,7 +187,7 @@ export function ExpenseRequestDetailPage() {
   const [useSavedSignature, setUseSavedSignature] = useState(false);
   const [saveSignature, setSaveSignature] = useState(false);
   const [signatureDecisionOpen, setSignatureDecisionOpen] = useState(false);
-  const [signaturePromptSkipped, setSignaturePromptSkipped] = useState(false);
+  const [signaturePromptClosed, setSignaturePromptClosed] = useState(false);
   const [placements, setPlacements] = useState<SignaturePlacement[]>([]);
   const [histories, setHistories] = useState<ExpenseHistory[]>([]);
   const [settlements, setSettlements] = useState<ExpenseSettlement[]>([]);
@@ -307,7 +307,7 @@ export function ExpenseRequestDetailPage() {
     return step.resolved_approver_user_id === user?.id;
   }), [request, user?.id, user?.is_platform_admin]);
 
-  useEffect(() => { setSignaturePromptSkipped(false); }, [requestId, pendingStep?.id, user?.id]);
+  useEffect(() => { setSignaturePromptClosed(false); }, [requestId, pendingStep?.id, user?.id]);
 
   const signableDocuments = useMemo(
     () => request?.attachments.filter((attachment) =>
@@ -559,8 +559,8 @@ export function ExpenseRequestDetailPage() {
 
   return <div className="mx-auto max-w-6xl space-y-5 p-6">
     <SavedSignatureSetupDialog
-      open={Boolean(user && user.has_saved_signature !== true && !signaturePromptSkipped)}
-      onSkip={() => setSignaturePromptSkipped(true)}
+      open={Boolean(user && user.has_saved_signature !== true && user.signature_prompt_dismissed !== true && !signaturePromptClosed)}
+      onClose={() => setSignaturePromptClosed(true)}
       onSaved={refreshUser}
     />
     <Link to={backToAccounting ? "/expense-requests/accounting" : "/expense-requests"} className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">

@@ -122,6 +122,9 @@ export const authApi = {
   saveMySignature: (signatureDataUrl: string) =>
     api.put("/auth/me/signature", { signature_data_url: signatureDataUrl })
       .then((r) => r.data as { has_saved_signature: boolean }),
+  dismissSignaturePrompt: () =>
+    api.post("/auth/me/signature-prompt/dismiss")
+      .then((r) => r.data as { signature_prompt_dismissed: boolean }),
 };
 // ── Accounts ─────────────────────────────────────────────────────────────────
 export const accountsApi = {
