@@ -359,6 +359,7 @@ async def decide_step(
     idempotency_key: str,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
+    allow_admin_override: bool = False,
 ) -> ApprovalRequestStep:
     existing_action = (
         await db.execute(select(ApprovalAction).where(ApprovalAction.idempotency_key == idempotency_key))
@@ -382,7 +383,9 @@ async def decide_step(
         ExpenseApprovalCandidate.request_step_id == step.id,
         ExpenseApprovalCandidate.user_id == actor_user_id,
     ).with_for_update())).scalar_one_or_none()
-    if not candidate and step.resolved_approver_user_id != actor_user_id:
+    if (not allow_admin_override
+            and not candidate
+            and step.resolved_approver_user_id != actor_user_id):
         raise PermissionError("คุณไม่ใช่ผู้อนุมัติของขั้นตอนนี้")
     if candidate and candidate.status != "pending":
         raise ValueError("คุณได้บันทึกผลสำหรับขั้นตอนนี้แล้ว")
@@ -404,7 +407,7 @@ async def decide_step(
         if candidate:
             candidate.status = "approved"
             candidate.decided_at = now
-        if step.approve_mode == "all":
+        if step.approve_mode == "all" and not allow_admin_override:
             remaining_candidates = (await db.execute(select(func.count()).select_from(ExpenseApprovalCandidate).where(
                 ExpenseApprovalCandidate.request_step_id == step.id,
                 ExpenseApprovalCandidate.status == "pending",
@@ -421,7 +424,7 @@ async def decide_step(
                     ip_address=ip_address, user_agent=user_agent))
                 await db.commit(); await db.refresh(step)
                 return step
-        elif candidate:
+        elif candidate or allow_admin_override:
             await db.execute(ExpenseApprovalCandidate.__table__.update().where(
                 ExpenseApprovalCandidate.request_step_id == step.id,
                 ExpenseApprovalCandidate.status == "pending",

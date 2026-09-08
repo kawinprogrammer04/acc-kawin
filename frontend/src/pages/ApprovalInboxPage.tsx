@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
+import { SavedSignatureSetupDialog } from "@/components/expense/SavedSignatureSetupDialog";
 import { dataListFilterPanelClass, dataListTableHeaderCellClass, dataListTableScrollClass } from "@/components/data-list/styles";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { useAuth } from "@/context/AuthContext";
@@ -31,7 +32,7 @@ const inboxStatusStyle: Record<InboxStatus, string> = {
 };
 
 export function ApprovalInboxPage() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const { currentCompany } = useCompany();
   const [items, setItems] = useState<InboxItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,6 +40,9 @@ export function ApprovalInboxPage() {
   const [statuses, setStatuses] = useState<InboxStatus[]>(["pending"]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [signaturePromptSkipped, setSignaturePromptSkipped] = useState(false);
+
+  useEffect(() => { setSignaturePromptSkipped(false); }, [user?.id]);
 
   // super_admin ต้องเห็นรายการรออนุมัติของทุกคนในบริษัทเสมอ (ไม่ใช่แค่ของตัวเอง)
   // เพราะต้องใช้ตรวจสอบ/แก้ไขปัญหาที่พนักงานคนอื่นแจ้งมาได้
@@ -77,6 +81,11 @@ export function ApprovalInboxPage() {
 
   return (
     <div className="space-y-4 p-6">
+      <SavedSignatureSetupDialog
+        open={Boolean(user && user.has_saved_signature !== true && !signaturePromptSkipped)}
+        onSkip={() => setSignaturePromptSkipped(true)}
+        onSaved={refreshUser}
+      />
       <PageHeader
         title="รายการรอคุณอนุมัติ"
         subtitle="ตรวจรายการที่รอพิจารณาและย้อนดูรายการที่คุณเคยดำเนินการ"

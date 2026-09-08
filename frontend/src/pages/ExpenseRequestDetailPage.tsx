@@ -14,6 +14,7 @@ import type {
   ExpenseRequestAttachment, ExpenseSettlement, ExpenseWithholdingCertificate,
 } from "@/api/approvals";
 import { SignaturePad } from "@/components/expense/SignaturePad";
+import { SavedSignatureSetupDialog } from "@/components/expense/SavedSignatureSetupDialog";
 import { PdfSignatureWorkspace, initialPlacement } from "@/components/expense/PdfSignatureWorkspace";
 import type { SignaturePlacement } from "@/components/expense/PdfSignatureWorkspace";
 import { useAuth } from "@/context/AuthContext";
@@ -185,6 +186,8 @@ export function ExpenseRequestDetailPage() {
   const [signature, setSignature] = useState<string>();
   const [useSavedSignature, setUseSavedSignature] = useState(false);
   const [saveSignature, setSaveSignature] = useState(false);
+  const [signatureDecisionOpen, setSignatureDecisionOpen] = useState(false);
+  const [signaturePromptSkipped, setSignaturePromptSkipped] = useState(false);
   const [placements, setPlacements] = useState<SignaturePlacement[]>([]);
   const [histories, setHistories] = useState<ExpenseHistory[]>([]);
   const [settlements, setSettlements] = useState<ExpenseSettlement[]>([]);
@@ -297,11 +300,15 @@ export function ExpenseRequestDetailPage() {
 
   const pendingStep = useMemo(() => request?.steps.find((step) => {
     if (step.status !== "pending") return false;
+    if (user?.is_platform_admin) return true;
     if (step.approvers?.length) {
       return step.approvers.some((approver) => approver.user_id === user?.id && approver.status === "pending");
     }
     return step.resolved_approver_user_id === user?.id;
-  }), [request, user?.id]);
+  }), [request, user?.id, user?.is_platform_admin]);
+
+  useEffect(() => { setSignaturePromptSkipped(false); }, [requestId, pendingStep?.id, user?.id]);
+
   const signableDocuments = useMemo(
     () => request?.attachments.filter((attachment) =>
       attachment.attachment_type === "primary" || attachment.requires_signature,
@@ -326,10 +333,22 @@ export function ExpenseRequestDetailPage() {
 
   const [savedSignatureUrl, setSavedSignatureUrl] = useState<string>();
   useEffect(() => {
-    if (!pendingStep) { setSavedSignatureUrl(undefined); return; }
+    if (!pendingStep) {
+      setSavedSignatureUrl(undefined);
+      setUseSavedSignature(false);
+      return;
+    }
     let cancelled = false;
-    authApi.mySignature().then((res) => { if (!cancelled) setSavedSignatureUrl(res.signature_data_url); })
-      .catch(() => { if (!cancelled) setSavedSignatureUrl(undefined); });
+    authApi.mySignature().then((res) => {
+      if (cancelled) return;
+      setSavedSignatureUrl(res.signature_data_url);
+      setSignature(undefined);
+      setUseSavedSignature(true);
+    }).catch(() => {
+      if (cancelled) return;
+      setSavedSignatureUrl(undefined);
+      setUseSavedSignature(false);
+    });
     return () => { cancelled = true; };
   }, [pendingStep?.id, user?.has_saved_signature]);
 
@@ -356,7 +375,7 @@ export function ExpenseRequestDetailPage() {
     catch (e) { setError(getApiErrorMessage(e, "ลบทิ้งถาวรไม่สำเร็จ")); setSaving(false); }
   };
 
-  const decide = async (action: "approve" | "reject" | "return") => {
+  const decide = async (action: "approve" | "reject" | "return", shouldSaveSignature = saveSignature) => {
     if (!pendingStep) return;
     const decisionComment = action === "return" ? returnComment : action === "reject" ? rejectComment : comment;
     if (action !== "approve" && !decisionComment.trim()) { setError("กรุณาระบุเหตุผล"); return; }
@@ -369,10 +388,10 @@ export function ExpenseRequestDetailPage() {
         idempotency_key: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${pendingStep.id}-${Date.now()}`,
         signature_data_url: action === "approve" ? signature : undefined,
         use_saved_signature: action === "approve" && useSavedSignature,
-        save_signature: action === "approve" && saveSignature,
+        save_signature: action === "approve" && shouldSaveSignature,
         placements: action === "approve" ? placements : undefined,
       });
-      if (action === "approve" && saveSignature && signature) {
+      if (action === "approve" && shouldSaveSignature && signature) {
         // Keep AuthContext in sync so the saved signature is immediately
         // available on the next approval without requiring a reload/login.
         await refreshUser().catch(() => undefined);
@@ -382,6 +401,17 @@ export function ExpenseRequestDetailPage() {
       await load();
     } catch (e) { setError(getApiErrorMessage(e, "บันทึกผลการพิจารณาไม่สำเร็จ")); }
     finally { setSaving(false); }
+  };
+
+  const approve = () => {
+    if (!signature && !useSavedSignature) { setError("กรุณาวาดหรือเลือกใช้ลายเซ็นก่อนอนุมัติ"); return; }
+    if (placements.length !== signableDocuments.length) { setError("กรุณากำหนดตำแหน่งลายเซ็นให้ครบทุกเอกสาร"); return; }
+    if (signature && !savedSignatureUrl) {
+      setError("");
+      setSignatureDecisionOpen(true);
+      return;
+    }
+    void decide("approve");
   };
 
   const submitSettlement = async () => {
@@ -528,6 +558,11 @@ export function ExpenseRequestDetailPage() {
   const backToAccounting = (location.state as { from?: string } | null)?.from === "accounting";
 
   return <div className="mx-auto max-w-6xl space-y-5 p-6">
+    <SavedSignatureSetupDialog
+      open={Boolean(user && user.has_saved_signature !== true && !signaturePromptSkipped)}
+      onSkip={() => setSignaturePromptSkipped(true)}
+      onSaved={refreshUser}
+    />
     <Link to={backToAccounting ? "/expense-requests/accounting" : "/expense-requests"} className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground">
       <ArrowLeft className="h-4 w-4" /> {backToAccounting ? "กลับไปหน้าบัญชีจ่ายเงิน" : "กลับไปแสดงรายการที่ขอเบิกทั้งหมด"}
     </Link>
@@ -722,14 +757,17 @@ export function ExpenseRequestDetailPage() {
         <div className="rounded-lg border bg-muted/20 p-4"><p className="font-medium">ขั้นตอนที่ {pendingStep.step_no}: {pendingStep.approver_position_name}</p><p className="mt-1 text-sm text-muted-foreground">เปิดเอกสารด้านบนเพื่อตรวจสอบก่อนยืนยันผล</p></div>
         <div className="rounded-xl border p-4">
           <p className="mb-3 text-sm font-semibold"><span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-xs text-primary-foreground">1</span>วาดหรือเลือกลายเซ็น</p>
-          <SignaturePad onChange={(value) => { setSignature(value); if (value) setUseSavedSignature(false); }} />
+          <SignaturePad onChange={(value) => {
+            setSignature(value);
+            setUseSavedSignature(value ? false : Boolean(savedSignatureUrl));
+          }} />
           <div className="mt-2 flex flex-wrap items-center gap-4 text-sm">
             <label className={`flex items-center gap-2 ${!savedSignatureUrl ? "text-muted-foreground opacity-60" : ""}`}>
               <input type="checkbox" checked={useSavedSignature} disabled={!savedSignatureUrl}
                 onChange={e => { setUseSavedSignature(e.target.checked); if (e.target.checked) setSignature(undefined); }} />
-              ใช้ลายเซ็นที่บันทึกไว้{!savedSignatureUrl && " (ยังไม่เคยบันทึกไว้)"}
+              ใช้ลายเซ็นที่บันทึกไว้{savedSignatureUrl ? " (เลือกให้อัตโนมัติ)" : " (ยังไม่เคยบันทึกไว้)"}
             </label>
-            <label className="flex items-center gap-2"><input type="checkbox" checked={saveSignature} onChange={e => setSaveSignature(e.target.checked)} disabled={!signature} /> บันทึกลายเซ็นที่วาดไว้ใช้ครั้งต่อไป</label>
+            {savedSignatureUrl && signature && <label className="flex items-center gap-2"><input type="checkbox" checked={saveSignature} onChange={e => setSaveSignature(e.target.checked)} /> บันทึกลายเซ็นที่วาดไว้แทนลายเซ็นเดิม</label>}
           </div>
           {useSavedSignature && savedSignatureUrl && (
             <div className="mt-3 flex items-center gap-3 rounded-lg border bg-muted/20 p-3">
@@ -743,7 +781,7 @@ export function ExpenseRequestDetailPage() {
         </div>
         <div className="rounded-xl border p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-semibold"><span className="mr-2 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary text-xs text-primary-foreground">2</span>ตรวจเอกสารและวางตำแหน่งลายเซ็น</p><p className="mt-1 text-xs text-muted-foreground">เปิดดูเอกสารที่แนบมาทั้งหมดได้ในหน้าต่างเดียว — เอกสารที่ต้องเซ็นให้ลากลายเซ็นไปวาง</p></div><PdfSignatureWorkspace requestId={request.id} documents={request.attachments} stepNo={pendingStep.step_no} signaturePreview={signature || (useSavedSignature ? savedSignatureUrl : undefined)} onChange={setPlacements} /></div></div>
         <div><label className="mb-1.5 block text-sm font-medium">หมายเหตุการอนุมัติ (ถ้ามี)</label><textarea rows={3} value={comment} onChange={(event) => setComment(event.target.value)} className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm" /></div>
-        <button onClick={() => decide("approve")} disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground disabled:opacity-50"><CheckCircle2 className="h-4 w-4" /> ยืนยันอนุมัติและประทับลายเซ็น</button>
+        <button onClick={approve} disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground disabled:opacity-50"><CheckCircle2 className="h-4 w-4" /> ยืนยันอนุมัติและประทับลายเซ็น</button>
         <div className="grid gap-3 border-t pt-5 sm:grid-cols-2"><div><label className="mb-1.5 block text-sm font-medium">เหตุผลที่ส่งคืน *</label><textarea rows={2} value={returnComment} onChange={(event) => setReturnComment(event.target.value)} className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm" placeholder="ระบุสิ่งที่ต้องแก้ไข" /><button onClick={() => decide("return")} disabled={saving} className="mt-2 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg bg-blue-50 px-4 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50"><RotateCcw className="h-4 w-4" /> ส่งคืนแก้ไข</button></div><div><label className="mb-1.5 block text-sm font-medium">เหตุผลที่ไม่อนุมัติ *</label><textarea rows={2} value={rejectComment} onChange={(event) => setRejectComment(event.target.value)} className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm" placeholder="ระบุเหตุผลที่ไม่อนุมัติ" /><button onClick={() => decide("reject")} disabled={saving} className="mt-2 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg bg-rose-50 px-4 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50"><XCircle className="h-4 w-4" /> ไม่อนุมัติ</button></div></div>
       </div> : <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">{request.status === "draft" ? "ยังไม่ส่งอนุมัติ" : "คำขอนี้ไม่ได้อยู่ในขั้นที่รอการพิจารณาจากคุณ"}</div>}
     </CardContent></Card>
@@ -762,6 +800,22 @@ export function ExpenseRequestDetailPage() {
         {[...histories].filter(row => !["legacy_imported","submitted"].includes(row.event)).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 12).map(row => <li key={`history-${row.id}`} className="flex gap-3"><Clock3 className="mt-0.5 h-5 w-5 text-primary" /><div><p className="font-medium">{historyEventLabel[row.event] || row.event} · revision {row.revision}</p><p className="text-sm text-muted-foreground">{formatDateTime(row.created_at)}{row.note ? ` · ${row.note}` : ""}</p></div></li>)}
       </ol></CardContent></Card>
     </div>
+
+    <Dialog open={signatureDecisionOpen} onOpenChange={(open) => { if (!saving) setSignatureDecisionOpen(open); }}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>ต้องการบันทึกลายเซ็นนี้หรือไม่?</DialogTitle>
+          <DialogDescription>
+            บันทึกไว้เพื่อให้ระบบเลือกลายเซ็นนี้ให้อัตโนมัติในการอนุมัติครั้งต่อไป หรือใช้เฉพาะเอกสารรอบนี้ก็ได้
+          </DialogDescription>
+        </DialogHeader>
+        {signature && <div className="flex justify-center rounded-xl border bg-muted/20 p-4"><img src={signature} alt="ลายเซ็นที่กำลังใช้" className="h-20 max-w-full object-contain" /></div>}
+        <DialogFooter className="gap-2 sm:gap-0">
+          <button type="button" disabled={saving} onClick={() => void decide("approve", false)} className="inline-flex min-h-10 items-center justify-center rounded-lg border px-4 text-sm font-semibold hover:bg-muted disabled:opacity-50">ใช้ครั้งนี้เท่านั้น</button>
+          <button type="button" disabled={saving} onClick={() => void decide("approve", true)} className="inline-flex min-h-10 items-center justify-center rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50">บันทึกและอนุมัติ</button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
 
     <Dialog open={Boolean(attachmentPreview)} onOpenChange={(open) => { if (!open) closeAttachmentPreview(); }}>
       <DialogContent className="flex h-[92vh] max-w-[96vw] flex-col overflow-hidden p-0 sm:max-w-7xl">
