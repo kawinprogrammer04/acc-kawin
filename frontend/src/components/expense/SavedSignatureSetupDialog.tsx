@@ -51,7 +51,7 @@ export function SavedSignatureSetupDialog({
             เซ็นไว้ครั้งเดียว ระบบจะเลือกลายเซ็นนี้ให้อัตโนมัติเมื่อคุณอนุมัติคำขอครั้งต่อไป
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-3 py-2">
+        <div className="space-y-3 px-6 py-4">
           <SignaturePad onChange={setSignature} />
           <p className="text-xs text-muted-foreground">
             ลายเซ็นนี้ใช้เฉพาะการลงนามเอกสารที่คุณกดยืนยันอนุมัติเท่านั้น
