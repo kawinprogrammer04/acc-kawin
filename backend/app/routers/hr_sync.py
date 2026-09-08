@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,7 @@ from app.services.hr_sync_job_service import (
     configuration_status,
     create_job,
 )
+from app.services.hr_bundle_transfer_service import apply_staged_bundle, stage_bundle
 
 
 router = APIRouter(prefix="/hr-sync", tags=["HR Sync"])
@@ -24,6 +25,10 @@ router = APIRouter(prefix="/hr-sync", tags=["HR Sync"])
 
 class ApplyRequest(BaseModel):
     preflight_job_id: UUID
+
+
+class BundleApplyRequest(BaseModel):
+    staging_token: UUID
 
 
 async def _bind_company(db: AsyncSession) -> int:
@@ -136,3 +141,27 @@ async def start_apply(
     user: User = Depends(require_platform_admin),
 ):
     return await _create(db, user, "apply", str(payload.preflight_job_id))
+
+
+@router.post("/bundle/preflight")
+async def preflight_bundle(
+    file: UploadFile = File(...),
+    _: User = Depends(require_platform_admin),
+):
+    try:
+        return await stage_bundle(file)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/bundle/apply")
+async def apply_bundle(
+    payload: BundleApplyRequest,
+    _: User = Depends(require_platform_admin),
+):
+    try:
+        return await apply_staged_bundle(str(payload.staging_token))
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_423_LOCKED, detail=str(exc)) from exc
