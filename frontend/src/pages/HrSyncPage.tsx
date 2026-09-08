@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Link } from "react-router-dom";
 import {
   AlertTriangle, CheckCircle2, Clock3, DatabaseBackup, FileCheck2,
@@ -109,6 +109,7 @@ export function HrSyncPage() {
   const [bundleResult, setBundleResult] = useState<HrBundleApplyResult | null>(null);
   const [bundleStarting, setBundleStarting] = useState<"preflight" | "apply" | null>(null);
   const [bundleConfirmOpen, setBundleConfirmOpen] = useState(false);
+  const bundleBase64Ref = useRef<HTMLTextAreaElement>(null);
 
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -173,6 +174,25 @@ export function HrSyncPage() {
       setBundlePreflight(null);
       setError(getApiErrorMessage(requestError, "ตรวจสอบ bundle ไม่สำเร็จ"));
     } finally { setBundleStarting(null); }
+  }
+
+  function prepareBundleFromBase64() {
+    setError("");
+    try {
+      const encoded = bundleBase64Ref.current?.value.replace(/\s/g, "") || "";
+      if (!encoded) throw new Error("กรุณาวางข้อมูล Base64 ก่อน");
+      const binary = window.atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+      for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+      }
+      setBundleFile(new File([bytes], "local-hr-bundle.zip", { type: "application/zip" }));
+      setBundlePreflight(null);
+      setBundleResult(null);
+      if (bundleBase64Ref.current) bundleBase64Ref.current.value = "";
+    } catch {
+      setError("ข้อมูล Base64 ไม่ถูกต้อง กรุณาสร้างใหม่จากไฟล์ ZIP");
+    }
   }
 
   async function startBundleApply() {
@@ -270,6 +290,26 @@ export function HrSyncPage() {
               ตรวจสอบแพ็กเกจ
             </Button>
           </div>
+          {bundleFile && (
+            <p className="text-xs text-emerald-700">
+              เตรียมไฟล์แล้ว: {bundleFile.name} ({(bundleFile.size / 1024 / 1024).toFixed(2)} MB)
+            </p>
+          )}
+          <details className="rounded-lg border bg-slate-50 p-3 text-sm">
+            <summary className="cursor-pointer font-medium">กรณี browser เลือกไฟล์ไม่ได้: วาง Base64</summary>
+            <div className="mt-3 space-y-2">
+              <textarea
+                ref={bundleBase64Ref}
+                aria-label="ข้อมูล ZIP Base64"
+                className="h-20 w-full rounded-md border bg-background px-3 py-2 font-mono text-xs"
+                placeholder="วาง Base64 ของไฟล์ ZIP ที่นี่"
+                disabled={Boolean(bundleStarting)}
+              />
+              <Button type="button" variant="outline" size="sm" onClick={prepareBundleFromBase64}>
+                ใช้ข้อมูล Base64 เป็น ZIP
+              </Button>
+            </div>
+          </details>
           {bundlePreflight && (
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
               <p className="font-medium">ตรวจสอบผ่าน — ยังไม่มีข้อมูลถูกเปลี่ยน</p>
