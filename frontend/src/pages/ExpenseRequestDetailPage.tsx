@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, CheckCircle2, Clock3, Download, Eye, FileText, Loader2, Pencil,
+  ArrowLeft, CheckCircle2, Clipboard, Clock3, Download, Eye, FileText, Loader2, Pencil,
   Receipt, RotateCcw, Send, Trash2, Upload, XCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -125,6 +125,32 @@ function Field({ label, value }: { label: string; value?: React.ReactNode }) {
   return <div><p className="text-xs text-muted-foreground">{label}</p><div className="mt-1 font-medium">{value || "-"}</div></div>;
 }
 
+function RecipientInfoField({
+  label,
+  value,
+  onCopy,
+}: {
+  label: string;
+  value?: string;
+  onCopy?: (label: string, value: string) => void;
+}) {
+  return <div className="min-w-0">
+    <p className="text-xs text-white/60">{label}</p>
+    <div className="mt-1 flex min-h-7 items-center justify-between gap-2">
+      <p className="min-w-0 break-words font-semibold text-white">{value || "-"}</p>
+      {value && onCopy && <button
+        type="button"
+        onClick={() => onCopy(label, value)}
+        title={`คัดลอก${label}`}
+        aria-label={`คัดลอก${label}`}
+        className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white/70 transition hover:bg-white/15 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+      >
+        <Clipboard className="h-3.5 w-3.5" />
+      </button>}
+    </div>
+  </div>;
+}
+
 function SectionTitle({ children, description }: { children: React.ReactNode; description?: string }) {
   return <div><h2 className="text-lg font-semibold">{children}</h2>{description && <p className="mt-1 text-sm text-muted-foreground">{description}</p>}</div>;
 }
@@ -152,6 +178,7 @@ export function ExpenseRequestDetailPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [copyNotice, setCopyNotice] = useState("");
   const [comment, setComment] = useState("");
   const [returnComment, setReturnComment] = useState("");
   const [rejectComment, setRejectComment] = useState("");
@@ -470,6 +497,16 @@ export function ExpenseRequestDetailPage() {
     finally { setSaving(false); }
   };
 
+  const copyRecipientInfo = async (label: string, value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyNotice(`คัดลอก${label}แล้ว`);
+      window.setTimeout(() => setCopyNotice(""), 2000);
+    } catch {
+      setError("เบราว์เซอร์ไม่อนุญาตให้คัดลอก กรุณาคัดลอกจากข้อมูลรับเงิน");
+    }
+  };
+
   if (loading) return <div className="flex h-[60vh] items-center justify-center"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>;
   if (!request) return <div className="p-6"><Link to="/expense-requests" className="text-primary hover:underline">กลับไปหน้ารายการ</Link><p className="mt-4 text-rose-600">{error || "ไม่พบคำขอ"}</p></div>;
 
@@ -544,14 +581,15 @@ export function ExpenseRequestDetailPage() {
     </CardContent></Card>
 
     <div className="grid gap-5 lg:grid-cols-2">
-      <Card><CardContent className="space-y-5 p-6">
+      <Card className="border-zinc-800 bg-black text-white shadow-xl"><CardContent className="space-y-5 p-6">
         <SectionTitle>ข้อมูลรับเงิน</SectionTitle>
+        {copyNotice && <p role="status" className="rounded-lg bg-emerald-400/15 px-3 py-2 text-sm font-medium text-emerald-300">{copyNotice}</p>}
         <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="ประเภทผู้รับเงินจริง" value={recipientTypeLabel[request.recipient_type || ""]} />
-          <Field label="ผู้รับเงิน" value={request.recipient_name} />
-          <Field label="ธนาคาร" value={request.bank_name} />
-          <Field label="ชื่อบัญชี" value={request.bank_account_name} />
-          <div className="sm:col-span-2"><Field label="เลขบัญชี" value={request.bank_account_number || request.bank_account_masked} /></div>
+          <RecipientInfoField label="ประเภทผู้รับเงินจริง" value={recipientTypeLabel[request.recipient_type || ""]} />
+          <RecipientInfoField label="ผู้รับเงิน" value={request.recipient_name} onCopy={copyRecipientInfo} />
+          <RecipientInfoField label="ธนาคาร" value={request.bank_name} onCopy={copyRecipientInfo} />
+          <RecipientInfoField label="ชื่อบัญชี" value={request.bank_account_name} onCopy={copyRecipientInfo} />
+          <div className="sm:col-span-2"><RecipientInfoField label="เลขบัญชี" value={request.bank_account_number || request.bank_account_masked} onCopy={copyRecipientInfo} /></div>
         </div>
       </CardContent></Card>
       <Card><CardContent className="space-y-5 p-6">
