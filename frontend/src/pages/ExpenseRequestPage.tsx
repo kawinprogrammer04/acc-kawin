@@ -10,7 +10,6 @@ import { DataListMultiFilterSelect } from "@/components/data-list/DataListFilter
 import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
 import { DataListDateFilterRow } from "@/components/data-list/DataListDateFilterRow";
-import { SavedSignatureSetupDialog } from "@/components/expense/SavedSignatureSetupDialog";
 import {
   dataListFilterControlClass,
   dataListFilterPanelClass,
@@ -164,7 +163,6 @@ function RequestTableRow({ item, onCancel }: { item: ExpenseRequest; onCancel: (
 
 export function ExpenseRequestPage() {
   const navigate = useNavigate();
-  const { user, refreshUser } = useAuth();
   const { currentCompany } = useCompany();
   const [items, setItems] = useState<ExpenseRequest[]>([]);
   const [total, setTotal] = useState(0);
@@ -178,9 +176,6 @@ export function ExpenseRequestPage() {
   const [applied, setApplied] = useState<PersonalRequestFilterForm>(emptyPersonalRequestFilters);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [signaturePromptSkipped, setSignaturePromptSkipped] = useState(false);
-
-  useEffect(() => { setSignaturePromptSkipped(false); }, [user?.id]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -229,11 +224,6 @@ export function ExpenseRequestPage() {
 
   return (
     <div className="w-full space-y-6 p-6">
-      <SavedSignatureSetupDialog
-        open={user?.has_saved_signature === false && !signaturePromptSkipped}
-        onSkip={() => setSignaturePromptSkipped(true)}
-        onSaved={refreshUser}
-      />
       <PageHeader title="คำขอเบิกค่าใช้จ่าย" subtitle="สร้างคำขอ ติดตามสถานะ และตรวจสอบเอกสาร">
         <button onClick={() => navigate("/expense-requests/create?step=0")}
           className="inline-flex min-h-14 items-center gap-3 rounded-2xl bg-primary px-8 text-base font-black text-primary-foreground shadow-md transition hover:-translate-y-0.5 hover:bg-primary/90 hover:shadow-lg">
