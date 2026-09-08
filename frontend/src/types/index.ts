@@ -28,6 +28,7 @@ export interface User {
   allowed_permissions?: string[];
   permission_sets?: PermissionSet[];
   has_saved_signature?: boolean;
+  signature_prompt_dismissed?: boolean;
 }
 
 export type PermissionAction = string;

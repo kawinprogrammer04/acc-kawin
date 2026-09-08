@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app.routers.auth import SavedSignatureIn, save_my_signature
+from app.routers.auth import SavedSignatureIn, dismiss_my_signature_prompt, save_my_signature
 
 
 class Database:
@@ -47,6 +47,16 @@ class SavedSignatureTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.status_code, 400)
         self.assertFalse(database.committed)
+
+    def test_user_can_permanently_dismiss_signature_prompt(self):
+        database = Database()
+        user = SimpleNamespace(signature_prompt_dismissed=False)
+
+        result = asyncio.run(dismiss_my_signature_prompt(database, user))
+
+        self.assertTrue(user.signature_prompt_dismissed)
+        self.assertTrue(database.committed)
+        self.assertEqual(result, {"signature_prompt_dismissed": True})
 
 
 if __name__ == "__main__":
