@@ -73,7 +73,6 @@ export function ApprovalInboxPage() {
   const statusLabel = statuses.length === 0
     ? "ทุกสถานะ"
     : statuses.map(status => inboxStatusOptions.find(option => option.value === status)?.label || status).join(", ");
-  const hasPendingApproval = items.some(item => item.status === "pending");
 
   const changeStatuses = (nextStatuses: string[]) => {
     setPage(1);
@@ -83,7 +82,7 @@ export function ApprovalInboxPage() {
   return (
     <div className="space-y-4 p-6">
       <SavedSignatureSetupDialog
-        open={Boolean(!loading && hasPendingApproval && user && user.has_saved_signature !== true && !signaturePromptSkipped)}
+        open={Boolean(user && user.has_saved_signature !== true && !signaturePromptSkipped)}
         onSkip={() => setSignaturePromptSkipped(true)}
         onSaved={refreshUser}
       />
