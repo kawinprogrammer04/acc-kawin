@@ -42,6 +42,24 @@ export interface HrSyncJob {
   requested_by_username: string;
 }
 
+export interface HrBundlePreflight {
+  staging_token: string;
+  bundle_id: string;
+  manifest_sha256: string;
+  source_created_at: string;
+  expires_at: string;
+  counts: Record<string, number>;
+}
+
+export interface HrBundleApplyResult {
+  status: "succeeded";
+  backup_file_name: string;
+  bundle_id: string;
+  manifest_sha256: string;
+  source_created_at: string;
+  counts: Record<string, number>;
+}
+
 export const hrSyncApi = {
   configuration: () =>
     api.get<HrSyncConfiguration>("/hr-sync/configuration").then((response) => response.data),
@@ -50,5 +68,15 @@ export const hrSyncApi = {
   preflight: () => api.post<{ id: string }>("/hr-sync/preflight").then((response) => response.data),
   apply: (preflightJobId: string) =>
     api.post<{ id: string }>("/hr-sync/apply", { preflight_job_id: preflightJobId })
+      .then((response) => response.data),
+  bundlePreflight: (file: File) => {
+    const body = new FormData();
+    body.append("file", file);
+    return api.post<HrBundlePreflight>("/hr-sync/bundle/preflight", body, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }).then((response) => response.data);
+  },
+  bundleApply: (stagingToken: string) =>
+    api.post<HrBundleApplyResult>("/hr-sync/bundle/apply", { staging_token: stagingToken })
       .then((response) => response.data),
 };
