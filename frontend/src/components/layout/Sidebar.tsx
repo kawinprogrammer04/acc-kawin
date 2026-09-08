@@ -619,6 +619,16 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
             </p>
           </div>
         </div>
+        <NavLink
+          to="/settings/signature"
+          className={({ isActive }) => cn(
+            "flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+            isActive ? activeCls : "text-muted-foreground hover:bg-accent hover:text-foreground",
+          )}
+        >
+          <PenSquare className="h-4 w-4" />
+          จัดการลายเซ็น
+        </NavLink>
         <button
           onClick={logout}
           className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
