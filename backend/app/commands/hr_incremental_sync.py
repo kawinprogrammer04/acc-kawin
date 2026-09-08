@@ -51,8 +51,12 @@ COMPANY_CODE = "KAWIN_BROTHERS"
 THAILAND = ZoneInfo("Asia/Bangkok")
 PRIMARY_NAME = "เอกสารหลักสำหรับอนุมัติ (PDF).pdf"
 REQUEST_ALLOWLIST_FILE = Path(__file__).with_name("expense_request_keep_20260826.txt")
-REQUEST_ALLOWLIST_EXPECTED_COUNT = 121
+REQUEST_ALLOWLIST_EXPECTED_COUNT = 123
 REQUEST_NUMBER_PATTERN = re.compile(r"^EXP-\d{6}-\d{6}$")
+REQUEST_NUMBER_OVERRIDES = {
+    "EXP-202609-014002": "ACC-EXP-202609-014002",
+    "EXP-202609-014003": "ACC-EXP-202609-014003",
+}
 TYPE_CODE_MAP = {
     "GENERAL": "general",
     "PURCHASE": "purchase_order",
@@ -545,10 +549,18 @@ def _as_date(value: Any) -> date | None:
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return date.fromisoformat(str(value)[:10])
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    else:
+        parsed = date.fromisoformat(str(value)[:10])
+    # The HR form historically persisted some dates with a Buddhist Era year.
+    # ACC stores ISO/Gregorian dates and renders them as B.E. in the Thai UI.
+    return parsed.replace(year=parsed.year - 543) if parsed.year >= 2400 else parsed
+
+
+def _target_request_number(source_number: str) -> str:
+    return REQUEST_NUMBER_OVERRIDES.get(source_number, source_number)
 
 
 def _decimal(value: Any) -> Decimal:
@@ -823,7 +835,8 @@ def _request_number_conflicts(
     snapshot: SourceSnapshot, existing_rows: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     source_by_number = {
-        str(row["request_number"]): row for row in snapshot.requests
+        _target_request_number(str(row["request_number"])): row
+        for row in snapshot.requests
     }
     conflicts: list[dict[str, Any]] = []
     for existing in existing_rows:
@@ -869,7 +882,10 @@ async def _target_plan(
             SELECT count(*) FROM hr_expense_request_import_map
              WHERE hr_expense_request_id = ANY(CAST(:ids AS bigint[]))
         """).bindparams(bindparam("ids")), {"ids": source_request_ids})).scalar_one())
-    request_numbers = [str(row["request_number"]) for row in snapshot.requests]
+    request_numbers = [
+        _target_request_number(str(row["request_number"]))
+        for row in snapshot.requests
+    ]
     existing_rows: list[dict[str, Any]] = []
     if request_numbers:
         existing_rows = [dict(row) for row in (await db.execute(text("""
@@ -1156,6 +1172,7 @@ async def _upsert_requests(
 
     for source in snapshot.requests:
         hr_id = int(source["hr_expense_request_id"])
+        request_number = _target_request_number(str(source["request_number"]))
         mapped = (await db.execute(text("""
             SELECT expense_request_id::text FROM hr_expense_request_import_map
              WHERE hr_expense_request_id=:hr_id
@@ -1164,9 +1181,9 @@ async def _upsert_requests(
         collision = (await db.execute(text("""
             SELECT id::text FROM expense_requests
              WHERE (id=:id OR request_no=:request_no) AND id<>:id
-        """), {"id": request_id, "request_no": source["request_number"]})).scalar_one_or_none()
+        """), {"id": request_id, "request_no": request_number})).scalar_one_or_none()
         if collision:
-            raise ValueError(f"ACC request number collision: {source['request_number']}")
+            raise ValueError(f"ACC request number collision: {request_number}")
         request_ids[hr_id] = request_id
 
         rows = items_by_request[hr_id]
@@ -1213,7 +1230,7 @@ async def _upsert_requests(
 
         values = {
             "id": request_id,
-            "request_no": source["request_number"],
+            "request_no": request_number,
             "company_id": company_id,
             "requester_user_id": user_ids[int(source["requester_hr_user_id"])],
             "requester_position_id": positions[str(source["requester_position_name"])],

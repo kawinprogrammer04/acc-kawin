@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.padding import PKCS7
 from app.commands.hr_incremental_sync import (
     REQUEST_ALLOWLIST_EXPECTED_COUNT,
     _apply_request_allowlist,
+    _as_date,
     _attachment_uuid,
     _certificate_uuid,
     _files,
@@ -21,6 +22,7 @@ from app.commands.hr_incremental_sync import (
     _request_number_conflicts,
     _request_uuid,
     _source_path,
+    _target_request_number,
     _without_excluded_requests,
     SourceSnapshot,
     decrypt_laravel_value,
@@ -46,6 +48,31 @@ class HrIncrementalSyncHelpersTest(unittest.TestCase):
         self.assertEqual(len(allowlist), REQUEST_ALLOWLIST_EXPECTED_COUNT)
         self.assertIn("EXP-202608-013975", allowlist)
         self.assertIn("EXP-202607-000008", allowlist)
+        self.assertIn("EXP-202609-014002", allowlist)
+        self.assertIn("EXP-202609-014003", allowlist)
+
+    def test_target_request_number_uses_approved_acc_overrides(self) -> None:
+        self.assertEqual(
+            _target_request_number("EXP-202609-014002"),
+            "ACC-EXP-202609-014002",
+        )
+        self.assertEqual(
+            _target_request_number("EXP-202609-014003"),
+            "ACC-EXP-202609-014003",
+        )
+        self.assertEqual(
+            _target_request_number("EXP-202608-013975"),
+            "EXP-202608-013975",
+        )
+
+    def test_as_date_normalizes_buddhist_era_years(self) -> None:
+        self.assertEqual(_as_date("2569-09-04"), date(2026, 9, 4))
+        self.assertEqual(_as_date(date(2569, 9, 4)), date(2026, 9, 4))
+        self.assertEqual(
+            _as_date(datetime(2569, 9, 4, 10, 30)),
+            date(2026, 9, 4),
+        )
+        self.assertEqual(_as_date("2026-09-04"), date(2026, 9, 4))
 
     def test_request_allowlist_filters_requests_and_all_child_rows(self) -> None:
         snapshot = SourceSnapshot(
