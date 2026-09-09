@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from app.models.crm_cashflow import CrmCashflowStatement, CrmCashflowStatementAttachment
-from app.routers.crm_cashflow import ALLOWED_ATTACHMENT_TYPES, MAX_ATTACHMENT_BYTES, delete_attachment
+from app.routers.crm_cashflow import (
+    ALLOWED_ATTACHMENT_TYPES,
+    MAX_ATTACHMENT_BYTES,
+    delete_attachment,
+    require_crm_cashflow_attachment_upload,
+    router,
+)
 
 
 class _Result:
@@ -23,6 +29,17 @@ class _Company:
 
 
 class CrmCashflowAttachmentRulesTests(unittest.TestCase):
+    def test_upload_route_uses_shared_crm_update_permission(self):
+        upload_route = next(
+            route
+            for route in router.routes
+            if route.path == "/crm-cashflow/statements/{statement_id}/attachments"
+            and "POST" in route.methods
+        )
+
+        dependency_calls = [dependency.dependency for dependency in upload_route.dependencies]
+        self.assertIn(require_crm_cashflow_attachment_upload, dependency_calls)
+
     def test_allowed_attachment_types(self):
         self.assertIn("image/jpeg", ALLOWED_ATTACHMENT_TYPES)
         self.assertIn("image/png", ALLOWED_ATTACHMENT_TYPES)

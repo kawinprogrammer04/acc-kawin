@@ -254,3 +254,40 @@ def require_permission(permission_key: str, *, legacy_min_role: str | None = Non
             detail=f"ไม่มีสิทธิ์ {permission_key}",
         )
     return _check
+
+
+def require_any_permission(
+    *permission_keys: str,
+    legacy_min_role: str | None = None,
+):
+    """Enforce at least one fine-grained permission.
+
+    Use this for a shared endpoint that is legitimately operated by more than
+    one menu, while retaining the role fallback for installations that have
+    not configured the permission catalog yet.
+    """
+    if not permission_keys:
+        raise ValueError("ต้องระบุ permission อย่างน้อยหนึ่งรายการ")
+
+    async def _check(
+        x_company_id: Optional[int] = Header(None, alias="X-Company-Id"),
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        company, role = await _resolve_company_access(x_company_id, current_user, db)
+        for permission_key in permission_keys:
+            if await has_company_permission(
+                db,
+                current_user,
+                company.id,
+                permission_key,
+                legacy_min_role=legacy_min_role,
+                company_role=role,
+            ):
+                return current_user
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"ไม่มีสิทธิ์อย่างน้อยหนึ่งรายการ: {', '.join(permission_keys)}",
+        )
+
+    return _check

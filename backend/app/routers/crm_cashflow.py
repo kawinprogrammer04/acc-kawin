@@ -32,6 +32,7 @@ from app.core.database import get_db
 from app.core.dependencies import (
     get_current_company,
     get_current_user,
+    require_any_permission,
     require_accountant,
     require_viewer,
 )
@@ -54,6 +55,12 @@ from app.services.crm_cashflow_rules import (
 
 
 router = APIRouter(prefix="/crm-cashflow", tags=["CRM Cashflow"])
+
+require_crm_cashflow_attachment_upload = require_any_permission(
+    "crm_cashflow_statement.update",
+    "crm_cashflow_invoice.update",
+    legacy_min_role="accountant",
+)
 
 DocumentType = Literal["tax_invoice", "cash_bill", "other"]
 VerificationStatus = Literal["pending", "verified"]
@@ -2270,7 +2277,11 @@ async def list_attachments(
     ]
 
 
-@router.post("/statements/{statement_id}/attachments", status_code=201, dependencies=[Depends(require_accountant)])
+@router.post(
+    "/statements/{statement_id}/attachments",
+    status_code=201,
+    dependencies=[Depends(require_crm_cashflow_attachment_upload)],
+)
 async def upload_attachment(
     statement_id: int,
     file: UploadFile = File(...),
