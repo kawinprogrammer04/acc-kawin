@@ -1251,6 +1251,143 @@ async def create_expense_request(
     return await _request_to_out(db, obj, include_sensitive=True)
 
 
+@router.post("/expense-requests/{request_id}/copy", response_model=ExpenseRequestOut, status_code=201)
+async def copy_expense_request_as_draft(
+    request_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    company: Company = Depends(get_current_company),
+):
+    source = await _get_company_row(
+        db, ExpenseRequest, request_id, company.id, "ไม่พบคำขอเบิกเงินนี้"
+    )
+    if source.requester_user_id != current_user.id:
+        raise HTTPException(403, "คัดลอกได้เฉพาะคำขอของตนเองเท่านั้น")
+
+    position, department = await _employee_organization(
+        db, current_user, company, source.requester_position_id
+    )
+    expense_type = await _get_company_row(
+        db, ExpenseType, source.expense_type_id, company.id, "ไม่พบประเภทการเบิก"
+    )
+    if source.request_format not in (expense_type.allowed_kinds or []):
+        raise HTTPException(400, "ประเภทการเบิกนี้ไม่รองรับรูปแบบคำขอเดิมแล้ว")
+
+    copied = ExpenseRequest(
+        company_id=company.id,
+        status="draft",
+        version=1,
+        current_revision=1,
+        department_id=department.id if department else None,
+        company_name_snapshot=company.name_th,
+        department_name_snapshot=department.name if department else None,
+        requester_name_snapshot=current_user.full_name or current_user.username,
+        requester_position_snapshot=position.name,
+        requester_user_id=current_user.id,
+        requester_position_id=source.requester_position_id,
+        expense_type_id=source.expense_type_id,
+        amount=Decimal("0"),
+        title=source.title,
+        description=source.description,
+        request_date=datetime.now(timezone.utc).date(),
+        required_date=None,
+        request_format=source.request_format,
+        payer_company_name=source.payer_company_name,
+        recipient_type=source.recipient_type,
+        recipient_name=source.recipient_name,
+        bank_name=source.bank_name,
+        bank_account_name=source.bank_account_name,
+        bank_account_number_encrypted=source.bank_account_number_encrypted,
+        bank_account_last4=source.bank_account_last4,
+        recipient_tax_id_encrypted=source.recipient_tax_id_encrypted,
+        recipient_tax_id_last4=source.recipient_tax_id_last4,
+        recipient_address=source.recipient_address,
+        service_description=source.service_description,
+        discount_amount=source.discount_amount,
+        subtotal_amount=Decimal("0"),
+        price_before_vat=Decimal("0"),
+        gross_amount=Decimal("0"),
+        net_amount=Decimal("0"),
+        paid_amount=Decimal("0"),
+        remaining_amount=Decimal("0"),
+        price_mode=source.price_mode,
+        vat_mode=source.vat_mode,
+        vat_rate=source.vat_rate,
+        vat_amount=Decimal("0"),
+        withholding_required=source.withholding_required,
+        withholding_mode=source.withholding_mode,
+        withholding_rate=source.withholding_rate,
+        withholding_amount=Decimal("0"),
+        requester_withholding_status=source.requester_withholding_status,
+        gross_up_enabled=source.gross_up_enabled,
+        gross_up_base_amount=None,
+        installment_enabled=False,
+        installment_chain_root_id=None,
+        installment_no=None,
+        installment_target_amount=None,
+        installment_payment_amount=None,
+        installment_chain_status=None,
+        requested_net_amount=source.requested_net_amount,
+        taxpayer_name=source.taxpayer_name,
+        taxpayer_type=source.taxpayer_type,
+        taxpayer_branch=source.taxpayer_branch,
+        taxpayer_id=source.taxpayer_id,
+        taxpayer_address=source.taxpayer_address,
+    )
+    db.add(copied)
+    await db.flush()
+
+    source_items = (
+        await db.execute(
+            select(ExpenseRequestItem)
+            .where(
+                ExpenseRequestItem.expense_request_id == source.id,
+                ExpenseRequestItem.revision == source.current_revision,
+            )
+            .order_by(ExpenseRequestItem.sort_order, ExpenseRequestItem.id)
+        )
+    ).scalars().all()
+    copied_items = []
+    for item in source_items:
+        copied_item = ExpenseRequestItem(
+            expense_request_id=copied.id,
+            revision=1,
+            sort_order=item.sort_order,
+            description=item.description,
+            quantity=item.quantity,
+            unit=item.unit,
+            unit_price=item.unit_price,
+            vat_rate=item.vat_rate,
+            withholding_rate=item.withholding_rate,
+            line_total=item.line_total,
+        )
+        db.add(copied_item)
+        copied_items.append(copied_item)
+
+    totals = expense_request_service.calculate_totals(copied, copied_items)
+    copied.amount = totals["grand_total"]
+    copied.subtotal_amount = totals["subtotal"]
+    copied.price_before_vat = totals["price_before_vat"]
+    copied.gross_amount = totals["grand_total"]
+    copied.net_amount = totals["payable_total"]
+    copied.remaining_amount = totals["payable_total"]
+    copied.vat_amount = totals["vat_amount"]
+    copied.withholding_amount = totals["withholding_amount"]
+    if (
+        copied.gross_up_enabled
+        and copied.requested_net_amount is not None
+        and copied.withholding_rate < 100
+    ):
+        copied.gross_up_base_amount = expense_request_service.money(
+            (copied.requested_net_amount - totals["vat_amount"])
+            / (Decimal("1") - copied.withholding_rate / Decimal("100"))
+        )
+
+    await db.commit()
+    await db.refresh(copied)
+    return await _request_to_out(db, copied, include_sensitive=True)
+
+
 def _timeline_approvers_by_step(
     steps: list[ApprovalRequestStep],
     candidates: list[ExpenseApprovalCandidate],

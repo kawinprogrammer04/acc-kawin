@@ -532,6 +532,8 @@ export const expenseRequestsApi = {
     URL.revokeObjectURL(url);
   },
   submit: (id: string) => api.post(`/expense-requests/${id}/submit`).then((r) => r.data),
+  copy: (id: string): Promise<ExpenseRequest> =>
+    api.post(`/expense-requests/${id}/copy`).then((r) => r.data),
   cancel: (id: string) => api.delete(`/expense-requests/${id}`),
   permanentlyDelete: (id: string) => api.delete(`/expense-requests/${id}/permanent`),
   createNextInstallment: (id: string, data: { installment_payment_amount: number }) =>
