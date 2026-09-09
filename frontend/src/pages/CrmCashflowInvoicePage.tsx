@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Camera, Eye, Paperclip, Eraser, Trash2, Upload, X } from "lucide-react";
 
 import {
@@ -11,6 +11,7 @@ import {
   type CrmCashflowStatement,
 } from "@/api/crmCashflow";
 import { Can } from "@/components/auth/RequirePermission";
+import { DocumentCameraDialog } from "@/components/attachments/DocumentCameraDialog";
 import { useAuth } from "@/context/AuthContext";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -128,9 +129,6 @@ export function CrmCashflowInvoicePage() {
 
   // Camera state
   const [cameraOpen, setCameraOpen] = useState(false);
-  const [cameraError, setCameraError] = useState("");
-  const cameraStreamRef = useRef<MediaStream | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   // Route every alert through these instead of calling setError/setNotice
   // directly, so the toast re-plays even when the message text repeats.
@@ -443,62 +441,6 @@ export function CrmCashflowInvoicePage() {
     }
   };
 
-  // ── Camera handlers ──────────────────────────────────────────────────────
-  const openCamera = async () => {
-    setCameraError("");
-    setCameraOpen(true);
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "environment",
-          // Documents (A4/ใบเสร็จ) are tall and narrow — ask for a portrait
-          // frame instead of the camera's landscape default so the whole
-          // page fits without the user having to rotate the phone.
-          aspectRatio: { ideal: 3 / 4 },
-          width: { ideal: 1440 },
-          height: { ideal: 1920 },
-        },
-        audio: false,
-      });
-      cameraStreamRef.current = stream;
-      // Wait for video element to mount, then attach stream
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play().catch(() => {});
-        }
-      }, 100);
-    } catch (err) {
-      setCameraError("ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตการใช้งานกล้อง หรือใช้การอัปโหลดไฟล์แทน");
-    }
-  };
-
-  const closeCamera = () => {
-    if (cameraStreamRef.current) {
-      cameraStreamRef.current.getTracks().forEach((track) => track.stop());
-      cameraStreamRef.current = null;
-    }
-    setCameraOpen(false);
-    setCameraError("");
-  };
-
-  const capturePhoto = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    const canvas = document.createElement("canvas");
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const file = new File([blob], `camera_${Date.now()}.jpg`, { type: "image/jpeg" });
-      closeCamera();
-      uploadAttachment(file);
-    }, "image/jpeg", 0.9);
-  };
-
   return <div className="flex h-full flex-col">
     <PageHeader title="ติดตามใบกำกับภาษี (CRM)" description="แสดงทุกรายการที่ยังไม่ได้ตรวจสอบ ไม่ว่าจะมีใบกำกับภาษีหรือไม่ก็ตาม" />
 
@@ -669,7 +611,7 @@ export function CrmCashflowInvoicePage() {
               <div className="grid gap-2">
                 <button
                   type="button"
-                  onClick={openCamera}
+                  onClick={() => setCameraOpen(true)}
                   className="flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-sm text-muted-foreground hover:border-primary hover:bg-primary/5"
                 >
                   <Camera className="h-5 w-5" />
@@ -774,31 +716,11 @@ export function CrmCashflowInvoicePage() {
       </DialogContent>
     </Dialog>
 
-    <Dialog open={cameraOpen} onOpenChange={(open) => { if (!open) closeCamera(); }}>
-      <DialogContent className="max-w-sm border-0 bg-transparent shadow-none">
-        <DialogHeader>
-          <DialogTitle>ถ่ายรูป</DialogTitle>
-          <DialogDescription>จัดเอกสารให้เต็มกรอบแนวตั้งแล้วกดถ่าย</DialogDescription>
-        </DialogHeader>
-        <div className="relative mx-auto aspect-[3/4] max-h-[70vh] w-full">
-          {cameraError ? (
-            <p className="flex h-full items-center justify-center text-center text-sm text-red-600">{cameraError}</p>
-          ) : (
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className="h-full w-full rounded-lg border object-cover"
-            />
-          )}
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={closeCamera}>ยกเลิก</Button>
-          <Button onClick={capturePhoto} disabled={!!cameraError}>ถ่าย</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <DocumentCameraDialog
+      open={cameraOpen}
+      onOpenChange={setCameraOpen}
+      onCapture={uploadAttachment}
+    />
 
     <Dialog open={!!previewAttachment} onOpenChange={(open) => !open && setPreviewAttachment(null)}>
       <DialogContent className="max-h-[92vh] max-w-4xl overflow-y-auto">
