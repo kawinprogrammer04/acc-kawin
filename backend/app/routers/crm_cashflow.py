@@ -57,9 +57,9 @@ from app.services.crm_cashflow_rules import (
 router = APIRouter(prefix="/crm-cashflow", tags=["CRM Cashflow"])
 
 require_crm_cashflow_attachment_upload = require_any_permission(
-    "crm_cashflow_statement.update",
-    "crm_cashflow_invoice.update",
-    legacy_min_role="accountant",
+    "crm_cashflow_statement.view",
+    "crm_cashflow_invoice.view",
+    legacy_min_role="viewer",
 )
 
 DocumentType = Literal["tax_invoice", "cash_bill", "other"]
