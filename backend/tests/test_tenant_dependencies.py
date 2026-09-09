@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from app.core.dependencies import (
     _resolve_company_access,
     has_company_permission,
+    require_any_permission,
     require_min_role,
 )
 from app.models.company import Company
@@ -103,6 +104,68 @@ class TenantDependencyTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(allowed)
+
+    async def test_any_permission_accepts_viewer_with_matching_catalog_grant(self):
+        dependency = require_any_permission(
+            "crm_cashflow_statement.update",
+            "crm_cashflow_invoice.update",
+            legacy_min_role="accountant",
+        )
+        current_user = _user()
+
+        with (
+            patch(
+                "app.core.dependencies._resolve_company_access",
+                new=AsyncMock(return_value=(_company(), "viewer")),
+            ),
+            patch(
+                "app.core.dependencies.has_company_permission",
+                new=AsyncMock(side_effect=[False, True]),
+            ) as permission_check,
+        ):
+            resolved = await dependency(
+                x_company_id=2,
+                current_user=current_user,
+                db=AsyncMock(),
+            )
+
+        self.assertIs(resolved, current_user)
+        self.assertEqual(permission_check.await_count, 2)
+        self.assertEqual(
+            permission_check.await_args_list[1].args[3],
+            "crm_cashflow_invoice.update",
+        )
+        self.assertEqual(
+            permission_check.await_args_list[1].kwargs["company_role"],
+            "viewer",
+        )
+
+    async def test_any_permission_rejects_viewer_without_matching_catalog_grant(self):
+        dependency = require_any_permission(
+            "crm_cashflow_statement.update",
+            "crm_cashflow_invoice.update",
+            legacy_min_role="accountant",
+        )
+
+        with (
+            patch(
+                "app.core.dependencies._resolve_company_access",
+                new=AsyncMock(return_value=(_company(), "viewer")),
+            ),
+            patch(
+                "app.core.dependencies.has_company_permission",
+                new=AsyncMock(return_value=False),
+            ) as permission_check,
+            self.assertRaises(HTTPException) as raised,
+        ):
+            await dependency(
+                x_company_id=2,
+                current_user=_user(),
+                db=AsyncMock(),
+            )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(permission_check.await_count, 2)
 
     async def test_platform_admin_can_select_tenant_and_binds_rls_context(self):
         db = AsyncMock()
