@@ -7,6 +7,7 @@ import io
 from pathlib import Path
 
 from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PdfReadError
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.utils import ImageReader
@@ -125,6 +126,75 @@ def _request_approval_name_clear_slot(step_no: int, page_count: int) -> dict:
     }
 
 
+def primary_document_layout(source: Path, step_no: int) -> tuple[dict, dict]:
+    """Locate the generated form's signature/name cells, including older layouts.
+
+    WeasyPrint preserves the CSS clipping rectangles: the signature line has a
+    12pt content box and the name has a 10pt box, 16pt wider and just below it.
+    Pair these rectangles instead of assuming that the totals above the grid
+    always have the same height. Read the unsigned source so prior overlays
+    cannot change the detected geometry.
+    """
+    reader = PdfReader(str(source))
+    page = reader.pages[-1]
+    if page.rotation:
+        page.transfer_rotation_to_content()
+    width, height = float(page.mediabox.width), float(page.mediabox.height)
+    boxes: set[tuple[float, float, float, float]] = set()
+
+    def collect(operator, operands, matrix, _text_matrix):
+        if operator != b"re" or abs(matrix[1]) > .001 or abs(matrix[2]) > .001:
+            return
+        x, y, w, h = map(float, operands)
+        left, right = sorted((x * matrix[0] + matrix[4], (x + w) * matrix[0] + matrix[4]))
+        bottom, top = sorted((y * matrix[3] + matrix[5], (y + h) * matrix[3] + matrix[5]))
+        box = (left, height - top, right - left, top - bottom)
+        if .65 * height < box[1] < .98 * height and .16 * width < box[2] < .24 * width:
+            boxes.add(tuple(round(value, 3) for value in box))
+
+    page.extract_text(visitor_operand_before=collect)
+    cells = []
+    for box in boxes:
+        x, y, w, h = box
+        if abs(h - 12) > .05:
+            continue
+        names = [n for n in boxes if abs(n[3] - 10) < .05
+                 and abs(n[0] + n[2] / 2 - x - w / 2) < .1
+                 and abs(n[2] - w - 16) < .1 and 1 < n[1] - y - h < 5]
+        if len(names) == 1:
+            cells.append((box, names[0]))
+    cells.sort(key=lambda cell: (round(cell[0][1], 1), cell[0][0]))
+    if cells:
+        index = max(1, int(step_no))  # cell zero belongs to the requester
+        if index >= len(cells):
+            raise ValueError("เอกสารหลักไม่มีช่องสำหรับลำดับผู้อนุมัตินี้ กรุณาสร้างเอกสารใหม่")
+        (x, y, w, h), (nx, ny, nw, nh) = cells[index]
+        stamp_width = min(.155 * width, w - 4)
+        signature = {
+            "page_number": len(reader.pages), "x": (x + (w - stamp_width) / 2) / width,
+            "y": (y - 2.6) / height, "width": stamp_width / width,
+            "height": (h + 2) / height, "page_rotation": 0, "coordinate_system": "top_left",
+        }
+        name = {"page_number": len(reader.pages), "x": nx / width, "y": ny / height,
+                "width": nw / width, "height": nh / height, "coordinate_system": "top_left"}
+        return signature, name
+    # Imported HR forms without these CSS boxes keep their original grid.
+    return (_request_signature_slot(step_no, len(reader.pages)),
+            _request_approval_name_slot(step_no, len(reader.pages)))
+
+
+def primary_document_defaults(source: Path, step_no: int) -> dict:
+    """Expose the same server-selected slot to the preview without hiding broken files."""
+    try:
+        slot, _ = primary_document_layout(source, step_no)
+    except (OSError, PdfReadError, ValueError):
+        # A missing/invalid attachment must not prevent opening request details.
+        # The signing path still raises before recording any approval.
+        return {}
+    return {f"default_signature_{key}": slot["page_number" if key == "page" else key]
+            for key in ("page", "x", "y", "width", "height")}
+
+
 def _requested_placement(placement: dict, page_count: int) -> dict:
     """Normalize a browser placement without changing its visible position."""
     return {
@@ -198,11 +268,11 @@ def _stamp_pdf(source: Path, signature: bytes, placements: list[dict]) -> bytes:
             overlay = canvas.Canvas(overlay_stream, pagesize=(width, height))
             approval_name = str(placement.get("approval_name") or "").strip()
             if approval_name:
-                name_slot = _request_approval_name_slot(
+                name_slot = placement.get("approval_name_slot") or _request_approval_name_slot(
                     int(placement.get("approval_step_no", 1)), len(reader.pages)
                 )
                 name_x, name_y, name_w, name_h = _placement_box(name_slot, width, height)
-                clear_slot = _request_approval_name_clear_slot(
+                clear_slot = placement.get("approval_name_slot") or _request_approval_name_clear_slot(
                     int(placement.get("approval_step_no", 1)), len(reader.pages)
                 )
                 clear_x, clear_y, clear_w, clear_h = _placement_box(clear_slot, width, height)
@@ -268,15 +338,15 @@ async def stamp_required_documents(db: AsyncSession, req: ExpenseRequest, step: 
         ]
         requirement = requirements_by_id.get(attachment["requirement_id"])
         if attachment["attachment_type"] == "primary":
-            # The preview is the source of truth: stamp exactly where the
-            # approver confirmed it. Older clients that send no placement
-            # still receive the deterministic HR-grid fallback.
-            file_placements = (
-                [_requested_placement(file_placements[-1], page_count)]
-                if file_placements else [_request_signature_slot(step.step_no, page_count)]
-            )
+            # The generated request PDF has a fixed signature grid. Never
+            # trust a dragged client placement for the primary document:
+            # approval names use the same deterministic step slot, so letting
+            # the signature move independently can make the two overlap.
+            signature_slot, name_slot = primary_document_layout(Path(attachment["file_path"]), step.step_no)
+            file_placements = [signature_slot]
             file_placements[0]["approval_name"] = approval_name
             file_placements[0]["approval_step_no"] = step.step_no
+            file_placements[0]["approval_name_slot"] = name_slot
         elif not file_placements:
             file_placements = [{
                 "page_number": requirement.default_signature_page if requirement and requirement.default_signature_page else 1,
