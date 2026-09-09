@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
-  ArrowLeft, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Eraser, Eye, FileCheck2,
+  ArrowLeft, Check, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Copy, Eraser, Eye, FileCheck2,
   FileText, Info, Loader2, LockKeyhole, Pencil, Plus, RefreshCw, Save, Send, Trash2, Upload, UploadCloud, Wallet,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -117,7 +117,17 @@ function SuccessNotice({ message }: { message: string }) {
   return <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div>;
 }
 
-function RequestTableRow({ item, onCancel }: { item: ExpenseRequest; onCancel: (item: ExpenseRequest) => void }) {
+function RequestTableRow({
+  item,
+  onCancel,
+  onCopy,
+  copying,
+}: {
+  item: ExpenseRequest;
+  onCancel: (item: ExpenseRequest) => void;
+  onCopy: (item: ExpenseRequest) => void;
+  copying: boolean;
+}) {
   return (
     <tr className="hover:bg-muted/40">
       <td className="px-4 py-4"><Link to={`/expense-requests/${item.id}`} className="font-mono font-black text-primary hover:underline">{item.request_no || item.id.slice(0, 8)}</Link><p className="mt-1 text-xs text-muted-foreground">{item.department_name || "ไม่ระบุแผนก"}</p></td>
@@ -143,6 +153,12 @@ function RequestTableRow({ item, onCancel }: { item: ExpenseRequest; onCancel: (
             className="inline-flex h-10 items-center gap-1.5 rounded-md bg-primary/10 px-4 text-xs font-black text-primary hover:bg-primary/20">
             <Eye className="h-3.5 w-3.5" /> เปิดรายการ
           </Link>
+          <button type="button" onClick={() => onCopy(item)} disabled={copying}
+            className="inline-flex h-10 items-center gap-1.5 rounded-md px-3 text-xs font-bold text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label={`คัดลอก ${item.request_no || "คำขอนี้"} เป็นแบบร่างใหม่`}
+            title="คัดลอกเป็นแบบร่างใหม่">
+            {copying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Copy className="h-3.5 w-3.5" />} คัดลอก
+          </button>
           {["draft", "returned_for_correction"].includes(item.status) && (
             <>
               <Link to={`/expense-requests/${item.id}/edit?step=0`}
@@ -176,6 +192,7 @@ export function ExpenseRequestPage() {
   const [applied, setApplied] = useState<PersonalRequestFilterForm>(emptyPersonalRequestFilters);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [copyingId, setCopyingId] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -222,6 +239,19 @@ export function ExpenseRequestPage() {
     catch (e) { setError(getApiErrorMessage(e, "ยกเลิกแบบร่างไม่สำเร็จ")); }
   };
 
+  const copyAsDraft = async (item: ExpenseRequest) => {
+    setCopyingId(item.id);
+    setError("");
+    try {
+      const copied = await expenseRequestsApi.copy(item.id);
+      navigate(`/expense-requests/${copied.id}/edit?step=0`, { replace: false });
+    } catch (e) {
+      setError(getApiErrorMessage(e, "คัดลอกคำขอเป็นแบบร่างไม่สำเร็จ"));
+    } finally {
+      setCopyingId(null);
+    }
+  };
+
   return (
     <div className="w-full space-y-6 p-6">
       <PageHeader title="คำขอเบิกค่าใช้จ่าย" subtitle="สร้างคำขอ ติดตามสถานะ และตรวจสอบเอกสาร">
@@ -262,7 +292,7 @@ export function ExpenseRequestPage() {
           <thead className="text-left text-xs font-black uppercase text-muted-foreground"><tr>
             {["คำขอ", "วันที่", "ธนาคาร", "ชื่อผู้รับ", "รายการ", "ประเภท", "ยอดเบิก", "สถานะ", "ดำเนินการ"].map((heading, index) => <th key={heading} className={`${dataListTableHeaderCellClass} px-4 py-3 ${[6, 8].includes(index) ? "text-right" : "text-left"}`}>{heading}</th>)}
           </tr></thead>
-          <tbody className="divide-y">{items.map(item => <RequestTableRow key={item.id} item={item} onCancel={cancelDraft} />)}</tbody>
+          <tbody className="divide-y">{items.map(item => <RequestTableRow key={item.id} item={item} onCancel={cancelDraft} onCopy={copyAsDraft} copying={copyingId === item.id} />)}</tbody>
           {!loading && total > 0 && <tfoot className="border-t-2 bg-muted/50"><tr>
             <td colSpan={6} className="px-4 py-4 text-right text-sm font-black">ยอดเบิกรวม</td>
             <td className="whitespace-nowrap px-4 py-4 text-right text-base font-black text-primary">{formatCurrency(stats.amount_total)}</td>
