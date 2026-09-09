@@ -3,13 +3,14 @@ import asyncio
 import tempfile
 import inspect
 import unittest
+from unittest.mock import patch
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
 from openpyxl import load_workbook
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter, Transformation
 from reportlab.pdfgen import canvas
 
 from app.services.expense_finance_service import excel_bytes
@@ -27,6 +28,9 @@ from app.services.expense_signature_service import (
     _request_signature_slot,
     _requested_placement,
     _stamp_pdf,
+    primary_document_layout,
+    primary_document_defaults,
+    stamp_required_documents,
 )
 from app.services.approval_service import _request_kind_filter, resolve_approver_for_position, routing_amount
 from app.routers.approvals import _employee_organization, _rule_specificity, _timeline_approvers_by_step
@@ -519,6 +523,36 @@ class ExpenseExportTests(unittest.TestCase):
 
 
 class ExpenseRequestPdfTests(unittest.TestCase):
+    def assert_actual_grid_stamping(self, source, step_no=1):
+        slot, name = primary_document_layout(source, step_no)
+        page = PdfReader(str(source)).pages[-1]
+        height = float(page.mediabox.height)
+        self.assertLess(slot['y'] + slot['height'], name['y'])
+        self.assertEqual(primary_document_defaults(source, step_no)['default_signature_y'], slot['y'])
+        # Moving the rendered form must move both slots. This fails for the
+        # previous hardcoded HR coordinates even when the PDF still opens.
+        shifted = source.with_name('shifted.pdf')
+        writer = PdfWriter()
+        writer.clone_document_from_reader(PdfReader(str(source)))
+        writer.pages[-1].add_transformation(Transformation().translate(ty=-18))
+        with shifted.open('wb') as target:
+            writer.write(target)
+        shifted_slot, shifted_name = primary_document_layout(shifted, step_no)
+        self.assertAlmostEqual(shifted_slot['y'] - slot['y'], 18 / height, places=5)
+        self.assertAlmostEqual(shifted_name['y'] - name['y'], 18 / height, places=5)
+        stamped = _stamp_pdf(source, base64_png(), [{**slot, 'approval_name': 'Signed Tester',
+            'approval_step_no': step_no, 'approval_name_slot': name}])
+        images = []
+        def image_box(operator, _args, matrix, _text_matrix):
+            if operator == b'Do':
+                images.append(matrix[:])
+        stamped_page = PdfReader(io.BytesIO(stamped)).pages[-1]
+        stamped_page.extract_text(visitor_operand_before=image_box)
+        # Inspect the final raster transform, not just the requested placement.
+        self.assertTrue(images)
+        self.assertGreater(images[-1][5], (1 - name['y']) * height)
+        self.assertIn('Signed Tester', stamped_page.extract_text())
+
     def test_hr_layout_renders_multiple_pages_and_signature_grid(self):
         req = request(
             id="request-id", request_no="EXP-202608-000099", current_revision=2,
@@ -552,6 +586,7 @@ class ExpenseRequestPdfTests(unittest.TestCase):
             self.assertIn("Payment Approval", text)
             self.assertIn("EXP-202608-000099", text)
             self.assertGreater(target.stat().st_size, 10_000)
+            self.assert_actual_grid_stamping(target)
 
     def test_installment_document_shows_subtotal_and_installment_amount_rows(self):
         # รวมเงิน must always be the full items subtotal, with a separate row
@@ -590,9 +625,13 @@ class ExpenseRequestPdfTests(unittest.TestCase):
             self.assertIn("ในงวดนี้", text)
             self.assertIn("10,000.00", text)  # รวมเงิน = full items subtotal
             self.assertIn("500.00", text)  # จำนวนที่ต้องจ่ายในงวดนี้ = installment amount
+            self.assert_actual_grid_stamping(target)
 
 
 class SignaturePdfTests(unittest.TestCase):
+    def test_missing_primary_does_not_break_request_details(self):
+        self.assertEqual(primary_document_defaults(Path('/missing/primary.pdf'), 1), {})
+
     def test_signature_name_replaces_candidate_snapshot_even_with_one_candidate(self):
         class Result:
             def __init__(self, rows):
@@ -672,6 +711,82 @@ class SignaturePdfTests(unittest.TestCase):
             self.assertGreater(clear["y"], signature_line)
             self.assertGreaterEqual(clear["y"], name["y"])
             self.assertLessEqual(clear["y"] + clear["height"], name["y"] + name["height"])
+
+    def test_primary_document_ignores_dragged_client_placement(self):
+        class Result:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def all(self):
+                return self.rows
+
+            def mappings(self):
+                return self
+
+        class Database:
+            def __init__(self, attachment):
+                self.results = iter([
+                    Result([]),
+                    Result([(53, "ผู้อนุมัติ ทดสอบ", "approver")]),
+                    Result([attachment]),
+                    Result([]),
+                ])
+                self.added = []
+
+            async def execute(self, _query):
+                return next(self.results)
+
+            def add(self, value):
+                self.added.append(value)
+
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "request.pdf"
+            pdf = canvas.Canvas(str(source))
+            pdf.drawString(50, 800, "request")
+            pdf.save()
+            attachment = {
+                "id": "primary-id",
+                "attachment_type": "primary",
+                "file_name": "request.pdf",
+                "file_path": str(source),
+                "signed_file_path": None,
+                "requirement_id": None,
+                "requires_signature": True,
+            }
+            database = Database(attachment)
+            captured = []
+
+            def capture(_source, _signature, placements):
+                captured.extend(placements)
+                return b"signed-pdf"
+
+            import base64
+            signature_data_url = "data:image/png;base64," + base64.b64encode(base64_png()).decode("ascii")
+            with (
+                patch("app.services.expense_signature_service.settings.EXPENSE_REQUEST_UPLOAD_DIR", folder),
+                patch("app.services.expense_signature_service._stamp_pdf", side_effect=capture),
+            ):
+                asyncio.run(stamp_required_documents(
+                    database,
+                    SimpleNamespace(id="request-id", company_id=1, current_revision=1),
+                    SimpleNamespace(id=10, step_no=1),
+                    53,
+                    signature_data_url,
+                    [{
+                        "attachment_id": "primary-id",
+                        "page_number": 1,
+                        "x": .10,
+                        "y": .84,
+                        "width": .50,
+                        "height": .10,
+                        "coordinate_system": "top_left",
+                    }],
+                ))
+
+            expected = _request_signature_slot(1, 1)
+            self.assertEqual(len(captured), 1)
+            for key in ("page_number", "x", "y", "width", "height", "coordinate_system"):
+                self.assertEqual(captured[0][key], expected[key])
 
     def test_requested_placement_keeps_browser_coordinates_and_clamps_page(self):
         placement = _requested_placement({

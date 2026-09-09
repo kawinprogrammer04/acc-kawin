@@ -59,11 +59,11 @@ export function initialPlacement(document: ExpenseRequestAttachment, stepNo: num
       // The primary signature grid is on the final generated page. The
       // sentinel is resolved after PDF.js knows the real number of pages.
       // Keep the default box on the requested signature-line position.
-      page_number: 999,
-      x: 0.0773 + column * 0.2297,
-      y: 0.8250 + row * 0.063,
-      width: 0.155,
-      height: 0.026,
+      page_number: Number(document.default_signature_page ?? 999),
+      x: Number(document.default_signature_x ?? (0.0773 + column * 0.2297)),
+      y: Number(document.default_signature_y ?? (0.8250 + row * 0.063)),
+      width: Number(document.default_signature_width ?? 0.155),
+      height: Number(document.default_signature_height ?? 0.026),
       page_rotation: 0,
       coordinate_system: "top_left",
     };
@@ -104,6 +104,7 @@ export function PdfSignatureWorkspace({
   const [activeId, setActiveId] = useState(requiredDocuments[0]?.id || "");
   const [placements, setPlacements] = useState<Record<string, SignaturePlacement>>(defaults);
   const [pageCount, setPageCount] = useState(1);
+  const [displayPage, setDisplayPage] = useState(1);
   const [pdfDoc, setPdfDoc] = useState<PdfDocumentHandle | null>(null);
   const [imageUrl, setImageUrl] = useState<string>();
   const [loading, setLoading] = useState(false);
@@ -117,6 +118,7 @@ export function PdfSignatureWorkspace({
   const activePlacement = activeDocument ? placements[activeDocument.id] : undefined;
   const activeIsPdf = activeDocument ? isPdfAttachment(activeDocument) : false;
   const activeIsImage = activeDocument ? isImageAttachment(activeDocument) : false;
+  const activeHasFixedPlacement = activeDocument?.attachment_type === "primary";
 
   useEffect(() => {
     setPlacements(defaults);
@@ -149,6 +151,7 @@ export function PdfSignatureWorkspace({
           objectUrl = URL.createObjectURL(blob);
           setImageUrl(objectUrl);
           setPageCount(1);
+          setDisplayPage(1);
           setPlacements((current) => current[activeDocument.id]
             ? { ...current, [activeDocument.id]: { ...current[activeDocument.id], page_number: 1 } }
             : current);
@@ -169,6 +172,7 @@ export function PdfSignatureWorkspace({
           const requestedPage = activeDocument.attachment_type === "primary" && placement.page_number === 999
             ? pdf.numPages : placement.page_number;
           const pageNumber = Math.max(1, Math.min(pdf.numPages, requestedPage));
+          setDisplayPage(pageNumber);
           return pageNumber === placement.page_number
             ? current
             : { ...current, [activeDocument.id]: { ...placement, page_number: pageNumber } };
@@ -199,7 +203,7 @@ export function PdfSignatureWorkspace({
 
     const renderPage = async () => {
       try {
-        const pageNumber = Math.max(1, Math.min(pdfDoc.numPages, activePlacement.page_number));
+        const pageNumber = Math.max(1, Math.min(pdfDoc.numPages, displayPage));
         const page = await pdfDoc.getPage(pageNumber);
         if (disposed) return;
         const canvas = canvasRef.current;
@@ -224,7 +228,7 @@ export function PdfSignatureWorkspace({
     renderPage();
     return () => { disposed = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfDoc, activePlacement?.page_number, renderVersion]);
+  }, [pdfDoc, displayPage, renderVersion]);
 
   useEffect(() => {
     if (!open) return;
@@ -238,18 +242,20 @@ export function PdfSignatureWorkspace({
   };
 
   const updatePlacement = (changes: Partial<SignaturePlacement>) => {
-    if (!activeDocument || !activePlacement) return;
+    if (!activeDocument || !activePlacement || activeHasFixedPlacement) return;
     publish({ ...placements, [activeDocument.id]: { ...activePlacement, ...changes } });
   };
 
   const changePage = (pageNumber: number) => {
     if (!activePlacement) return;
-    updatePlacement({ page_number: Math.max(1, Math.min(pageCount, pageNumber)) });
+    const nextPage = Math.max(1, Math.min(pageCount, pageNumber));
+    setDisplayPage(nextPage);
+    if (!activeHasFixedPlacement) updatePlacement({ page_number: nextPage });
     setLoading(true);
   };
 
   const beginDrag = (event: React.PointerEvent<HTMLDivElement>, mode: "move" | "resize") => {
-    if (!activePlacement) return;
+    if (!activePlacement || activeHasFixedPlacement) return;
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -296,7 +302,9 @@ export function PdfSignatureWorkspace({
       onPointerDown={(event) => beginDrag(event, "move")}
       onPointerMove={drag}
       onPointerUp={endDrag}
-      className="absolute z-10 flex cursor-move touch-none items-center justify-center border-2 border-primary bg-white/70 shadow"
+      className={`absolute z-10 flex touch-none items-center justify-center border-2 border-primary bg-white/70 shadow ${
+        activeHasFixedPlacement ? "cursor-default" : "cursor-move"
+      }`}
       style={{
         left: `${(activePlacement?.x || 0) * 100}%`,
         top: `${(activePlacement?.y || 0) * 100}%`,
@@ -309,13 +317,15 @@ export function PdfSignatureWorkspace({
       ) : (
         <span className="px-1 text-center text-[10px] font-medium text-primary">ลายเซ็นที่บันทึกไว้</span>
       )}
-      <div
-        aria-label="ย่อหรือขยายลายเซ็น"
-        onPointerDown={(event) => beginDrag(event, "resize")}
-        onPointerMove={drag}
-        onPointerUp={endDrag}
-        className="absolute -bottom-2 -right-2 h-5 w-5 cursor-nwse-resize touch-none rounded-full border-2 border-white bg-primary shadow"
-      />
+      {!activeHasFixedPlacement && (
+        <div
+          aria-label="ย่อหรือขยายลายเซ็น"
+          onPointerDown={(event) => beginDrag(event, "resize")}
+          onPointerMove={drag}
+          onPointerUp={endDrag}
+          className="absolute -bottom-2 -right-2 h-5 w-5 cursor-nwse-resize touch-none rounded-full border-2 border-white bg-primary shadow"
+        />
+      )}
     </div>
   );
 
@@ -330,7 +340,7 @@ export function PdfSignatureWorkspace({
         <DialogContent className="flex h-[92vh] max-w-[96vw] flex-col overflow-hidden p-0 sm:max-w-5xl">
           <DialogHeader className="border-b px-6 pb-4 pt-6">
             <DialogTitle>วางตำแหน่งลายเซ็น</DialogTitle>
-            <DialogDescription>เลือกเอกสารและหน้าที่ต้องการ จากนั้นลากกรอบลายเซ็นไปยังตำแหน่งเดียวกับแบบฟอร์ม HR กรอบสีน้ำเงินสามารถลากและย่อหรือขยายได้</DialogDescription>
+            <DialogDescription>เอกสารหลักจะล็อกลายเซ็นไว้ในช่องตามลำดับผู้อนุมัติ ส่วนเอกสารแนบอื่นสามารถลากและย่อหรือขยายกรอบสีน้ำเงินได้</DialogDescription>
           </DialogHeader>
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-b px-6 py-3">
@@ -354,16 +364,16 @@ export function PdfSignatureWorkspace({
             {activeIsPdf && (
               <div className="flex items-center gap-2" aria-label="เลือกหน้าเอกสาร">
                 <Button type="button" size="icon" variant="outline" aria-label="หน้าก่อนหน้า"
-                  disabled={loading || !activePlacement || activePlacement.page_number <= 1}
-                  onClick={() => changePage((activePlacement?.page_number || 1) - 1)}>
+                  disabled={loading || displayPage <= 1}
+                  onClick={() => changePage(displayPage - 1)}>
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
                 <span className="min-w-24 text-center text-sm font-medium">
-                  หน้า {Math.min(activePlacement?.page_number || 1, pageCount)} / {pageCount}
+                  หน้า {displayPage} / {pageCount}
                 </span>
                 <Button type="button" size="icon" variant="outline" aria-label="หน้าถัดไป"
-                  disabled={loading || !activePlacement || activePlacement.page_number >= pageCount}
-                  onClick={() => changePage((activePlacement?.page_number || 1) + 1)}>
+                  disabled={loading || displayPage >= pageCount}
+                  onClick={() => changePage(displayPage + 1)}>
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
@@ -372,6 +382,9 @@ export function PdfSignatureWorkspace({
 
           <div ref={stageRef} className="min-h-0 flex-1 overflow-auto bg-slate-200 p-3 dark:bg-slate-950">
             {error && <div className="mb-3 rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</div>}
+            {activeHasFixedPlacement && !error && <div className="mb-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-800">
+              เอกสารหลักใช้ตำแหน่งมาตรฐานตามลำดับผู้อนุมัติ เพื่อป้องกันลายเซ็นทับชื่อ
+            </div>}
             {!activeIsPdf && !activeIsImage && !loading && !error && activeDocument && (
               <div className="flex min-h-72 flex-col items-center justify-center gap-3 rounded-lg bg-white p-6 text-center">
                 <p className="text-sm text-muted-foreground">ไฟล์นี้ ({activeDocument.file_name}) แสดงตัวอย่างในหน้าต่างนี้ไม่ได้ กดปุ่มด้านล่างเพื่อเปิดดู</p>
@@ -394,7 +407,7 @@ export function PdfSignatureWorkspace({
             {activeIsPdf && (
               <div className={`relative mx-auto w-fit max-w-full bg-white shadow ${loading ? "invisible" : ""}`}>
                 <canvas ref={canvasRef} className="block max-w-full" />
-                {activePlacement && !loading && !error && signatureOverlay}
+                {activePlacement && activePlacement.page_number === displayPage && !loading && !error && signatureOverlay}
               </div>
             )}
 

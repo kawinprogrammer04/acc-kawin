@@ -1513,6 +1513,12 @@ async def get_expense_request(
         )).scalars().all()
     item_vat_amounts = expense_request_service.per_item_vat_amounts(req, items)
     item_withholding_amounts = expense_request_service.per_item_withholding_amounts(req, items)
+    primary_defaults = {}
+    for attachment in attachments:
+        if attachment.attachment_type == "primary":
+            primary_defaults[attachment.id] = expense_signature_service.primary_document_defaults(
+                Path(attachment.file_path), req.current_step_no or 1,
+            )
     return ExpenseRequestDetailOut(
         **base.model_dump(),
         items=[
@@ -1547,6 +1553,7 @@ async def get_expense_request(
                     if item.requirement_id in requirements_by_id else None,
                 "default_signature_height": requirements_by_id[item.requirement_id].default_signature_height
                     if item.requirement_id in requirements_by_id else None,
+                **primary_defaults.get(item.id, {}),
             }
             for item in attachments
         ],
