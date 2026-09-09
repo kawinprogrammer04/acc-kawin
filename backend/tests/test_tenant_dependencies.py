@@ -107,9 +107,9 @@ class TenantDependencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_any_permission_accepts_viewer_with_matching_catalog_grant(self):
         dependency = require_any_permission(
-            "crm_cashflow_statement.update",
-            "crm_cashflow_invoice.update",
-            legacy_min_role="accountant",
+            "crm_cashflow_statement.view",
+            "crm_cashflow_invoice.view",
+            legacy_min_role="viewer",
         )
         current_user = _user()
 
@@ -133,7 +133,7 @@ class TenantDependencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(permission_check.await_count, 2)
         self.assertEqual(
             permission_check.await_args_list[1].args[3],
-            "crm_cashflow_invoice.update",
+            "crm_cashflow_invoice.view",
         )
         self.assertEqual(
             permission_check.await_args_list[1].kwargs["company_role"],
@@ -142,9 +142,9 @@ class TenantDependencyTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_any_permission_rejects_viewer_without_matching_catalog_grant(self):
         dependency = require_any_permission(
-            "crm_cashflow_statement.update",
-            "crm_cashflow_invoice.update",
-            legacy_min_role="accountant",
+            "crm_cashflow_statement.view",
+            "crm_cashflow_invoice.view",
+            legacy_min_role="viewer",
         )
 
         with (

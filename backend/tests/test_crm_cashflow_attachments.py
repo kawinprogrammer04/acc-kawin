@@ -29,7 +29,7 @@ class _Company:
 
 
 class CrmCashflowAttachmentRulesTests(unittest.TestCase):
-    def test_upload_route_uses_shared_crm_update_permission(self):
+    def test_upload_route_uses_shared_crm_view_permission(self):
         upload_route = next(
             route
             for route in router.routes

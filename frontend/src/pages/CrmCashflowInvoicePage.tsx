@@ -664,7 +664,7 @@ export function CrmCashflowInvoicePage() {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 p-6">
-          <Can menuKey={MENU_KEY} action="update">
+          <Can menuKey={MENU_KEY} action="view">
             {attachments.length < 2 ? (
               <div className="grid gap-2">
                 <button
