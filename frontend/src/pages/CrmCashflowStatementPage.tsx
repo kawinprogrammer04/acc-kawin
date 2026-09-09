@@ -1132,7 +1132,7 @@ export function CrmCashflowStatementPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 p-6">
-            <Can menuKey={MENU_KEY} action="update">
+            <Can menuKey={MENU_KEY} action="view">
               {detailAttachments.length < 2 ? (
                 <label className={cn(
                   "flex items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-sm text-muted-foreground",
