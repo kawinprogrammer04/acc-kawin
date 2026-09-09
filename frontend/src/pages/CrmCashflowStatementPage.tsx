@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ArrowDownCircle, ArrowUpCircle, Check, CheckCircle2, Clock3, Download,
+  ArrowDownCircle, ArrowUpCircle, Camera, Check, CheckCircle2, Clock3, Download,
   Eraser, FileSpreadsheet, Import, Paperclip, Pencil, Plus, Save,
   Settings2, Trash2, Upload, X,
 } from "lucide-react";
@@ -25,6 +25,7 @@ import {
   type ImportTemplateColumn,
 } from "@/api/crmCashflow";
 import { Can } from "@/components/auth/RequirePermission";
+import { DocumentCameraDialog } from "@/components/attachments/DocumentCameraDialog";
 import { DataListFilterSelect } from "@/components/data-list/DataListFilterSelect";
 import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
@@ -198,6 +199,7 @@ export function CrmCashflowStatementPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailUploading, setDetailUploading] = useState(false);
   const [detailDeletingId, setDetailDeletingId] = useState<string | null>(null);
+  const [detailCameraOpen, setDetailCameraOpen] = useState(false);
 
   const activeCategories = categories.filter((item) => item.cfcat_status === 1);
   const activeDepartments = departments.filter((item) => item.cfstate_dep_status === 1);
@@ -368,6 +370,7 @@ export function CrmCashflowStatementPage() {
   };
 
   const closeDetails = () => {
+    setDetailCameraOpen(false);
     detailAttachments.forEach((attachment) => { if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl); });
     setDetailStatement(null);
     setDetailAttachments([]);
@@ -1134,25 +1137,39 @@ export function CrmCashflowStatementPage() {
           <div className="space-y-4 p-6">
             <Can menuKey={MENU_KEY} action="view">
               {detailAttachments.length < 2 ? (
-                <label className={cn(
-                  "flex items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-sm text-muted-foreground",
-                  detailUploading ? "cursor-wait opacity-60" : "cursor-pointer hover:border-primary hover:bg-primary/5",
-                )}>
-                  <input
-                    type="file"
-                    accept=".jpg,.jpeg,.png,.pdf"
-                    className="hidden"
+                <div className="grid gap-2">
+                  <button
+                    type="button"
                     disabled={detailUploading}
-                    onChange={(event) => {
-                      void uploadDetailAttachment(event.target.files?.[0] || null);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                  <Upload className="h-5 w-5" />
-                  {detailUploading
-                    ? "กำลังอัปโหลด..."
-                    : `อัปโหลดรูปภาพหรือ PDF (${detailAttachments.length}/2, สูงสุด 10 MB)`}
-                </label>
+                    onClick={() => setDetailCameraOpen(true)}
+                    className={cn(
+                      "flex items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-sm text-muted-foreground",
+                      detailUploading ? "cursor-wait opacity-60" : "cursor-pointer hover:border-primary hover:bg-primary/5",
+                    )}
+                  >
+                    <Camera className="h-5 w-5" />
+                    {detailUploading ? "กำลังอัปโหลด..." : `ถ่ายรูป (${detailAttachments.length}/2)`}
+                  </button>
+                  <label className={cn(
+                    "flex items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-6 text-sm text-muted-foreground",
+                    detailUploading ? "cursor-wait opacity-60" : "cursor-pointer hover:border-primary hover:bg-primary/5",
+                  )}>
+                    <input
+                      type="file"
+                      accept=".jpg,.jpeg,.png,.pdf"
+                      className="hidden"
+                      disabled={detailUploading}
+                      onChange={(event) => {
+                        void uploadDetailAttachment(event.target.files?.[0] || null);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    <Upload className="h-5 w-5" />
+                    {detailUploading
+                      ? "กำลังอัปโหลด..."
+                      : `อัปโหลดรูปภาพหรือ PDF (${detailAttachments.length}/2, สูงสุด 10 MB)`}
+                  </label>
+                </div>
               ) : (
                 <p className="rounded-lg bg-amber-50 px-4 py-3 text-center text-sm text-amber-700">
                   แนบได้สูงสุด 2 ไฟล์ต่อรายการ — ลบไฟล์เดิมก่อนเพื่ออัปโหลดใหม่
@@ -1215,6 +1232,12 @@ export function CrmCashflowStatementPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <DocumentCameraDialog
+        open={detailCameraOpen}
+        onOpenChange={setDetailCameraOpen}
+        onCapture={uploadDetailAttachment}
+      />
     </div>
   );
 }
