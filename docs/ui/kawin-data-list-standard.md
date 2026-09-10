@@ -85,6 +85,10 @@ Behavior:
 - `/crm-cashflow/invoices` defaults and resets to “ไม่กรองวันที่” so older
   invoices awaiting review remain visible. It uses the same preset picker and
   date-before-search layout as the reference page.
+- `/approvals/inbox` defaults and resets to “ไม่กรองวันที่”, with status
+  “รออนุมัติ”. Filter inclusively by the displayed request date (`request_date`)
+  across the complete inbox result before client-side pagination. Place the
+  date picker before the status filter.
 - Display selected dates in Thai with Buddhist Era year (พ.ศ.).
 - Choosing “กำหนดเอง” displays one calendar to the right of the preset list on
   desktop and below it on small screens.
