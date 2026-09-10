@@ -137,7 +137,7 @@ class UpdateStatementFlagsVerifiedTests(unittest.IsolatedAsyncioTestCase):
             StatementFlagsUpdate(cfstate_verified=2)
 
     async def test_accepts_each_document_type(self):
-        for document_type in ("tax_invoice", "cash_bill", "other"):
+        for document_type in ("tax_invoice", "cash_bill", "no_tax_invoice", "other"):
             payload = StatementFlagsUpdate(cfstate_document_type=document_type)
             self.assertEqual(payload.cfstate_document_type, document_type)
 
@@ -150,6 +150,7 @@ class InvoiceStatusLabelTests(unittest.TestCase):
     def test_document_type_takes_priority(self):
         self.assertEqual(_invoice_status_label(0, "tax_invoice"), "ใบกำกับภาษี")
         self.assertEqual(_invoice_status_label(1, "cash_bill"), "บิลเงินสด")
+        self.assertEqual(_invoice_status_label(0, "no_tax_invoice"), "ไม่มีใบกำกับภาษี")
         self.assertEqual(_invoice_status_label(None, "other"), "อื่นๆ")
 
     def test_legacy_status_is_used_without_document_type(self):
@@ -225,6 +226,19 @@ class InvoiceTrackingFilterTests(unittest.IsolatedAsyncioTestCase):
         sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
         self.assertIn("cashflow_statement.cfstate_verified = 1", sql)
         self.assertIn("cashflow_statement.cfstate_document_type = 'tax_invoice'", sql)
+
+    async def test_statement_query_filters_no_tax_invoice_document_type(self):
+        db = AsyncMock()
+        db.execute.return_value = _MappingsResult()
+
+        await _list_statements(
+            db, comp_id=5, start_date=None, end_date=None, cfcat_id=None,
+            invoice_status="no_tax_invoice",
+        )
+
+        statement = db.execute.await_args.args[0]
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        self.assertIn("cashflow_statement.cfstate_document_type = 'no_tax_invoice'", sql)
 
     async def test_legacy_invoice_filter_excludes_rows_with_document_type(self):
         db = AsyncMock()
