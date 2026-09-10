@@ -62,6 +62,23 @@ require_crm_cashflow_attachment_upload = require_any_permission(
     legacy_min_role="viewer",
 )
 
+# Invoice page access grants every action exposed by that page. Shared
+# statement actions also retain their own menu permissions.
+require_crm_cashflow_invoice_access = require_any_permission(
+    "crm_cashflow_invoice.view",
+    legacy_min_role="viewer",
+)
+require_crm_cashflow_invoice_update = require_any_permission(
+    "crm_cashflow_invoice.view",
+    "crm_cashflow_statement.update",
+    legacy_min_role="viewer",
+)
+require_crm_cashflow_invoice_delete = require_any_permission(
+    "crm_cashflow_invoice.view",
+    "crm_cashflow_statement.delete",
+    legacy_min_role="viewer",
+)
+
 DocumentType = Literal["tax_invoice", "cash_bill", "other"]
 VerificationStatus = Literal["pending", "verified"]
 InvoiceStatus = Literal[
@@ -537,7 +554,7 @@ def _invoice_status_label(
 
 
 # ── Master data: categories ─────────────────────────────────────────────────
-@router.get("/categories", dependencies=[Depends(require_viewer)])
+@router.get("/categories", dependencies=[Depends(require_crm_cashflow_attachment_upload)])
 async def list_categories(
     include_inactive: bool = False,
     db: AsyncSession = Depends(get_db),
@@ -1153,7 +1170,7 @@ async def list_statements(
     }
 
 
-@router.get("/invoices", dependencies=[Depends(require_viewer)])
+@router.get("/invoices", dependencies=[Depends(require_crm_cashflow_invoice_access)])
 async def list_pending_invoices(
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
@@ -1340,7 +1357,7 @@ async def check_statement_duplicates(
     return {"duplicates": duplicates}
 
 
-@router.patch("/statements/{statement_id}", dependencies=[Depends(require_accountant)])
+@router.patch("/statements/{statement_id}", dependencies=[Depends(require_crm_cashflow_invoice_update)])
 async def update_statement_flags(
     statement_id: int,
     payload: StatementFlagsUpdate,
@@ -1377,7 +1394,7 @@ async def update_statement_flags(
     return {"status": 1}
 
 
-@router.delete("/statements/{statement_id}", dependencies=[Depends(require_accountant)])
+@router.delete("/statements/{statement_id}", dependencies=[Depends(require_crm_cashflow_invoice_delete)])
 async def delete_statement(
     statement_id: int,
     db: AsyncSession = Depends(get_db),
@@ -2235,7 +2252,7 @@ async def export_statement_files(
     )
 
 
-@router.get("/statements/{statement_id}/attachments", dependencies=[Depends(require_viewer)])
+@router.get("/statements/{statement_id}/attachments", dependencies=[Depends(require_crm_cashflow_attachment_upload)])
 async def list_attachments(
     statement_id: int,
     db: AsyncSession = Depends(get_db),
@@ -2338,7 +2355,7 @@ async def upload_attachment(
     }
 
 
-@router.get("/statements/{statement_id}/attachments/{attachment_id}", dependencies=[Depends(require_viewer)])
+@router.get("/statements/{statement_id}/attachments/{attachment_id}", dependencies=[Depends(require_crm_cashflow_attachment_upload)])
 async def view_attachment(
     statement_id: int,
     attachment_id: str,
@@ -2368,7 +2385,7 @@ async def view_attachment(
     )
 
 
-@router.delete("/statements/{statement_id}/attachments/{attachment_id}", status_code=204, dependencies=[Depends(require_accountant)])
+@router.delete("/statements/{statement_id}/attachments/{attachment_id}", status_code=204, dependencies=[Depends(require_crm_cashflow_invoice_delete)])
 async def delete_attachment(
     statement_id: int,
     attachment_id: str,
