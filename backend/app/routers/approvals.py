@@ -7,6 +7,7 @@ Position-based expense approval workflow — endpoints for:
 """
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from math import isfinite
 import mimetypes
 from pathlib import Path
 import tempfile
@@ -2365,25 +2366,33 @@ async def decide_approval_step(
         if not step_row:
             raise HTTPException(404, "ไม่พบขั้นตอนอนุมัตินี้")
         req_row = await _get_company_row(db, ExpenseRequest, step_row.expense_request_id, company.id, "ไม่พบคำขอเบิกเงินนี้")
-        required_signature_ids = list((await db.execute(select(ExpenseRequestAttachment.id).where(
+        required_signatures = dict((await db.execute(select(
+            ExpenseRequestAttachment.id, ExpenseRequestAttachment.attachment_type,
+        ).where(
             ExpenseRequestAttachment.expense_request_id == req_row.id,
             ExpenseRequestAttachment.revision == req_row.current_revision,
             ExpenseRequestAttachment.is_active.is_(True),
             (ExpenseRequestAttachment.attachment_type == "primary") | ExpenseRequestAttachment.requires_signature.is_(True),
-        ))).scalars().all())
-        if required_signature_ids and not signature_data_url:
+        ))).all())
+        if required_signatures and not signature_data_url:
             raise HTTPException(400, "กรุณาวาดหรือเลือกใช้ลายเซ็นก่อนอนุมัติ")
         placement_ids = {str(item.get("attachment_id")) for item in payload.placements if item.get("attachment_id")}
-        if any(str(attachment_id) not in placement_ids for attachment_id in required_signature_ids):
+        if any(str(attachment_id) not in placement_ids for attachment_id in required_signatures):
             raise HTTPException(400, "กรุณาเปิด PDF และกำหนดตำแหน่งลายเซ็นให้ครบทุกเอกสาร")
         for placement in payload.placements:
             try:
                 page_number = int(placement.get("page_number", 0))
                 x, y = float(placement.get("x", -1)), float(placement.get("y", -1))
                 width, height = float(placement.get("width", 0)), float(placement.get("height", 0))
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise HTTPException(400, "ตำแหน่งลายเซ็นไม่ถูกต้อง") from exc
-            if (page_number < 1 or x < 0 or y < 0 or width < .04 or height < .02
+            # Primary slots come from the PDF and are enforced again by the
+            # stamping service. A 14pt slot on A4 is only ~0.0166 high; the
+            # minimum for user-resizable supporting documents does not apply.
+            is_primary = required_signatures.get(str(placement.get("attachment_id"))) == "primary"
+            if (not all(isfinite(value) for value in (x, y, width, height))
+                    or page_number < 1 or x < 0 or y < 0 or width < .04 or height <= 0
+                    or (not is_primary and height < .02)
                     or x + width > 1 or y + height > 1):
                 raise HTTPException(400, "ตำแหน่งหรือขนาดลายเซ็นอยู่นอกขอบเอกสาร")
         is_candidate = (await db.execute(select(ExpenseApprovalCandidate.id).where(
