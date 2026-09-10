@@ -592,7 +592,7 @@ export interface AccountingFilters {
   status?: string; statuses?: string; query?: string;
   department_id?: number; department_ids?: string;
   type_id?: number; type_ids?: string;
-  date_from?: string; date_to?: string; withholding_only?: boolean;
+  date_from?: string; date_to?: string; withholding_only?: boolean; has_tax_invoice?: boolean;
 }
 
 export interface ExpenseHistory {
