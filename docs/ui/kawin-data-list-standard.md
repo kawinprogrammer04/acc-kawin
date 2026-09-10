@@ -23,6 +23,11 @@ Do not copy or independently recreate an existing pattern.
 - Thai preset date range: `frontend/src/components/data-list/PresetDateRangeFilter.tsx`
 - Date followed by search: `frontend/src/components/data-list/DataListDateFilterRow.tsx`
 - Single/multi-select filters: `frontend/src/components/data-list/DataListFilterSelect.tsx`
+  Single-select options may include an optional `icon` beside the label in both
+  the trigger and menu. For bank options, reuse `BankLogo`. Entry/edit forms may
+  reuse this select with `allowEmpty={false}` and a placeholder `allLabel`; pass
+  `disabled` explicitly when editing is unavailable, including inside a disabled
+  fieldset, because dropdown content renders in a portal.
 - KPI cards: `frontend/src/components/data-list/DataListKpiCard.tsx`
 - Pagination and page size: `frontend/src/components/data-list/DataListPagination.tsx`
 - Shared filter styling: `frontend/src/components/data-list/styles.ts`
