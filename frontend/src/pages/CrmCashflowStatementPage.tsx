@@ -787,6 +787,7 @@ export function CrmCashflowStatementPage() {
                 { value: "received", label: "ได้รับแล้ว" },
                 { value: "tax_invoice", label: "ใบกำกับภาษี" },
                 { value: "cash_bill", label: "บิลเงินสด" },
+                { value: "no_tax_invoice", label: "ไม่มีใบกำกับภาษี" },
                 { value: "other", label: "อื่นๆ" },
               ]}
               onChange={(value) => { setPage(1); setInvoiceFilter(value as "" | CrmCashflowInvoiceStatus); }}

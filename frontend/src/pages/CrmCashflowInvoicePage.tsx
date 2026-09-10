@@ -37,6 +37,7 @@ const message = (error: any) => displayCrmTerms(
 const DOCUMENT_TYPES: { value: CrmCashflowDocumentType; label: string }[] = [
   { value: "tax_invoice", label: "ใบกำกับภาษี" },
   { value: "cash_bill", label: "บิลเงินสด" },
+  { value: "no_tax_invoice", label: "ไม่มีใบกำกับภาษี" },
   { value: "other", label: "อื่นๆ" },
 ];
 const INVOICE_STATUS_OPTIONS: { value: CrmCashflowInvoiceStatus; label: string }[] = [
@@ -45,6 +46,7 @@ const INVOICE_STATUS_OPTIONS: { value: CrmCashflowInvoiceStatus; label: string }
   { value: "received", label: "ได้รับแล้ว" },
   { value: "tax_invoice", label: "ใบกำกับภาษี" },
   { value: "cash_bill", label: "บิลเงินสด" },
+  { value: "no_tax_invoice", label: "ไม่มีใบกำกับภาษี" },
   { value: "other", label: "อื่นๆ" },
 ];
 const PAGE_SIZE_OPTIONS = [25, 50, 100, 200];
