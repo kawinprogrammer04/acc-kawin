@@ -532,7 +532,7 @@ export function CrmCashflowInvoicePage() {
               <Button size="icon" variant="ghost" title="แนบไฟล์ / ตรวจสอบแล้ว" onClick={() => openAttachments(row)}>
                 <Paperclip className="h-4 w-4" />
               </Button>
-              <Can menuKey={MENU_KEY} action="delete">
+              <Can menuKey={MENU_KEY} action="view">
                 <Button size="icon" variant="destructive" onClick={() => remove(row.cfstate_id)}><Trash2 className="h-4 w-4" /></Button>
               </Can>
             </div>
@@ -661,7 +661,7 @@ export function CrmCashflowInvoicePage() {
                     >
                       <Eye className="h-4 w-4" />
                     </Button>
-                    <Can menuKey={MENU_KEY} action="delete">
+                    <Can menuKey={MENU_KEY} action="view">
                       <Button size="icon" variant="ghost" title="ลบไฟล์" onClick={() => deleteAttachment(attachment.id)}>
                         <X className="h-4 w-4 text-red-600" />
                       </Button>
@@ -679,7 +679,7 @@ export function CrmCashflowInvoicePage() {
                   <input
                     type="checkbox"
                     checked={attachmentStatement?.cfstate_document_type === documentType.value}
-                    disabled={!can(MENU_KEY, "update") || updatingDocumentType}
+                    disabled={!can(MENU_KEY, "view") || updatingDocumentType}
                     readOnly
                     onClick={(event) => {
                       event.preventDefault();
@@ -692,11 +692,11 @@ export function CrmCashflowInvoicePage() {
                 </label>
               ))}
             </div>
-            {!can(MENU_KEY, "update") && (
+            {!can(MENU_KEY, "view") && (
               <p className="text-xs text-muted-foreground">ดูได้อย่างเดียว — ไม่มีสิทธิ์แก้ไขประเภทเอกสาร</p>
             )}
           </div>
-          {can(MENU_KEY, "update") && (attachments.length === 0 || !attachmentStatement?.cfstate_document_type) && (
+          {can(MENU_KEY, "view") && (attachments.length === 0 || !attachmentStatement?.cfstate_document_type) && (
             <p className="text-center text-xs text-amber-700">
               ต้องแนบไฟล์อย่างน้อย 1 ไฟล์ และเลือกประเภทเอกสาร ก่อนกด “ตรวจสอบแล้ว”
             </p>
@@ -704,7 +704,7 @@ export function CrmCashflowInvoicePage() {
         </div>
         <DialogFooter>
           <Button variant="outline" disabled={discardingExit} onClick={attemptCloseAttachments}>ปิด</Button>
-          <Can menuKey={MENU_KEY} action="update">
+          <Can menuKey={MENU_KEY} action="view">
             <Button
               disabled={savingVerification || attachments.length === 0 || !attachmentStatement?.cfstate_document_type}
               onClick={() => attachmentStatement && void requestVerification(attachmentStatement.cfstate_id)}
