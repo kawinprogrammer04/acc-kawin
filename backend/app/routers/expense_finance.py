@@ -265,6 +265,7 @@ def _accounting_query(
     type_id: Optional[int] = None, type_ids: Optional[list[int]] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
     withholding_only: bool = False, query: Optional[str] = None,
+    has_tax_invoice: Optional[bool] = None,
 ):
     stmt = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
     selected_statuses = statuses or ([status] if status else [])
@@ -292,6 +293,9 @@ def _accounting_query(
         stmt = stmt.where(func.date(ExpenseRequest.submitted_at) >= date_from)
     if date_to is not None:
         stmt = stmt.where(func.date(ExpenseRequest.submitted_at) <= date_to)
+    if has_tax_invoice is not None:
+        vat_amount = func.coalesce(ExpenseRequest.vat_amount, 0)
+        stmt = stmt.where(vat_amount > 0 if has_tax_invoice else vat_amount <= 0)
     if withholding_only:
         stmt = stmt.where(or_(
             ExpenseRequest.withholding_required.is_(True),
@@ -374,7 +378,7 @@ async def accounting_list(
     department_id: Optional[int] = None, department_ids: Optional[str] = None,
     type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
-    withholding_only: bool = False,
+    withholding_only: bool = False, has_tax_invoice: Optional[bool] = None,
     limit: int = Query(100, ge=0, le=5000), offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
     company: Company = Depends(get_current_company),
@@ -384,6 +388,7 @@ async def accounting_list(
         department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
         type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
         date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        has_tax_invoice=has_tax_invoice,
         query=query,
     )
     total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
@@ -490,7 +495,7 @@ async def accounting_stats(
     department_id: Optional[int] = None, department_ids: Optional[str] = None,
     type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
-    withholding_only: bool = False,
+    withholding_only: bool = False, has_tax_invoice: Optional[bool] = None,
     db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_view),
     company: Company = Depends(get_current_company),
 ):
@@ -499,6 +504,7 @@ async def accounting_stats(
         department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
         type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
         date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        has_tax_invoice=has_tax_invoice,
         query=query,
     ))).scalars().all()
     today = datetime.now(timezone.utc).date()
@@ -536,7 +542,7 @@ async def export_accounting(
     department_id: Optional[int] = None, department_ids: Optional[str] = None,
     type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
-    withholding_only: bool = False,
+    withholding_only: bool = False, has_tax_invoice: Optional[bool] = None,
     db: AsyncSession = Depends(get_db), current_user: User = Depends(accounting_export),
     company: Company = Depends(get_current_company),
 ):
@@ -545,6 +551,7 @@ async def export_accounting(
         department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
         type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
         date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        has_tax_invoice=has_tax_invoice,
         query=query,
     )
     rows = (await db.execute(stmt.order_by(ExpenseRequest.created_at.desc()))).scalars().all()

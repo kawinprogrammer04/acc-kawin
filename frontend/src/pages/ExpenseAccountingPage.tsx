@@ -36,12 +36,12 @@ const accountingTableGroupDividerClass = "border-r-2 border-border";
 
 type FilterForm = {
   statuses: string[]; company_id: string; department_ids: string[]; type_ids: string[];
-  query: string; date_from: string; date_to: string; withholding_only: boolean;
+  query: string; date_from: string; date_to: string; withholding_only: boolean; has_tax_invoice: string;
 };
 
 const emptyFilters = (companyId?: number): FilterForm => ({
   statuses: [], company_id: companyId ? String(companyId) : "", department_ids: [],
-  type_ids: [], query: "", date_from: today(), date_to: today(), withholding_only: false,
+  type_ids: [], query: "", date_from: today(), date_to: today(), withholding_only: false, has_tax_invoice: "",
 });
 
 function storedStringArray(value: unknown, legacyValue: unknown): string[] {
@@ -68,6 +68,7 @@ function readStoredFilters(): FilterForm {
       date_from: hasStoredDateRange ? storedDateFrom : defaultDate,
       date_to: hasStoredDateRange ? storedDateTo : defaultDate,
       withholding_only: stored.withholding_only === true,
+      has_tax_invoice: stored.has_tax_invoice === "true" || stored.has_tax_invoice === "false" ? stored.has_tax_invoice : "",
     };
   } catch {
     return emptyFilters();
@@ -114,6 +115,7 @@ function toApiFilters(filters: FilterForm): AccountingFilters {
     date_from: filters.date_from || undefined,
     date_to: filters.date_to || undefined,
     withholding_only: filters.withholding_only || undefined,
+    has_tax_invoice: filters.has_tax_invoice === "" ? undefined : filters.has_tax_invoice === "true",
   };
 }
 
@@ -245,11 +247,12 @@ export function ExpenseAccountingPage() {
         </label>
       </DataListDateFilterRow>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <DataListMultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
         <DataListFilterSelect label="บริษัท" value={filters.company_id} allLabel="เลือกบริษัท" allowEmpty={false} options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: formatCompanyLabel(company) }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
         <DataListMultiFilterSelect label="แผนก" values={filters.department_ids} allLabel="ทุกแผนก" options={visibleDepartments.map(item => ({ value: String(item.id), label: item.name }))} onChange={department_ids => setFilters(current => ({ ...current, department_ids }))} />
         <DataListMultiFilterSelect label="ประเภท" values={filters.type_ids} allLabel="ทุกประเภท" options={visibleTypes.map(item => ({ value: String(item.id), label: item.name }))} onChange={type_ids => setFilters(current => ({ ...current, type_ids }))} />
+        <DataListFilterSelect label="ใบกำกับ" value={filters.has_tax_invoice} allLabel="ทั้งหมด" options={[{ value: "true", label: "มีใบกำกับภาษี" }, { value: "false", label: "ไม่มีใบกำกับภาษี" }]} onChange={has_tax_invoice => setFilters(current => ({ ...current, has_tax_invoice }))} />
       </div>
 
       <label className="flex min-h-12 items-center gap-3 px-1 text-sm font-bold"><input type="checkbox" checked={filters.withholding_only} onChange={event => setFilters(current => ({ ...current, withholding_only: event.target.checked }))} className="h-4 w-4 shrink-0 rounded border-input text-primary" />รายการเกี่ยวกับหัก ณ ที่จ่ายเท่านั้น</label>

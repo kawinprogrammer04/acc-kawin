@@ -94,6 +94,15 @@ class AccountingFilterTests(unittest.TestCase):
         self.assertIn([3, 7], parameters)
         self.assertIn([11, 12], parameters)
 
+    def test_tax_invoice_filter_matches_vat_badge_including_null_amounts(self):
+        for selected, comparison in [(True, ">"), (False, "<=")]:
+            with self.subTest(has_tax_invoice=selected):
+                statement = _accounting_query(SimpleNamespace(id=9), has_tax_invoice=selected)
+                sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+                self.assertIn(f"coalesce(expense_requests.vat_amount, 0) {comparison} 0", sql)
+        sql = str(_accounting_query(SimpleNamespace(id=9)))
+        self.assertNotIn("coalesce(expense_requests.vat_amount", sql)
+
     def test_zero_page_limit_returns_the_unlimited_statement(self):
         statement = SimpleNamespace()
         self.assertIs(_apply_accounting_pagination(statement, 0, 100), statement)
@@ -149,7 +158,7 @@ class AccountingFilterTests(unittest.TestCase):
         result = asyncio.run(accounting_stats(
             statuses="ready_to_pay", query="ACC-EXP", department_ids="3,7",
             type_ids="11", date_from=date(2026, 8, 1), date_to=date(2026, 8, 31),
-            withholding_only=True, db=database, current_user=SimpleNamespace(),
+            withholding_only=True, has_tax_invoice=True, db=database, current_user=SimpleNamespace(),
             company=SimpleNamespace(id=9),
         ))
 
@@ -157,6 +166,7 @@ class AccountingFilterTests(unittest.TestCase):
         self.assertIn(["ready_to_pay"], parameters)
         self.assertIn([3, 7], parameters)
         self.assertIn([11], parameters)
+        self.assertIn("coalesce(expense_requests.vat_amount", str(database.statement))
         self.assertIn("%ACC-EXP%", parameters)
         self.assertEqual(result.ready_to_pay_count, 1)
         self.assertEqual(result.pending_approval_count, 0)
