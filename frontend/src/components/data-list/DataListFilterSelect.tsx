@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { dataListFilterControlClass } from "@/components/data-list/styles";
 
-export type DataListFilterOption = { value: string; label: string };
+export type DataListFilterOption = { value: string; label: string; icon?: ReactNode };
 
 export function DataListFilterSelect({
-  label, value, allLabel, options, onChange, allowEmpty = true,
+  label, value, allLabel, options, onChange, allowEmpty = true, disabled = false,
 }: {
   label: string;
   value: string;
@@ -14,26 +14,30 @@ export function DataListFilterSelect({
   options: DataListFilterOption[];
   onChange: (value: string) => void;
   allowEmpty?: boolean;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const selectedLabel = options.find(option => option.value === value)?.label || allLabel;
-  const selectableOptions = allowEmpty ? [{ value: "", label: allLabel }, ...options] : options;
+  const selectedOption = options.find(option => option.value === value);
+  const selectedLabel = selectedOption?.label || allLabel;
+  const selectableOptions: DataListFilterOption[] = allowEmpty ? [{ value: "", label: allLabel }, ...options] : options;
 
   const selectOption = (nextValue: string) => {
+    if (disabled) return;
     onChange(nextValue);
     setOpen(false);
   };
 
   return <div className="min-w-0 text-sm font-bold">
     <span>{label}</span>
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open && !disabled} onOpenChange={nextOpen => setOpen(nextOpen && !disabled)}>
       <PopoverTrigger asChild>
         <button
           type="button"
+          disabled={disabled}
           aria-label={`${label}: ${selectedLabel}`}
-          className={`${dataListFilterControlClass} flex items-center justify-between gap-3 text-left font-medium`}
+          className={`${dataListFilterControlClass} flex items-center justify-between gap-3 text-left font-medium disabled:cursor-not-allowed disabled:opacity-50`}
         >
-          <span className="truncate">{selectedLabel}</span>
+          <span className="flex min-w-0 items-center gap-2.5">{selectedOption?.icon}<span className="truncate">{selectedLabel}</span></span>
           <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
         </button>
       </PopoverTrigger>
@@ -45,10 +49,11 @@ export function DataListFilterSelect({
             return <button
               key={option.value || "all"}
               type="button"
+              disabled={disabled}
               onClick={() => selectOption(option.value)}
               className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm transition ${selected ? "bg-primary/10 font-bold text-primary" : "font-medium hover:bg-muted"}`}
             >
-              <span className="truncate">{option.label}</span>
+              <span className="flex min-w-0 items-center gap-2.5">{option.icon}<span className="truncate">{option.label}</span></span>
               <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full ${selected ? "bg-primary text-primary-foreground" : "border border-input"}`}>
                 {selected && <Check className="h-3.5 w-3.5" />}
               </span>
