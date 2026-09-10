@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft, CheckCircle2, Clipboard, Clock3, Download, Eye, FileText, Loader2, Pencil,
+  ArrowLeft, CheckCircle2, ChevronDown, Clipboard, Clock3, Download, Eye, FileText, Loader2, Pencil,
   Receipt, RotateCcw, Send, Trash2, Upload, XCircle,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -188,6 +188,7 @@ export function ExpenseRequestDetailPage() {
   const [saveSignature, setSaveSignature] = useState(false);
   const [signatureDecisionOpen, setSignatureDecisionOpen] = useState(false);
   const [signaturePromptClosed, setSignaturePromptClosed] = useState(false);
+  const [signaturePanelOpen, setSignaturePanelOpen] = useState(() => !user?.has_saved_signature);
   const [placements, setPlacements] = useState<SignaturePlacement[]>([]);
   const [histories, setHistories] = useState<ExpenseHistory[]>([]);
   const [settlements, setSettlements] = useState<ExpenseSettlement[]>([]);
@@ -336,17 +337,22 @@ export function ExpenseRequestDetailPage() {
     if (!pendingStep) {
       setSavedSignatureUrl(undefined);
       setUseSavedSignature(false);
+      setSignaturePanelOpen(true);
       return;
     }
+    setSignaturePanelOpen(!user?.has_saved_signature);
     let cancelled = false;
     authApi.mySignature().then((res) => {
       if (cancelled) return;
-      setSavedSignatureUrl(res.signature_data_url);
+      const savedSignature = res.signature_data_url || undefined;
+      setSavedSignatureUrl(savedSignature);
+      setSignaturePanelOpen(!savedSignature);
       setSignature(undefined);
-      setUseSavedSignature(true);
+      setUseSavedSignature(Boolean(savedSignature));
     }).catch(() => {
       if (cancelled) return;
       setSavedSignatureUrl(undefined);
+      setSignaturePanelOpen(true);
       setUseSavedSignature(false);
     });
     return () => { cancelled = true; };
@@ -751,8 +757,17 @@ export function ExpenseRequestDetailPage() {
       {canAccountingCancel && request.status !== "cancelled" && <details className="h-fit rounded-2xl border border-rose-200 bg-rose-50 p-6 dark:border-rose-800 dark:bg-rose-950/30"><summary className="cursor-pointer font-black text-rose-900 dark:text-rose-100">ยกเลิกคำขอนี้ (ฝ่ายบัญชี)</summary><p className="mt-2 text-sm text-rose-800 dark:text-rose-200">ฝ่ายบัญชียกเลิกได้ทุกสถานะ แม้เสร็จสิ้นหรือจ่ายเงินแล้ว ใช้เมื่อรายการผิดพลาดหรือซ้ำซ้อน และผู้ขอจะเห็นเหตุผลนี้</p><textarea rows={2} value={accountingCancelReason} onChange={event => setAccountingCancelReason(event.target.value)} placeholder="เช่น รายการซ้ำซ้อน, กรอกผิดคน, ผิดพลาดจากระบบ" className="mt-3 w-full rounded-xl border bg-background px-3 py-2 text-sm text-foreground" /><button onClick={cancelByAccounting} disabled={saving} className="mt-3 min-h-12 w-full rounded-xl bg-rose-600 px-4 text-sm font-black text-white hover:bg-rose-700 disabled:opacity-60">ยืนยันยกเลิกคำขอ</button></details>}
     </div>}
 
-    <Card><CardContent className="space-y-6 p-6">
-      <SectionTitle description="ส่วนนี้เปิดใช้งานเมื่อคำขออยู่ระหว่างรอการพิจารณาจากคุณ">ตรวจ PDF และลงลายเซ็น</SectionTitle>
+    <Card><CardContent className="p-0">
+      <button type="button" onClick={() => setSignaturePanelOpen(current => !current)}
+        aria-expanded={signaturePanelOpen} aria-controls="signature-approval-panel"
+        className="flex w-full items-center justify-between gap-4 rounded-2xl p-6 text-left transition hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
+        <div>
+          <SectionTitle description="ส่วนนี้เปิดใช้งานเมื่อคำขออยู่ระหว่างรอการพิจารณาจากคุณ">ตรวจ PDF และลงลายเซ็น</SectionTitle>
+          {pendingStep && savedSignatureUrl && <p className="mt-2 text-xs font-medium text-emerald-700 dark:text-emerald-300">ใช้ลายเซ็นที่บันทึกไว้ให้อัตโนมัติ · กดเพื่อเปิดตรวจ PDF หรือเปลี่ยนลายเซ็น</p>}
+        </div>
+        <ChevronDown className={`h-5 w-5 shrink-0 text-muted-foreground transition-transform ${signaturePanelOpen ? "rotate-180" : ""}`} />
+      </button>
+      {signaturePanelOpen && <div id="signature-approval-panel" className="space-y-6 px-6 pb-6">
       {pendingStep ? <div className="space-y-5">
         <div className="rounded-lg border bg-muted/20 p-4"><p className="font-medium">ขั้นตอนที่ {pendingStep.step_no}: {pendingStep.approver_position_name}</p><p className="mt-1 text-sm text-muted-foreground">เปิดเอกสารด้านบนเพื่อตรวจสอบก่อนยืนยันผล</p></div>
         <div className="rounded-xl border p-4">
@@ -784,6 +799,7 @@ export function ExpenseRequestDetailPage() {
         <button onClick={approve} disabled={saving} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground disabled:opacity-50"><CheckCircle2 className="h-4 w-4" /> ยืนยันอนุมัติและประทับลายเซ็น</button>
         <div className="grid gap-3 border-t pt-5 sm:grid-cols-2"><div><label className="mb-1.5 block text-sm font-medium">เหตุผลที่ส่งคืน *</label><textarea rows={2} value={returnComment} onChange={(event) => setReturnComment(event.target.value)} className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm" placeholder="ระบุสิ่งที่ต้องแก้ไข" /><button onClick={() => decide("return")} disabled={saving} className="mt-2 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg bg-blue-50 px-4 text-sm font-semibold text-blue-700 hover:bg-blue-100 disabled:opacity-50"><RotateCcw className="h-4 w-4" /> ส่งคืนแก้ไข</button></div><div><label className="mb-1.5 block text-sm font-medium">เหตุผลที่ไม่อนุมัติ *</label><textarea rows={2} value={rejectComment} onChange={(event) => setRejectComment(event.target.value)} className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm" placeholder="ระบุเหตุผลที่ไม่อนุมัติ" /><button onClick={() => decide("reject")} disabled={saving} className="mt-2 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-lg bg-rose-50 px-4 text-sm font-semibold text-rose-700 hover:bg-rose-100 disabled:opacity-50"><XCircle className="h-4 w-4" /> ไม่อนุมัติ</button></div></div>
       </div> : <div className="rounded-lg border border-dashed p-5 text-sm text-muted-foreground">{request.status === "draft" ? "ยังไม่ส่งอนุมัติ" : "คำขอนี้ไม่ได้อยู่ในขั้นที่รอการพิจารณาจากคุณ"}</div>}
+      </div>}
     </CardContent></Card>
 
     {isOwner && request.request_format === "advance" && request.status === "settlement_due" && <Card><CardContent className="space-y-4 p-6"><SectionTitle description="ใช้เท่ากันส่งตรวจปิด ใช้น้อยกว่าต้องแนบหลักฐานคืนเงิน ใช้มากกว่าจะสร้าง revision ขออนุมัติส่วนต่าง">เคลียร์เงินทดรอง</SectionTitle><div className="grid gap-4 md:grid-cols-2"><Field label="เงินทดรองที่รับ" value={formatCurrency(request.paid)} /><label className="text-sm">ยอดใช้จริง<input type="number" min="0" step="0.01" value={actualAmount} onChange={e => setActualAmount(e.target.value)} className="mt-1 w-full rounded-lg border bg-background px-3 py-2" /></label></div><label className="block text-sm">รายละเอียด<textarea value={settlementNote} onChange={e => setSettlementNote(e.target.value)} rows={2} className="mt-1 w-full rounded-lg border bg-background px-3 py-2" /></label><label className="block text-sm">หลักฐานคืนเงิน (บังคับเมื่อใช้ต่ำกว่าเงินทดรอง)<input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={e => setRefundProof(e.target.files?.[0] || null)} className="mt-1 block w-full" /></label><button onClick={submitSettlement} disabled={saving} className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">ยืนยันส่งเคลียร์เงิน</button></CardContent></Card>}
