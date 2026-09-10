@@ -79,14 +79,15 @@ require_crm_cashflow_invoice_delete = require_any_permission(
     legacy_min_role="viewer",
 )
 
-DocumentType = Literal["tax_invoice", "cash_bill", "other"]
+DocumentType = Literal["tax_invoice", "cash_bill", "no_tax_invoice", "other"]
 VerificationStatus = Literal["pending", "verified"]
 InvoiceStatus = Literal[
-    "none", "pending", "received", "tax_invoice", "cash_bill", "other",
+    "none", "pending", "received", "tax_invoice", "cash_bill", "no_tax_invoice", "other",
 ]
 DOCUMENT_TYPE_LABELS: dict[str, str] = {
     "tax_invoice": "ใบกำกับภาษี",
     "cash_bill": "บิลเงินสด",
+    "no_tax_invoice": "ไม่มีใบกำกับภาษี",
     "other": "อื่นๆ",
 }
 LEGACY_INVOICE_LABELS = {None: "", 0: "รอใบกำกับ", 1: "ได้รับแล้ว"}

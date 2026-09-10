@@ -24,7 +24,8 @@ export interface CrmCashflowDepartment {
   comp_id: number;
 }
 
-export type CrmCashflowDocumentType = "tax_invoice" | "cash_bill" | "other";
+export type CrmCashflowDocumentType =
+  | "tax_invoice" | "cash_bill" | "no_tax_invoice" | "other";
 export type CrmCashflowVerificationStatus = "pending" | "verified";
 export type CrmCashflowInvoiceStatus =
   | "none" | "pending" | "received" | CrmCashflowDocumentType;
