@@ -7,6 +7,7 @@ import { getApiErrorMessage } from "@/api/client";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { PresetDateRangeFilter } from "@/components/data-list/PresetDateRangeFilter";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
 import { SavedSignatureSetupDialog } from "@/components/expense/SavedSignatureSetupDialog";
 import { dataListFilterPanelClass, dataListTableHeaderCellClass, dataListTableScrollClass } from "@/components/data-list/styles";
@@ -38,6 +39,7 @@ export function ApprovalInboxPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [statuses, setStatuses] = useState<InboxStatus[]>(["pending"]);
+  const [dateRange, setDateRange] = useState({ from: "", to: "" });
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const [signaturePromptClosed, setSignaturePromptClosed] = useState(false);
@@ -67,12 +69,27 @@ export function ApprovalInboxPage() {
     load();
   }, [load]);
 
+  const filteredItems = useMemo(() => items.filter(item =>
+    (!dateRange.from || item.request_date >= dateRange.from)
+    && (!dateRange.to || item.request_date <= dateRange.to)
+  ), [items, dateRange]);
   const visibleItems = useMemo(() => pageSize === 0
-    ? items
-    : items.slice((page - 1) * pageSize, page * pageSize), [items, page, pageSize]);
+    ? filteredItems
+    : filteredItems.slice((page - 1) * pageSize, page * pageSize), [filteredItems, page, pageSize]);
   const statusLabel = statuses.length === 0
     ? "ทุกสถานะ"
     : statuses.map(status => inboxStatusOptions.find(option => option.value === status)?.label || status).join(", ");
+
+  const changeDates = (from: string, to: string) => {
+    setPage(1);
+    setDateRange({ from, to });
+  };
+
+  const resetFilters = () => {
+    setPage(1);
+    setStatuses(["pending"]);
+    setDateRange({ from: "", to: "" });
+  };
 
   const changeStatuses = (nextStatuses: string[]) => {
     setPage(1);
@@ -92,7 +109,10 @@ export function ApprovalInboxPage() {
       />
 
       <form onSubmit={event => event.preventDefault()} className={`${dataListFilterPanelClass} rounded-2xl border bg-card/80 p-5 shadow-sm backdrop-blur-xl`}>
-        <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex flex-wrap items-end gap-4">
+          <div className="w-full sm:max-w-xs">
+            <PresetDateRangeFilter label="วันที่เบิก" dateFrom={dateRange.from} dateTo={dateRange.to} onChange={changeDates} />
+          </div>
           <div className="w-full sm:max-w-xs">
             <DataListMultiFilterSelect
               label="สถานะ"
@@ -102,12 +122,12 @@ export function ApprovalInboxPage() {
               onChange={changeStatuses}
             />
           </div>
-          <button type="button" onClick={() => changeStatuses(["pending"])} disabled={statuses.length === 1 && statuses[0] === "pending"}
+          <button type="button" onClick={resetFilters} disabled={statuses.length === 1 && statuses[0] === "pending" && !dateRange.from && !dateRange.to}
             className="inline-flex h-11 items-center gap-2 rounded-md border border-input bg-background px-5 text-sm font-bold text-muted-foreground transition hover:border-rose-300 hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-rose-950/30">
             <Eraser className="h-4 w-4" />ล้างตัวกรอง
           </button>
         </div>
-        <p className="mt-3 border-t pt-3 text-xs font-medium text-muted-foreground">ตัวกรองทำงานอัตโนมัติ · ค่าเริ่มต้นคือ “รออนุมัติ”</p>
+        <p className="mt-3 border-t pt-3 text-xs font-medium text-muted-foreground">ตัวกรองทำงานอัตโนมัติ · ค่าเริ่มต้นคือ “ไม่กรองวันที่” และ “รออนุมัติ”</p>
       </form>
 
       {error && (
@@ -122,17 +142,17 @@ export function ApprovalInboxPage() {
             <div className="flex h-40 items-center justify-center">
               <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
             </div>
-          ) : items.length === 0 ? (
+          ) : filteredItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-14 text-center">
               <CheckCircle2 className="h-10 w-10 text-emerald-500" />
               <h2 className="mt-4 font-semibold">ไม่พบรายการสถานะ {statusLabel}</h2>
-              <p className="mt-1 text-sm text-muted-foreground">ลองเลือกสถานะอื่นเพื่อดูประวัติการพิจารณาของคุณ</p>
+              <p className="mt-1 text-sm text-muted-foreground">ลองเปลี่ยนช่วงวันที่หรือสถานะเพื่อดูประวัติการพิจารณาของคุณ</p>
             </div>
           ) : (
             <div className={dataListTableScrollClass}>
               <table className="w-full min-w-[1180px] text-sm">
                 <thead className="text-xs font-semibold text-muted-foreground">
-                  <tr>
+                  <tr className="divide-x divide-border">
                     <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>คำขอ</th>
                     <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>วันที่เบิก</th>
                     <th className={`${dataListTableHeaderCellClass} px-4 py-3 text-left`}>ผู้ขอ</th>
@@ -145,7 +165,7 @@ export function ApprovalInboxPage() {
                 </thead>
                 <tbody className="divide-y">
                   {visibleItems.map((item) => (
-                    <tr key={`${item.step_id}-${item.status}`} className="hover:bg-muted/20">
+                    <tr key={`${item.step_id}-${item.status}`} className="divide-x divide-border hover:bg-muted/20">
                       <td className="px-4 py-4">
                         <Link
                           to={`/expense-requests/${item.expense_request_id}`}
@@ -190,7 +210,7 @@ export function ApprovalInboxPage() {
         </CardContent>
       </Card>
       {!loading && <DataListPagination
-        total={items.length}
+        total={filteredItems.length}
         page={page}
         pageSize={pageSize}
         onPageChange={setPage}
