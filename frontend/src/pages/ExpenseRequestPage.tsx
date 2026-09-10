@@ -6,7 +6,7 @@ import {
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { BankLogo } from "@/components/ui/bank-logo";
-import { DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
+import { DataListFilterSelect, DataListMultiFilterSelect } from "@/components/data-list/DataListFilterSelect";
 import { DataListKpiCard } from "@/components/data-list/DataListKpiCard";
 import { DataListPagination } from "@/components/data-list/DataListPagination";
 import { DataListDateFilterRow } from "@/components/data-list/DataListDateFilterRow";
@@ -820,9 +820,14 @@ export function ExpenseRequestWizardPage() {
           </label>
         </div>
         <div className="border-t pt-6"><SectionHeading title="ผู้รับเงินและบัญชีธนาคาร" subtitle="ข้อมูลนี้เข้ารหัสและเปิดดูได้เฉพาะผู้เกี่ยวข้องกับคำขอ" /><div className="mt-6 grid gap-6 md:grid-cols-2 2xl:grid-cols-3">
-          <div><label className={labelCls}>ประเภทผู้รับเงินจริง *</label><select className={inputCls} value={header.recipient_type === "employee" ? "employee" : "external"} onChange={(e) => { const employee = e.target.value === "employee"; setHeader((f) => ({ ...f, recipient_type: employee ? "employee" : "individual", recipient_name: employee ? (user?.full_name || user?.username || "") : "", bank_account_name: employee ? (user?.full_name || user?.username || "") : "" })); }}><option value="employee">พนักงาน</option><option value="external">บุคคลหรือบริษัทภายนอก</option></select></div>
+          <DataListFilterSelect label="ประเภทผู้รับเงินจริง *" value={header.recipient_type === "employee" ? "employee" : "external"} allLabel="เลือกประเภทผู้รับเงิน" allowEmpty={false} disabled={!editable}
+            options={[{ value: "employee", label: "พนักงาน" }, { value: "external", label: "บุคคลหรือบริษัทภายนอก" }]}
+            onChange={value => { const employee = value === "employee"; setHeader((f) => ({ ...f, recipient_type: employee ? "employee" : "individual", recipient_name: employee ? (user?.full_name || user?.username || "") : "", bank_account_name: employee ? (user?.full_name || user?.username || "") : "" })); }} />
           <div><label className={labelCls}>ชื่อผู้รับเงิน *</label><input className={inputCls} value={header.recipient_name} onChange={(e) => setHeader((f) => ({ ...f, recipient_name: e.target.value }))} /></div>
-          <div><label className={labelCls}>ธนาคาร *</label><select className={inputCls} value={bankPicker} onChange={(e) => { const value = e.target.value; setBankPicker(value); setHeader((f) => ({ ...f, bank_name: value === "__other__" ? "" : value })); }}><option value="">เลือกธนาคาร</option>{THAI_BANK_OPTIONS.map((bank) => <option key={bank} value={bank}>{bank}</option>)}<option value="__other__">อื่นๆ (ระบุเอง)</option></select>{bankPicker === "__other__" && <input className={`${inputCls} mt-2`} maxLength={100} value={header.bank_name} placeholder="พิมพ์ชื่อธนาคาร" onChange={(e) => setHeader((f) => ({ ...f, bank_name: e.target.value }))} />}</div>
+          <div><DataListFilterSelect label="ธนาคาร *" value={bankPicker} allLabel="เลือกธนาคาร" allowEmpty={false} disabled={!editable}
+            options={[...THAI_BANK_OPTIONS.map(bank => ({ value: bank, label: bank, icon: <BankLogo bankName={bank} className="h-7 w-7" /> })), { value: "__other__", label: "อื่นๆ (ระบุเอง)", icon: <BankLogo className="h-7 w-7" /> }]}
+            onChange={value => { setBankPicker(value); setHeader((f) => ({ ...f, bank_name: value === "__other__" ? "" : value })); }} />
+            {bankPicker === "__other__" && <input aria-label="ชื่อธนาคารอื่น" className={`${inputCls} mt-2`} maxLength={100} value={header.bank_name} placeholder="พิมพ์ชื่อธนาคาร" onChange={(e) => setHeader((f) => ({ ...f, bank_name: e.target.value }))} />}</div>
           <div><label className={labelCls}>ชื่อบัญชี *</label><input className={inputCls} value={header.bank_account_name} onChange={(e) => setHeader((f) => ({ ...f, bank_account_name: e.target.value }))} /></div>
           <div className="md:col-span-2 2xl:col-span-3"><label className={labelCls}>เลขบัญชี *</label><input inputMode="numeric" autoComplete="off" maxLength={30} className={inputCls} value={header.bank_account_number} onChange={(e) => setHeader((f) => ({ ...f, bank_account_number: e.target.value }))} /><p className="mt-2 text-xs text-muted-foreground">ตรวจชื่อบัญชีและเลขบัญชีก่อนบันทึกทุกครั้ง</p></div>
           <div className="md:col-span-2 2xl:col-span-3 flex items-center gap-2 rounded-lg bg-emerald-50 px-3 py-2 text-xs text-emerald-700"><LockKeyhole className="h-4 w-4" /> จัดเก็บแบบเข้ารหัสและแสดงเฉพาะผู้เกี่ยวข้องกับคำขอ</div>
