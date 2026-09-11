@@ -118,7 +118,7 @@ class TransferStatusTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stats_and_totals_use_awaiting_slip_filter(self):
         results = []
-        for rows in ([request("awaiting_slip")], [], []):
+        for rows in ([request("awaiting_slip")], [], [], []):
             result = Mock()
             result.scalars.return_value.all.return_value = rows
             results.append(result)

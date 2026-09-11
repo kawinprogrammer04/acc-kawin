@@ -563,11 +563,12 @@ export const approvalInboxApi = {
 
 export interface AccountingRequest {
   id: string; request_no: string; request_date: string; title: string; recipient_name?: string;
+  source_system: "acc" | "hr"; source_version?: number; allowed_actions?: string[];
   requester_name?: string; request_format: string; status: ExpenseRequestStatus;
   gross: number; vat: number; withholding: number; net: number; paid: number; remaining: number;
   settlement_due_date?: string; submitted_at?: string; approved_at?: string;
   company_id: number; company_name?: string; department_id?: number; department_name?: string;
-  expense_type_id: number; expense_type_name?: string; bank_name?: string;
+  expense_type_id?: number; expense_type_name?: string; bank_name?: string;
   bank_account_name?: string; bank_account_number?: string;
   transfer_amount: number; is_adjustment_transfer: boolean; installment_enabled?: boolean;
   installment_no?: number; installment_chain_root_id?: string;
@@ -590,6 +591,7 @@ export interface AccountingListResponse {
 
 export interface AccountingFilters {
   status?: string; statuses?: string; query?: string;
+  source_system?: "acc" | "hr";
   department_id?: number; department_ids?: string;
   type_id?: number; type_ids?: string;
   date_from?: string; date_to?: string; withholding_only?: boolean; has_tax_invoice?: boolean;
@@ -690,6 +692,57 @@ export const expenseAccountingApi = {
     openPrivateFinancialFile(`/expense-requests/${requestId}/wht-certificate/${certificateId}`),
   downloadWhtCertificate: (requestId: string, certificateId: string, filename: string) =>
     downloadPrivateFinancialFile(`/expense-requests/${requestId}/wht-certificate/${certificateId}`, filename),
+};
+
+export interface HrExpenseSnapshot {
+  source_system: "hr"; integration_id: string; hr_request_id: number; request_no: string;
+  version: number; status_code: string; status_label?: string; allowed_actions: string[];
+  updated_at?: string; finance_updated_at?: string;
+  company?: { id?: number; code?: string; name?: string };
+  department?: { id?: number; name?: string };
+  requester?: { employee_id?: string; name?: string; position?: string };
+  payee?: { type?: string; name?: string; bank_name?: string; bank_account_name?: string; bank_account_number?: string; bank_account_last4?: string };
+  request?: { kind?: string; kind_label?: string; expense_type?: string; title?: string; purpose?: string; required_date?: string; submitted_at?: string; approved_at?: string };
+  amounts?: Record<"subtotal" | "discount" | "vat" | "gross" | "withholding" | "net" | "paid" | "remaining", string>;
+  tax?: { requester_status?: string; decision?: string; rate?: string; payee_taxpayer_type?: string; payee_tax_id_last4?: string };
+  items?: Array<{ description: string; quantity: string; unit: string; unit_price: string; line_total: string }>;
+  approval_trail?: Array<{ step: number; name?: string; status: string; acted_at?: string; approvers?: Array<{ name?: string; status: string; acted_at?: string; comment?: string }> }>;
+  payments?: Array<{ integration_id: string; payment_type: string; net_amount: string; paid_date?: string; reference_no?: string; proof?: { available: boolean }; voided_at?: string; void_reason?: string }>;
+  settlement?: { integration_id: string; status: string; version: number; actual_amount: string; balance_type: string; balance_amount: string; review_comment?: string } | null;
+  attachments?: Array<{ integration_id: string; name: string; category?: string; mime_type?: string; size?: number }>;
+  withholding_certificates?: Array<{ integration_id: string; certificate_number: string; issued_date?: string; tax_base: string; tax_rate: string; tax_amount: string }>;
+  histories?: Array<{ integration_event_id: string; action: string; from_status?: string; to_status?: string; comments?: string; actor_employee_id?: string; source_system?: string; occurred_at?: string }>;
+}
+
+type HrMutationMeta = { expected_version: number; idempotency_key: string };
+
+export const hrExpenseAccountingApi = {
+  refresh: (): Promise<{ enabled: boolean; refreshed: number; last_seq: number }> =>
+    api.post("/integrations/hr/expenses/refresh").then(r => r.data),
+  detail: (id: string): Promise<{ item: HrExpenseSnapshot; stale: boolean }> =>
+    api.get(`/integrations/hr/expense-requests/${id}`).then(r => r.data),
+  review: (id: string, data: HrMutationMeta & { withholding_decision?: "none" | "deduct" | "already_withheld"; tax_base?: number; tax_rate?: number }) =>
+    api.post(`/integrations/hr/expense-requests/${id}/accounting/review`, data).then(r => r.data),
+  returnForCorrection: (id: string, data: HrMutationMeta & { reason: string }) =>
+    api.post(`/integrations/hr/expense-requests/${id}/accounting/return`, data).then(r => r.data),
+  cancel: (id: string, data: HrMutationMeta & { reason: string }) =>
+    api.post(`/integrations/hr/expense-requests/${id}/accounting/cancel`, data).then(r => r.data),
+  pay: (id: string, data: HrMutationMeta & { paid_date: string; reference_number?: string; proof_file_name?: string; proof_content_base64?: string }) =>
+    api.post(`/integrations/hr/expense-requests/${id}/payments`, data).then(r => r.data),
+  replacePaymentProof: (requestId: string, paymentId: string, data: HrMutationMeta & { proof_file_name: string; proof_content_base64: string; reason?: string }) =>
+    api.patch(`/integrations/hr/expense-requests/${requestId}/payments/${paymentId}/proof`, data).then(r => r.data),
+  voidPayment: (requestId: string, paymentId: string, data: HrMutationMeta & { reason: string }) =>
+    api.post(`/integrations/hr/expense-requests/${requestId}/payments/${paymentId}/void`, data).then(r => r.data),
+  reviewSettlement: (requestId: string, settlementId: string, data: HrMutationMeta & { action: "approve" | "return"; accounting_note?: string }) =>
+    api.post(`/integrations/hr/expense-requests/${requestId}/settlements/${settlementId}/review`, data).then(r => r.data),
+  issueWht: (id: string, data: HrMutationMeta & { certificate_number: string; issued_date: string; tax_base: number; tax_rate: number; tax_amount: number }) =>
+    api.post(`/integrations/hr/expense-requests/${id}/withholding-certificates`, data).then(r => r.data),
+  openPaymentProof: (requestId: string, paymentId: string) =>
+    openPrivateFinancialFile(`/integrations/hr/expense-requests/${requestId}/payments/${paymentId}/proof`),
+  openAttachment: (requestId: string, attachmentId: string) =>
+    openPrivateFinancialFile(`/integrations/hr/expense-requests/${requestId}/attachments/${attachmentId}/content`),
+  openWht: (requestId: string, certificateId: string) =>
+    openPrivateFinancialFile(`/integrations/hr/expense-requests/${requestId}/withholding-certificates/${certificateId}/content`),
 };
 
 export interface ExpenseDashboardOption { id: number; name: string }

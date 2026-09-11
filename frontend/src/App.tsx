@@ -38,6 +38,7 @@ import { ExpenseRequestPage, ExpenseRequestWizardPage } from "@/pages/ExpenseReq
 import { ExpenseRequestDetailPage } from "@/pages/ExpenseRequestDetailPage";
 import { ApprovalInboxPage } from "@/pages/ApprovalInboxPage";
 import { ExpenseAccountingPage } from "@/pages/ExpenseAccountingPage";
+import { HrExpenseRequestDetailPage } from "@/pages/HrExpenseRequestDetailPage";
 import { ExpenseDashboardPage } from "@/pages/ExpenseDashboardPage";
 import { ExpenseSettingsPage } from "@/pages/ExpenseSettingsPage";
 import { RoleManagementPage } from "@/pages/RoleManagementPage";
@@ -116,6 +117,7 @@ export default function App() {
               <Route path="/expense-requests/:requestId" element={guarded("expense_requests", <ExpenseRequestDetailPage />)} />
               <Route path="/approvals/inbox" element={guarded("approvals_inbox", <ApprovalInboxPage />)} />
               <Route path="/expense-requests/accounting" element={guarded("expense_accounting", <ExpenseAccountingPage />)} />
+              <Route path="/expense-requests/hr/:integrationId" element={guarded("expense_accounting", <HrExpenseRequestDetailPage />)} />
               <Route path="/expense-requests/dashboard" element={guarded("expense_accounting", <ExpenseDashboardPage />)} />
               <Route path="/expense-requests/settings" element={guarded("expense_settings", <ExpenseSettingsPage />)} />
               <Route path="/approval-matrix" element={<Navigate to="/expense-requests/settings" replace />} />

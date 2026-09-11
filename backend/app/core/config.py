@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     HR_KAWIN_TIMEOUT_SECONDS: float = 10.0
     ACC_PUBLIC_BASE_URL: str = ""
 
+    # HR-owned expense integration.  The token is a dedicated Sanctum service
+    # token carrying read/write/financial scopes; never reuse a browser SSO token.
+    HR_EXPENSE_INTEGRATION_ENABLED: bool = False
+    HR_EXPENSE_INTEGRATION_BASE_URL: str | None = None
+    HR_EXPENSE_INTEGRATION_TOKEN: str | None = None
+    HR_EXPENSE_INTEGRATION_WEBHOOK_SECRET: str | None = None
+    HR_EXPENSE_INTEGRATION_TIMEOUT_SECONDS: float = 15.0
+    HR_EXPENSE_INTEGRATION_PATH: str = "/api/integrations/acc/v1"
+
     # Internal PHP/Dompdf service used for tax-invoice preview and PDF export.
     DOMPDF_RENDERER_URL: str = "http://tax_invoice_renderer:8090"
     DOMPDF_TIMEOUT_SECONDS: float = 30.0

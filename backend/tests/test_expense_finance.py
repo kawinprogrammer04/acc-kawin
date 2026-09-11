@@ -147,6 +147,7 @@ class AccountingFilterTests(unittest.TestCase):
                     )],
                     [],
                     [],
+                    [],
                 ])
 
             async def execute(self, statement):
@@ -528,6 +529,7 @@ class ExpenseExportTests(unittest.TestCase):
             "ผู้ขอ", "ผู้รับเงิน", "ธนาคาร", "ชื่อบัญชี", "เลขบัญชี", "ยอดอนุมัติ",
             "ภาษีหัก ณ ที่จ่าย", "ผลพิจารณาภาษี", "ยอดโอนสุทธิ", "ยอดส่วนต่างเงินทดรอง",
             "จ่ายแล้ว", "คงเหลือ", "สถานะ", "วันที่จ่ายล่าสุด", "เลขอ้างอิง",
+            "แหล่งข้อมูล",
         ))
         self.assertEqual(list(workbook.active.values)[1][6], "รายการของ ACC")
 

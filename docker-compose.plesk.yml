@@ -104,6 +104,12 @@ services:
       HR_KAWIN_ME_PATH:           ${HR_KAWIN_ME_PATH:-/api/employees/me}
       HR_KAWIN_TIMEOUT_SECONDS:   ${HR_KAWIN_TIMEOUT_SECONDS:-10}
       ACC_PUBLIC_BASE_URL:        ${ACC_PUBLIC_BASE_URL:-https://acc.kawinbrothers.com}
+      HR_EXPENSE_INTEGRATION_ENABLED: ${HR_EXPENSE_INTEGRATION_ENABLED:-false}
+      HR_EXPENSE_INTEGRATION_BASE_URL: ${HR_EXPENSE_INTEGRATION_BASE_URL:-}
+      HR_EXPENSE_INTEGRATION_TOKEN: ${HR_EXPENSE_INTEGRATION_TOKEN:-}
+      HR_EXPENSE_INTEGRATION_WEBHOOK_SECRET: ${HR_EXPENSE_INTEGRATION_WEBHOOK_SECRET:-}
+      HR_EXPENSE_INTEGRATION_TIMEOUT_SECONDS: ${HR_EXPENSE_INTEGRATION_TIMEOUT_SECONDS:-15}
+      HR_EXPENSE_INTEGRATION_PATH: ${HR_EXPENSE_INTEGRATION_PATH:-/api/integrations/acc/v1}
       # Read-only HR → ACC sync. Host paths default to tracked empty directories
       # so local/dev compose remains usable; production records the source
       # paths in .env once and keeps both mounts read-only forever.

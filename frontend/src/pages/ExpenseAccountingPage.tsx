@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Building2, Clipboard, Eraser, FileSignature, FileSpreadsheet, FileText,
@@ -18,7 +18,7 @@ import {
 } from "@/components/data-list/styles";
 import { getApiErrorMessage } from "@/api/client";
 import {
-  expenseAccountingApi, expenseSettingsApi, expenseTypesApi,
+  expenseAccountingApi, expenseSettingsApi, expenseTypesApi, hrExpenseAccountingApi,
 } from "@/api/approvals";
 import type {
   AccountingFilters, AccountingRequest, Department, ExpenseType,
@@ -36,12 +36,14 @@ const accountingTableGroupDividerClass = "border-r-2 border-border";
 
 type FilterForm = {
   statuses: string[]; company_id: string; department_ids: string[]; type_ids: string[];
+  source_system: "" | "acc" | "hr";
   query: string; date_from: string; date_to: string; withholding_only: boolean; has_tax_invoice: string;
 };
 
 const emptyFilters = (companyId?: number): FilterForm => ({
   statuses: [], company_id: companyId ? String(companyId) : "", department_ids: [],
-  type_ids: [], query: "", date_from: today(), date_to: today(), withholding_only: false, has_tax_invoice: "",
+  type_ids: [], source_system: "", query: "", date_from: today(), date_to: today(),
+  withholding_only: false, has_tax_invoice: "",
 });
 
 function storedStringArray(value: unknown, legacyValue: unknown): string[] {
@@ -64,6 +66,7 @@ function readStoredFilters(): FilterForm {
       company_id: typeof stored.company_id === "string" ? stored.company_id : "",
       department_ids: storedStringArray(stored.department_ids, stored.department_id),
       type_ids: storedStringArray(stored.type_ids, stored.type_id),
+      source_system: stored.source_system === "acc" || stored.source_system === "hr" ? stored.source_system : "",
       query: typeof stored.query === "string" ? stored.query : "",
       date_from: hasStoredDateRange ? storedDateFrom : defaultDate,
       date_to: hasStoredDateRange ? storedDateTo : defaultDate,
@@ -77,7 +80,7 @@ function readStoredFilters(): FilterForm {
 
 const statusLabel: Record<string, string> = {
   pending_approval: "กำลังอนุมัติ", pending_adjustment_approval: "กำลังอนุมัติส่วนต่าง",
-  accounting_review: "รายการเก่ารอส่งต่อ", ready_to_pay: "พร้อมจ่าย", awaiting_slip: "รอแนบสลิป", partially_paid: "จ่ายบางส่วน",
+  accounting_review: "รอบัญชีตรวจ", ready_to_pay: "พร้อมจ่าย", awaiting_slip: "รอแนบสลิป", partially_paid: "จ่ายบางส่วน",
   paid: "จ่ายแล้ว", settlement_due: "รอเคลียร์", settlement_review: "ตรวจเคลียร์",
   completed: "เสร็จสิ้น",
 };
@@ -109,6 +112,7 @@ function CopyIconButton({ value, label, onCopy }: { value?: string; label: strin
 function toApiFilters(filters: FilterForm): AccountingFilters {
   return {
     statuses: filters.statuses.length ? filters.statuses.join(",") : undefined,
+    source_system: filters.source_system || undefined,
     department_ids: filters.department_ids.length ? filters.department_ids.join(",") : undefined,
     type_ids: filters.type_ids.length ? filters.type_ids.join(",") : undefined,
     query: filters.query.trim() || undefined,
@@ -149,7 +153,9 @@ export function ExpenseAccountingPage() {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [syncWarning, setSyncWarning] = useState("");
   const [updatingTransferId, setUpdatingTransferId] = useState<string | null>(null);
+  const lastHrSync = useRef<{ companyId?: number; attemptedAt: number }>({ attemptedAt: 0 });
 
   useEffect(() => {
     if (!currentCompany) return;
@@ -180,6 +186,17 @@ export function ExpenseAccountingPage() {
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
+      const shouldRefreshHr = lastHrSync.current.companyId !== currentCompany?.id
+        || Date.now() - lastHrSync.current.attemptedAt > 15_000;
+      if (shouldRefreshHr) {
+        lastHrSync.current = { companyId: currentCompany?.id, attemptedAt: Date.now() };
+        try {
+          const sync = await hrExpenseAccountingApi.refresh();
+          setSyncWarning(sync.enabled ? "" : "ยังไม่ได้เปิดการเชื่อมต่อรายการเบิกจาก HR — กำลังแสดงข้อมูล ACC และข้อมูล HR ที่เคยซิงก์ไว้ (ถ้ามี)");
+        } catch (syncError) {
+          setSyncWarning(`${getApiErrorMessage(syncError, "ติดต่อ HR ไม่สำเร็จ")} — กำลังแสดงข้อมูลที่ซิงก์ล่าสุด`);
+        }
+      }
       const [result, summary] = await Promise.all([
         expenseAccountingApi.list(toApiFilters(applied), page, pageSize),
         expenseAccountingApi.stats(toApiFilters(applied)),
@@ -187,7 +204,7 @@ export function ExpenseAccountingPage() {
       setRows(result.items); setTotal(result.total); setStats(summary);
     } catch (e) { setError(getApiErrorMessage(e, "โหลดรายการบัญชีไม่สำเร็จ")); }
     finally { setLoading(false); }
-  }, [applied, page, pageSize]);
+  }, [applied, currentCompany?.id, page, pageSize]);
   useEffect(() => { load(); }, [load]);
 
   const resetFilters = () => {
@@ -226,13 +243,13 @@ export function ExpenseAccountingPage() {
     {/* <FinanceNav /> */}
 
     <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-      <div className="flex items-start gap-4"><div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg"><Landmark className="h-7 w-7" /></div><div><h1 className="text-3xl font-black">บัญชีจ่ายเงิน</h1><p className="mt-1 text-sm text-muted-foreground">ตรวจรายการที่กำลังอนุมัติและรายการที่อนุมัติครบแล้ว พร้อมตรวจสอบผู้อนุมัติจริงก่อนจ่ายเงิน</p></div></div>
+      <div className="flex items-start gap-4"><div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg"><Landmark className="h-7 w-7" /></div><div><h1 className="text-3xl font-black">บัญชีจ่ายเงิน</h1><p className="mt-1 text-sm text-muted-foreground">รวมรายการจาก ACC และ HR โดย HR ยังเป็นเจ้าของข้อมูลของคำขอที่สร้างจาก HR</p></div></div>
       <button type="button" onClick={exportExcel} disabled={exporting} aria-busy={exporting} className="group relative flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-600 px-6 py-3 text-sm font-black text-white shadow-lg shadow-emerald-500/30 transition-all duration-300 hover:-translate-y-1 hover:shadow-emerald-500/50 disabled:cursor-wait disabled:opacity-60 md:w-auto">{exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4 transition-transform group-hover:scale-110" />}ส่งออก Excel</button>
     </div>
 
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
       <DataListKpiCard label="กำลังอนุมัติ" value={stats.pending_approval_count || 0} tone="bg-violet-100 text-violet-700 dark:bg-violet-950" icon={FileSignature} />
-      <DataListKpiCard label="รายการเก่ารอส่งต่อ" value={stats.accounting_review_count || 0} tone="bg-cyan-100 text-cyan-700 dark:bg-cyan-950" icon={RotateCcw} />
+      <DataListKpiCard label="รอบัญชีตรวจ" value={stats.accounting_review_count || 0} tone="bg-cyan-100 text-cyan-700 dark:bg-cyan-950" icon={RotateCcw} />
       <DataListKpiCard label="พร้อมจ่าย" value={stats.ready_to_pay_count || 0} tone="bg-indigo-100 text-indigo-700 dark:bg-indigo-950" icon={WalletCards} />
       <DataListKpiCard label="รอแนบสลิป" value={stats.awaiting_slip_count || 0} tone="bg-violet-100 text-violet-700 dark:bg-violet-950" icon={FileText} />
       <DataListKpiCard label="จ่ายบางส่วน" value={stats.partially_paid_count || 0} tone="bg-teal-100 text-teal-700 dark:bg-teal-950" icon={WalletCards} />
@@ -247,7 +264,8 @@ export function ExpenseAccountingPage() {
         </label>
       </DataListDateFilterRow>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        <DataListFilterSelect label="แหล่งข้อมูล" value={filters.source_system} allLabel="ทุกระบบ" options={[{ value: "acc", label: "ACC" }, { value: "hr", label: "HR" }]} onChange={source_system => setFilters(current => ({ ...current, source_system: source_system as FilterForm["source_system"] }))} />
         <DataListMultiFilterSelect label="สถานะ" values={filters.statuses} allLabel="ทุกสถานะ" options={Object.entries(statusLabel).map(([value, label]) => ({ value, label }))} onChange={statuses => setFilters(current => ({ ...current, statuses }))} />
         <DataListFilterSelect label="บริษัท" value={filters.company_id} allLabel="เลือกบริษัท" allowEmpty={false} options={companies.filter(company => company.is_active).map(company => ({ value: String(company.id), label: formatCompanyLabel(company) }))} onChange={company_id => setFilters(current => ({ ...current, company_id }))} />
         <DataListMultiFilterSelect label="แผนก" values={filters.department_ids} allLabel="ทุกแผนก" options={visibleDepartments.map(item => ({ value: String(item.id), label: item.name }))} onChange={department_ids => setFilters(current => ({ ...current, department_ids }))} />
@@ -264,11 +282,12 @@ export function ExpenseAccountingPage() {
     </form>
 
     {error && <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-200">{error}</div>}
+    {syncWarning && <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">{syncWarning}</div>}
     {notice && <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-200">{notice}</div>}
 
     <Card className="overflow-hidden"><CardContent className="p-0"><div className={dataListTableScrollClass}><table className="w-full min-w-[1760px] text-sm"><thead className="text-left text-xs font-black uppercase text-muted-foreground"><tr>{accountingTableHeadings.map((heading, index) => <th key={heading} className={`${dataListTableHeaderCellClass} px-4 py-3 ${[5, 10].includes(index) ? "text-right" : "text-left"} ${accountingTableGroupEndIndexes.has(index) ? accountingTableGroupDividerClass : ""}`}>{heading}</th>)}</tr></thead>
       <tbody className="divide-y">{rows.map(row => <tr key={row.id} className="hover:bg-muted/40">
-        <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="font-mono font-black text-primary hover:underline">{row.request_no}</Link><p className="mt-1 text-xs text-muted-foreground">{row.department_name || "ไม่ระบุแผนก"}</p></td>
+        <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><div className="flex items-center gap-2"><Link to={row.source_system === "hr" ? `/expense-requests/hr/${row.id}` : `/expense-requests/${row.id}`} state={{ from: "accounting" }} className="font-mono font-black text-primary hover:underline">{row.request_no}</Link><span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.source_system === "hr" ? "bg-blue-100 text-blue-700 dark:bg-blue-950/60 dark:text-blue-200" : "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200"}`}>{row.source_system === "hr" ? "HR" : "ACC"}</span></div><p className="mt-1 text-xs text-muted-foreground">{row.department_name || "ไม่ระบุแผนก"}</p></td>
         <td className="whitespace-nowrap px-4 py-4 font-medium">{formatDate(`${row.request_date}T00:00:00`)}</td>
         <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><div className="flex min-w-0 items-center gap-2.5"><BankLogo bankName={row.bank_name} /><span className="font-bold">{row.bank_name || "-"}</span></div><CopyIconButton value={row.bank_name} label="ธนาคาร" onCopy={copyField} /></div></td>
         <td className="px-4 py-4"><div className="flex items-center justify-between gap-2"><span className="font-mono text-xs">{row.bank_account_number || "-"}</span><CopyIconButton value={row.bank_account_number} label="เลขบัญชี" onCopy={copyField} /></div></td>
@@ -278,7 +297,7 @@ export function ExpenseAccountingPage() {
         <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}><p className="font-bold">{row.expense_type_name || "-"}</p></td>
         <td className="px-4 py-4">
           <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${statusColor[row.status] || "bg-muted"}`}>{statusLabel[row.status] || row.status}</span>
-          {["ready_to_pay", "partially_paid", "awaiting_slip"].includes(row.status) && can("expense_accounting") && <label className="mt-2 flex min-h-10 cursor-pointer items-center gap-2 whitespace-nowrap text-xs font-bold">
+          {row.source_system !== "hr" && ["ready_to_pay", "partially_paid", "awaiting_slip"].includes(row.status) && can("expense_accounting") && <label className="mt-2 flex min-h-10 cursor-pointer items-center gap-2 whitespace-nowrap text-xs font-bold">
             <input type="checkbox" checked={row.status === "awaiting_slip"} disabled={loading || Boolean(updatingTransferId)}
               onChange={event => setTransferred(row, event.target.checked)} aria-label={`ทำรายการโอนแล้ว ${row.request_no}`}
               className="h-4 w-4 shrink-0 rounded border-input text-primary disabled:cursor-wait" />
@@ -291,7 +310,7 @@ export function ExpenseAccountingPage() {
         <td className={`px-4 py-4 ${accountingTableGroupDividerClass}`}>
           {Number(row.vat || 0) > 0 && <span className="inline-flex whitespace-nowrap rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-bold text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">มีใบกำกับภาษี</span>}
         </td>
-        <td className="px-4 py-4 text-right"><Link to={`/expense-requests/${row.id}`} state={{ from: "accounting" }} className="inline-flex h-10 items-center rounded-md bg-primary/10 px-6 text-xs font-black text-primary hover:bg-primary/20 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700">เปิดรายการ</Link></td>
+        <td className="px-4 py-4 text-right"><Link to={row.source_system === "hr" ? `/expense-requests/hr/${row.id}` : `/expense-requests/${row.id}`} state={{ from: "accounting" }} className="inline-flex h-10 items-center rounded-md bg-primary/10 px-6 text-xs font-black text-primary hover:bg-primary/20 dark:bg-rose-600 dark:text-white dark:hover:bg-rose-700">เปิดรายการ</Link></td>
       </tr>)}</tbody>
       {!loading && total > 0 && <tfoot className="border-t-2 bg-muted/50">
         <tr>
