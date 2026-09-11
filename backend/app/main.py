@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.routers import accounts, auth, invoices, journals, reports, pdf_reports, cashflow, companies, tax_invoices, permissions, bank_reconciliation, approvals, crm_cashflow, expense_finance, hr_sync, integrations
+from app.routers import accounts, auth, invoices, journals, reports, pdf_reports, cashflow, companies, tax_invoices, permissions, bank_reconciliation, approvals, crm_cashflow, expense_finance, hr_sync, integrations, hr_expense_integration
 
 logger = logging.getLogger("app.errors")
 
@@ -90,6 +90,7 @@ app.include_router(approvals.router, prefix=PREFIX)
 app.include_router(crm_cashflow.router, prefix=PREFIX)
 app.include_router(hr_sync.router, prefix=PREFIX)
 app.include_router(integrations.router, prefix=PREFIX)
+app.include_router(hr_expense_integration.router, prefix=PREFIX)
 
 
 @app.get("/api/health")

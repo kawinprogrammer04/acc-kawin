@@ -19,6 +19,10 @@ export function getApiErrorMessage(error: unknown, fallback = "เกิดข�
   const detail = (error as { response?: { data?: { detail?: unknown } } })
     ?.response?.data?.detail;
   if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+    const message = (detail as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
   if (Array.isArray(detail)) {
     const messages = detail
       .map((item) => {

@@ -387,6 +387,7 @@ async def review_settlement(db: AsyncSession, settlement: ExpenseSettlement, act
 def excel_bytes(
     rows: list[ExpenseRequest],
     *,
+    hr_rows: list | None = None,
     expense_type_names: dict[int, str] | None = None,
     department_names: dict[int, str] | None = None,
     payments_by_request_id: dict[str, list[ExpensePayment]] | None = None,
@@ -400,7 +401,7 @@ def excel_bytes(
         "เลขที่คำขอ", "วันที่ส่ง", "ประเภทคำขอ", "หมวดค่าใช้จ่าย", "บริษัท", "แผนก", "รายการ",
         "ผู้ขอ", "ผู้รับเงิน", "ธนาคาร", "ชื่อบัญชี", "เลขบัญชี", "ยอดอนุมัติ",
         "ภาษีหัก ณ ที่จ่าย", "ผลพิจารณาภาษี", "ยอดโอนสุทธิ", "ยอดส่วนต่างเงินทดรอง",
-        "จ่ายแล้ว", "คงเหลือ", "สถานะ", "วันที่จ่ายล่าสุด", "เลขอ้างอิง",
+        "จ่ายแล้ว", "คงเหลือ", "สถานะ", "วันที่จ่ายล่าสุด", "เลขอ้างอิง", "แหล่งข้อมูล",
     ])
     dangerous = ("=", "+", "-", "@", "\t", "\r")
 
@@ -464,12 +465,48 @@ def excel_bytes(
             safe(ACCOUNTING_STATUS_LABELS.get(r.status, r.status)),
             local_datetime(latest_payment.paid_at) if latest_payment else None,
             safe(latest_payment.reference_no) if latest_payment else None,
+            "ACC",
         ])
 
-        for column in (7, 8, 9, 10, 11, 12, 15, 20, 21, 22):
+        for column in (7, 8, 9, 10, 11, 12, 15, 20, 21, 22, 23):
             ws.cell(row=ws.max_row, column=column).alignment = Alignment(wrapText=True, vertical="top")
 
-    for column in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22):
+    for r in hr_rows or []:
+        snapshot = r.snapshot or {}
+        tax = snapshot.get("tax") or {}
+        payments = [item for item in snapshot.get("payments") or [] if not item.get("voided_at")]
+        latest_payment = payments[-1] if payments else None
+        settlement = snapshot.get("settlement") or {}
+        additional_amount = settlement.get("balance_amount") if settlement.get("balance_type") == "additional_payment" else 0
+        ws.append([
+            safe(r.request_no),
+            local_datetime(r.submitted_at, with_time=True),
+            safe(request_format_labels.get(r.request_kind, r.request_kind)),
+            safe(r.expense_type_name),
+            safe((snapshot.get("company") or {}).get("name") or company_name),
+            safe(r.department_name),
+            safe(r.title),
+            safe(r.requester_name),
+            safe(r.recipient_name),
+            safe(r.bank_name),
+            safe(r.bank_account_name),
+            safe(decrypt_account_number(r.bank_account_number_encrypted) or "-"),
+            float(money(r.gross_amount)),
+            float(money(r.withholding_amount)),
+            safe(withholding_decision_labels.get(tax.get("decision"), "รอบัญชีพิจารณา")),
+            float(money(r.net_amount)),
+            float(money(additional_amount)),
+            float(money(r.paid_amount)),
+            float(money(r.remaining_amount)),
+            safe(ACCOUNTING_STATUS_LABELS.get(r.status, r.status)),
+            latest_payment.get("paid_date") if latest_payment else None,
+            safe(latest_payment.get("reference_no")) if latest_payment else None,
+            "HR",
+        ])
+        for column in (7, 8, 9, 10, 11, 12, 15, 20, 21, 22, 23):
+            ws.cell(row=ws.max_row, column=column).alignment = Alignment(wrapText=True, vertical="top")
+
+    for column in range(1, 24):
         ws.column_dimensions[chr(64 + column)].width = 20
     ws.column_dimensions["G"].width = 32
     ws.column_dimensions["J"].width = 24

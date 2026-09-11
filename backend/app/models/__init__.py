@@ -35,6 +35,11 @@ from app.models.crm_cashflow import (
     CrmCashflowList,
     CrmCashflowStatement,
 )
+from app.models.hr_expense_integration import (
+    HrExpenseIntegrationEvent,
+    HrExpenseIntegrationState,
+    HrExpenseRequestProjection,
+)
 
 __all__ = [
     "User", "Company", "CompanyIntegration", "UserCompany",
@@ -51,4 +56,5 @@ __all__ = [
     "ExpenseWithholdingTaxCertificate", "ExpenseRequestHistory", "SystemNotification",
     "CrmCashflowCategory", "CrmCashflowList", "CrmCashflowDepartment",
     "CrmCashflowStatement",
+    "HrExpenseIntegrationEvent", "HrExpenseIntegrationState", "HrExpenseRequestProjection",
 ]

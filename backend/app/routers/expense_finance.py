@@ -3,11 +3,11 @@ from calendar import monthrange
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, RedirectResponse, Response
-from sqlalchemy import and_, case, exists, func, or_, select, update
+from sqlalchemy import Date, and_, exists, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +26,7 @@ from app.models.expense_finance import (
     ExpenseSettlement, ExpenseWithholdingTaxCertificate, SystemNotification,
 )
 from app.models.user import User
+from app.models.hr_expense_integration import HrExpenseRequestProjection
 from app.schemas.expense_finance import (
     AccountingCancelIn, AccountingReturnIn, AccountingStatsOut, AccountingTransferIn,
     AttachmentRequirementIn, AttachmentRequirementOut, DepartmentIn, DepartmentOut,
@@ -267,7 +268,21 @@ def _accounting_query(
     withholding_only: bool = False, query: Optional[str] = None,
     has_tax_invoice: Optional[bool] = None,
 ):
-    stmt = select(ExpenseRequest).where(ExpenseRequest.company_id == company.id)
+    stmt = select(ExpenseRequest).where(
+        ExpenseRequest.company_id == company.id,
+        # Once an HR row exists in the new projection, hide the old one-time
+        # imported copy so the combined page never displays or totals it twice.
+        text("""
+            NOT EXISTS (
+                SELECT 1
+                FROM hr_expense_request_import_map import_map
+                JOIN hr_expense_request_projections hr_projection
+                  ON hr_projection.hr_request_id = import_map.hr_expense_request_id
+                 AND hr_projection.is_deleted = FALSE
+                WHERE import_map.expense_request_id = expense_requests.id
+            )
+        """),
+    )
     selected_statuses = statuses or ([status] if status else [])
     if selected_statuses:
         stmt = stmt.where(ExpenseRequest.status.in_(selected_statuses))
@@ -307,6 +322,121 @@ def _accounting_query(
         stmt = stmt.where(ExpenseRequest.request_no.ilike(term) | ExpenseRequest.title.ilike(term) |
                           ExpenseRequest.recipient_name.ilike(term))
     return stmt
+
+
+def _hr_accounting_query(
+    company: Company, *, status: Optional[str] = None, statuses: Optional[list[str]] = None,
+    department_id: Optional[int] = None, department_ids: Optional[list[int]] = None,
+    type_id: Optional[int] = None, type_ids: Optional[list[int]] = None,
+    date_from: Optional[date] = None, date_to: Optional[date] = None,
+    withholding_only: bool = False, query: Optional[str] = None,
+    has_tax_invoice: Optional[bool] = None,
+):
+    stmt = select(HrExpenseRequestProjection).where(
+        HrExpenseRequestProjection.company_id == company.id,
+        HrExpenseRequestProjection.is_deleted.is_(False),
+    )
+    selected_statuses = statuses or ([status] if status else [])
+    stmt = stmt.where(HrExpenseRequestProjection.status.in_(selected_statuses or ACCOUNTING_STATUSES))
+    selected_department_ids = department_ids or ([department_id] if department_id is not None else [])
+    if selected_department_ids:
+        stmt = stmt.where(HrExpenseRequestProjection.department_id.in_(selected_department_ids))
+    selected_type_ids = type_ids or ([type_id] if type_id is not None else [])
+    if selected_type_ids:
+        stmt = stmt.where(HrExpenseRequestProjection.expense_type_id.in_(selected_type_ids))
+    request_day = func.coalesce(
+        func.cast(HrExpenseRequestProjection.submitted_at, Date), HrExpenseRequestProjection.request_date,
+    )
+    if date_from is not None:
+        stmt = stmt.where(request_day >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(request_day <= date_to)
+    if has_tax_invoice is not None:
+        vat_amount = func.coalesce(HrExpenseRequestProjection.vat_amount, 0)
+        stmt = stmt.where(vat_amount > 0 if has_tax_invoice else vat_amount <= 0)
+    if withholding_only:
+        stmt = stmt.where(HrExpenseRequestProjection.withholding_related.is_(True))
+    if query:
+        term = f"%{query.strip()}%"
+        stmt = stmt.where(or_(
+            HrExpenseRequestProjection.request_no.ilike(term),
+            HrExpenseRequestProjection.title.ilike(term),
+            HrExpenseRequestProjection.recipient_name.ilike(term),
+            HrExpenseRequestProjection.requester_name.ilike(term),
+        ))
+    return stmt
+
+
+def _accounting_sort_key(source: str, row) -> tuple[int, float]:
+    pending_rank = 0 if row.status in {"pending_approval", "pending_adjustment_approval"} else 1
+    timestamp = (
+        row.approved_at
+        or (row.source_updated_at if source == "hr" else row.updated_at)
+        or datetime.min.replace(tzinfo=timezone.utc)
+    )
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return pending_rank, -timestamp.timestamp()
+
+
+def _hr_approval_steps(row: HrExpenseRequestProjection) -> list[dict]:
+    return [{
+        "id": -(index + 1),
+        "step_no": int(step.get("step") or index + 1),
+        "name": step.get("name"),
+        "approver_position_name": None,
+        "approver_name": None,
+        "approvers": [{
+            "name": approver.get("name"),
+            "status": approver.get("status"),
+            "comments": approver.get("comment"),
+            "acted_at": approver.get("acted_at"),
+        } for approver in step.get("approvers") or []],
+        "status": step.get("status"),
+        "decided_at": step.get("acted_at"),
+        "is_legacy": False,
+    } for index, step in enumerate((row.snapshot or {}).get("approval_trail") or [])]
+
+
+def _hr_accounting_item(row: HrExpenseRequestProjection, company: Company) -> dict:
+    return {
+        "id": row.integration_id,
+        "source_system": "hr",
+        "source_version": row.source_version,
+        "allowed_actions": row.allowed_actions or [],
+        "request_no": row.request_no,
+        "request_date": row.request_date,
+        "title": row.title,
+        "recipient_name": row.recipient_name,
+        "requester_name": row.requester_name,
+        "request_format": row.request_kind or "reimbursement",
+        "company_id": row.company_id,
+        "company_name": (row.snapshot or {}).get("company", {}).get("name") or company.name_th,
+        "department_id": row.department_id,
+        "department_name": row.department_name,
+        "expense_type_id": row.expense_type_id,
+        "expense_type_name": row.expense_type_name,
+        "bank_name": row.bank_name,
+        "bank_account_name": row.bank_account_name,
+        "bank_account_number": expense_request_service.decrypt_account_number(row.bank_account_number_encrypted),
+        "status": row.status,
+        "gross": row.gross_amount,
+        "vat": row.vat_amount,
+        "withholding": row.withholding_amount,
+        "net": row.net_amount,
+        "paid": row.paid_amount,
+        "remaining": row.remaining_amount,
+        "installment_no": None,
+        "installment_chain_root_id": None,
+        "installment_chain_status": None,
+        "installment_payment_amount": None,
+        "settlement_due_date": None,
+        "submitted_at": row.submitted_at,
+        "approved_at": row.approved_at,
+        "approval_steps": _hr_approval_steps(row),
+        "is_adjustment_transfer": False,
+        "transfer_amount": row.net_amount,
+    }
 
 
 def _append_legacy_approval_steps(
@@ -375,6 +505,7 @@ def _accounting_transfer_amount(
 @router.get("/expense-requests/accounting/list")
 async def accounting_list(
     status: Optional[str] = None, statuses: Optional[str] = None, query: Optional[str] = None,
+    source_system: Optional[Literal["acc", "hr"]] = None,
     department_id: Optional[int] = None, department_ids: Optional[str] = None,
     type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
@@ -391,15 +522,28 @@ async def accounting_list(
         has_tax_invoice=has_tax_invoice,
         query=query,
     )
-    total = (await db.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
-    ordered_stmt = stmt.order_by(
-        case((ExpenseRequest.status.in_(["pending_approval", "pending_adjustment_approval"]), 0), else_=1),
-        ExpenseRequest.approved_at.desc().nullslast(),
-        ExpenseRequest.updated_at.desc(),
+    filter_args = dict(
+        status=status, statuses=_parse_csv_values(statuses),
+        department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
+        type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
+        date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        has_tax_invoice=has_tax_invoice,
+        query=query,
     )
-    ordered_stmt = _apply_accounting_pagination(ordered_stmt, limit, offset)
-    rows = (await db.execute(ordered_stmt)).scalars().all()
-    if not rows:
+    native_rows = (
+        list((await db.execute(stmt)).scalars().all()) if source_system != "hr" else []
+    )
+    hr_rows = (
+        list((await db.execute(_hr_accounting_query(company, **filter_args))).scalars().all())
+        if source_system != "acc" else []
+    )
+    combined = [("acc", row) for row in native_rows] + [("hr", row) for row in hr_rows]
+    combined.sort(key=lambda item: _accounting_sort_key(item[0], item[1]))
+    total = len(combined)
+    page_rows = combined[offset:] if limit == 0 else combined[offset:offset + limit]
+    rows = [row for source, row in page_rows if source == "acc"]
+    hr_page_rows = [row for source, row in page_rows if source == "hr"]
+    if not page_rows:
         return {"items": [], "total": total, "limit": limit, "offset": offset}
     request_ids = [row.id for row in rows]
     type_names = dict((await db.execute(select(ExpenseType.id, ExpenseType.name).where(
@@ -465,8 +609,9 @@ async def accounting_list(
     _append_legacy_approval_steps(
         steps_by_request, legacy_steps, current_revisions, native_step_request_ids,
     )
-    items = [{
-        "id": r.id, "request_no": r.request_no, "request_date": r.request_date,
+    native_items = [{
+        "id": r.id, "source_system": "acc", "source_version": r.version,
+        "allowed_actions": [], "request_no": r.request_no, "request_date": r.request_date,
         "title": r.title, "recipient_name": r.recipient_name,
         "requester_name": r.requester_name_snapshot, "request_format": r.request_format,
         "company_id": r.company_id, "company_name": r.company_name_snapshot or company.name_th,
@@ -486,12 +631,19 @@ async def accounting_list(
         "is_adjustment_transfer": _is_adjustment_transfer(r, paid_request_ids, settlements),
         "transfer_amount": _accounting_transfer_amount(r, paid_request_ids, settlements),
     } for r in rows]
+    native_by_id = {item["id"]: item for item in native_items}
+    hr_by_id = {row.integration_id: _hr_accounting_item(row, company) for row in hr_page_rows}
+    items = [
+        native_by_id[row.id] if source == "acc" else hr_by_id[row.integration_id]
+        for source, row in page_rows
+    ]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/expense-requests/accounting/stats", response_model=AccountingStatsOut)
 async def accounting_stats(
     status: Optional[str] = None, statuses: Optional[str] = None, query: Optional[str] = None,
+    source_system: Optional[Literal["acc", "hr"]] = None,
     department_id: Optional[int] = None, department_ids: Optional[str] = None,
     type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
@@ -506,9 +658,18 @@ async def accounting_stats(
         date_from=date_from, date_to=date_to, withholding_only=withholding_only,
         has_tax_invoice=has_tax_invoice,
         query=query,
-    ))).scalars().all()
+    ))).scalars().all() if source_system != "hr" else []
+    hr_rows = (await db.execute(_hr_accounting_query(
+        company, status=status, statuses=_parse_csv_values(statuses),
+        department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
+        type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
+        date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        has_tax_invoice=has_tax_invoice,
+        query=query,
+    ))).scalars().all() if source_system != "acc" else []
     today = datetime.now(timezone.utc).date()
     ready = [r for r in rows if r.status == "ready_to_pay"]
+    hr_ready = [r for r in hr_rows if r.status == "ready_to_pay"]
     request_ids = [r.id for r in rows]
     paid_request_ids: set[str] = set()
     settlements: dict[str, ExpenseSettlement] = {}
@@ -523,22 +684,27 @@ async def accounting_stats(
     return AccountingStatsOut(
         pending_approval_count=sum(
             r.status in {"pending_approval", "pending_adjustment_approval"} for r in rows
-        ),
-        accounting_review_count=sum(r.status == "accounting_review" for r in rows),
+        ) + sum(r.status in {"pending_approval", "pending_adjustment_approval"} for r in hr_rows),
+        accounting_review_count=sum(r.status == "accounting_review" for r in rows)
+        + sum(r.status == "accounting_review" for r in hr_rows),
         awaiting_slip_count=sum(r.status == "awaiting_slip" for r in rows),
-        ready_to_pay_count=len(ready), settlement_review_count=sum(r.status == "settlement_review" for r in rows),
+        ready_to_pay_count=len(ready) + len(hr_ready),
+        settlement_review_count=sum(r.status == "settlement_review" for r in rows)
+        + sum(r.status == "settlement_review" for r in hr_rows),
         overdue_count=sum(r.status == "settlement_due" and r.settlement_due_date and r.settlement_due_date < today for r in rows),
-        ready_to_pay_amount=sum((Decimal(r.remaining_amount or r.net_amount or 0) for r in ready), Decimal("0")),
+        ready_to_pay_amount=sum((Decimal(r.remaining_amount or r.net_amount or 0) for r in ready), Decimal("0"))
+        + sum((Decimal(r.remaining_amount or r.net_amount or 0) for r in hr_ready), Decimal("0")),
         partially_paid_count=sum(r.status == "partially_paid" for r in rows),
         transfer_amount_total=sum((
             Decimal(_accounting_transfer_amount(r, paid_request_ids, settlements) or 0) for r in rows
-        ), Decimal("0")),
+        ), Decimal("0")) + sum((Decimal(r.net_amount or 0) for r in hr_rows), Decimal("0")),
     )
 
 
 @router.get("/expense-requests/accounting/export")
 async def export_accounting(
     status: Optional[str] = None, statuses: Optional[str] = None, query: Optional[str] = None,
+    source_system: Optional[Literal["acc", "hr"]] = None,
     department_id: Optional[int] = None, department_ids: Optional[str] = None,
     type_id: Optional[int] = None, type_ids: Optional[str] = None,
     date_from: Optional[date] = None, date_to: Optional[date] = None,
@@ -554,7 +720,18 @@ async def export_accounting(
         has_tax_invoice=has_tax_invoice,
         query=query,
     )
-    rows = (await db.execute(stmt.order_by(ExpenseRequest.created_at.desc()))).scalars().all()
+    rows = (
+        (await db.execute(stmt.order_by(ExpenseRequest.created_at.desc()))).scalars().all()
+        if source_system != "hr" else []
+    )
+    hr_rows = (await db.execute(_hr_accounting_query(
+        company, status=status, statuses=_parse_csv_values(statuses),
+        department_id=department_id, department_ids=_parse_csv_ints(department_ids, "department_ids"),
+        type_id=type_id, type_ids=_parse_csv_ints(type_ids, "type_ids"),
+        date_from=date_from, date_to=date_to, withholding_only=withholding_only,
+        has_tax_invoice=has_tax_invoice,
+        query=query,
+    ).order_by(HrExpenseRequestProjection.source_updated_at.desc()))).scalars().all() if source_system != "acc" else []
     request_ids = [row.id for row in rows]
     type_ids = {row.expense_type_id for row in rows}
     department_ids = {row.department_id for row in rows if row.department_id is not None}
@@ -594,6 +771,7 @@ async def export_accounting(
 
     data = expense_finance_service.excel_bytes(
         list(rows),
+        hr_rows=list(hr_rows),
         expense_type_names=expense_type_names,
         department_names=department_names,
         payments_by_request_id=payments_by_request_id,
